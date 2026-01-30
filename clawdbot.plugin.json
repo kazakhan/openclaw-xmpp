@@ -1,0 +1,12 @@
+{
+  "id": "clawdbot-xmpp",
+  "name": "XMPP Channel",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "channels": ["xmpp"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

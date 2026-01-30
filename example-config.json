@@ -1,0 +1,38 @@
+{
+  "plugins": {
+    "entries": {
+      "clawdbot-xmpp": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "xmpp": {
+      "enabled": true,
+      "accounts": {
+        "default": {
+          "enabled": true,
+          "service": "xmpp://example.com:5222",
+          "domain": "example.com",
+          "jid": "bot@example.com",
+          "password": "your-secure-password",
+          "adminJid": "admin@example.com",
+          "rooms": [
+            "general@conference.example.com",
+            "support@conference.example.com"
+          ],
+          "dataDir": "C:\\Users\\username\\.clawdbot\\extensions\\clawdbot-xmpp\\data"
+        }
+      }
+    }
+  }
+}
+
+// Additional configuration options (if needed in your clawdbot.json):
+// "messages": {
+//   "ackReactionScope": "group-mentions"
+// },
+// "gateway": {
+//   "mode": "local",
+//   "port": 18789
+// }

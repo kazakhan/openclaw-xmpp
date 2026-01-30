@@ -1,0 +1,29 @@
+{
+  "name": "clawdbot-xmpp",
+  "version": "1.0.0",
+  "description": "XMPP channel plugin for ClawdBot with file transfer and whiteboard support",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "echo \"Linting not configured\"",
+    "typecheck": "npx tsc --noEmit index.ts --module es2020 --target es2020 --moduleResolution node"
+  },
+  "keywords": [
+    "clawdbot",
+    "xmpp",
+    "jabber",
+    "chat",
+    "plugin",
+    "channel"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@xmpp/client": "^0.13.6"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
