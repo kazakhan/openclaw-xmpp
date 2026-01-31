@@ -155,6 +155,114 @@ class Contacts {
   }
 }
 
+class VCard {
+  private vcardFile: string;
+  private vcardData: {
+    fn?: string;
+    nickname?: string;
+    url?: string;
+    desc?: string;
+    avatarUrl?: string;
+    avatarMimeType?: string;
+    avatarData?: string; // base64
+  };
+
+  constructor(dataDir: string) {
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    this.vcardFile = path.join(dataDir, "xmpp-vcard.json");
+    this.vcardData = this.loadVCard();
+  }
+
+  private loadVCard() {
+    if (!fs.existsSync(this.vcardFile)) {
+      return {};
+    }
+    try {
+      return JSON.parse(fs.readFileSync(this.vcardFile, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  private saveVCard() {
+    try {
+      fs.writeFileSync(this.vcardFile, JSON.stringify(this.vcardData, null, 2));
+    } catch (err) {
+      console.error("Failed to save vCard:", err);
+    }
+  }
+
+  getFN(): string | undefined {
+    return this.vcardData.fn;
+  }
+
+  setFN(fn: string) {
+    this.vcardData.fn = fn;
+    this.saveVCard();
+  }
+
+  getNickname(): string | undefined {
+    return this.vcardData.nickname;
+  }
+
+  setNickname(nickname: string) {
+    this.vcardData.nickname = nickname;
+    this.saveVCard();
+  }
+
+  getURL(): string | undefined {
+    return this.vcardData.url;
+  }
+
+  setURL(url: string) {
+    this.vcardData.url = url;
+    this.saveVCard();
+  }
+
+  getDesc(): string | undefined {
+    return this.vcardData.desc;
+  }
+
+  setDesc(desc: string) {
+    this.vcardData.desc = desc;
+    this.saveVCard();
+  }
+
+  getAvatarUrl(): string | undefined {
+    return this.vcardData.avatarUrl;
+  }
+
+  setAvatarUrl(avatarUrl: string) {
+    this.vcardData.avatarUrl = avatarUrl;
+    this.saveVCard();
+  }
+
+  getAvatarData(): { mimeType?: string; data?: string } | undefined {
+    if (!this.vcardData.avatarData) return undefined;
+    return {
+      mimeType: this.vcardData.avatarMimeType,
+      data: this.vcardData.avatarData,
+    };
+  }
+
+  setAvatarData(mimeType: string, data: string) {
+    this.vcardData.avatarMimeType = mimeType;
+    this.vcardData.avatarData = data;
+    this.saveVCard();
+  }
+
+  // Get all vCard data for XML generation
+  getData() {
+    return { ...this.vcardData };
+  }
+
+  // Set multiple fields at once
+  update(fields: Partial<typeof this.vcardData>) {
+    Object.assign(this.vcardData, fields);
+    this.saveVCard();
+  }
+}
+
 // Message queue management
 function addToQueue(message: Omit<QueuedMessage, 'id' | 'timestamp' | 'processed'>) {
   const queuedMessage: QueuedMessage = {
@@ -328,9 +436,26 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
    const joinedRooms = new Set<string>();
    const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
    const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
-   const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
+    const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
 
-  xmpp.on("stanza", async (stanza: any) => {
+    // Initialize vCard with config defaults
+    const vcard = new VCard(cfg.dataDir);
+    // Update vCard with config defaults if fields are not set
+    if (cfg.vcard) {
+      const vcardData = vcard.getData();
+      const updates: any = {};
+      if (cfg.vcard.fn && !vcardData.fn) updates.fn = cfg.vcard.fn;
+      if (cfg.vcard.nickname && !vcardData.nickname) updates.nickname = cfg.vcard.nickname;
+      if (cfg.vcard.url && !vcardData.url) updates.url = cfg.vcard.url;
+      if (cfg.vcard.desc && !vcardData.desc) updates.desc = cfg.vcard.desc;
+      if (cfg.vcard.avatarUrl && !vcardData.avatarUrl) updates.avatarUrl = cfg.vcard.avatarUrl;
+      if (Object.keys(updates).length > 0) {
+        vcard.update(updates);
+        console.log("vCard updated with config defaults:", updates);
+      }
+    }
+
+   xmpp.on("stanza", async (stanza: any) => {
     console.log("XMPP stanza received:", stanza.toString());
     
     if (stanza.is("presence")) {
@@ -599,11 +724,43 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          return;
        }
        
-       // Handle HTTP Upload slot requests (responses to our requests)
-       // These are handled by the requestUploadSlot function via await xmpp.send()
-       // So we don't need to process them here
-       
-       return;
+         // Handle vCard requests (XEP-0054)
+         const vcardElement = stanza.getChild("vCard", "vcard-temp");
+         if (vcardElement) {
+           console.log(`vCard request from ${from}, type: ${type}`);
+           if (type === "get") {
+             // Extract local part from JID for nickname fallback
+             const localPart = cfg.jid.split("@")[0];
+             const fn = vcard.getFN() || `ClawdBot (${localPart})`;
+             const nickname = vcard.getNickname() || localPart;
+             const url = vcard.getURL() || "https://github.com/anomalyco/clawdbot";
+             const desc = vcard.getDesc() || "ClawdBot XMPP Plugin - AI Assistant";
+             
+             const vcardResponse = xml("iq", { to: from, type: "result", id },
+               xml("vCard", { xmlns: "vcard-temp" },
+                 xml("FN", {}, fn),
+                 xml("NICKNAME", {}, nickname),
+                 xml("URL", {}, url),
+                 xml("DESC", {}, desc)
+               )
+             );
+             await xmpp.send(vcardResponse);
+             console.log(`Sent vCard response to ${from}`);
+             return;
+           } else if (type === "set") {
+             // Accept vCard updates (log but don't store)
+             console.log(`vCard update from ${from}, ignoring`);
+             const resultIq = xml("iq", { to: from, type: "result", id });
+             await xmpp.send(resultIq);
+             return;
+           }
+         }
+        
+        // Handle HTTP Upload slot requests (responses to our requests)
+        // These are handled by the requestUploadSlot function via await xmpp.send()
+        // So we don't need to process them here
+        
+        return;
     }
     
     if (stanza.is("message")) {
@@ -752,7 +909,7 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
           };
         
         // Define plugin-specific commands
-        const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'help']);
+        const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'help']);
         const isPluginCommand = pluginCommands.has(command);
         
         // Groupchat handling: only process plugin commands, ignore others
@@ -803,18 +960,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
            
            switch (command) {
             case 'help':
-                 await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
-/list - Show contacts (admin only - direct chat)
-/add <jid> [name] - Add contact (admin only - direct chat)
-/remove <jid> - Remove contact (admin only - direct chat)
-/admins - List admins (admin only - direct chat)
-/whoami - Show your info (room/nick in groupchat)
-/join <room> [nick] - Join MUC room (admin only - direct chat)
-/rooms - List joined rooms (admin only - direct chat)
-/leave <room> - Leave MUC room (admin only - direct chat)
-/invite <contact> <room> - Invite contact to room (admin only - direct chat)
-/whiteboard - Whiteboard drawing and image sharing
-/help - Show this help`);
+                  await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
+ /list - Show contacts (admin only - direct chat)
+ /add <jid> [name] - Add contact (admin only - direct chat)
+ /remove <jid> - Remove contact (admin only - direct chat)
+ /admins - List admins (admin only - direct chat)
+ /whoami - Show your info (room/nick in groupchat)
+ /join <room> [nick] - Join MUC room (admin only - direct chat)
+ /rooms - List joined rooms (admin only - direct chat)
+ /leave <room> - Leave MUC room (admin only - direct chat)
+ /invite <contact> <room> - Invite contact to room (admin only - direct chat)
+ /whiteboard - Whiteboard drawing and image sharing
+ /vcard - Manage vCard profile (admin only - direct chat)
+ /help - Show this help`);
               
                // SPECIAL CASE: /help forwards to agent ONLY in direct chat (not groupchat)
                if (messageType === "chat" && contacts.exists(fromBareJid)) {
@@ -1152,12 +1310,81 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
 • File transfer: HTTP Upload (XEP-0363) and SI transfer (XEP-0096)
 • Max file size: Configurable via server
 • Supported formats: PNG, JPEG, GIF, WebP`);
+                return;
+              }
+              
+               case 'vcard':
+                 // vCard management
+                 if (!checkAdminAccess()) {
+                   await sendReply(messageType === 'groupchat' 
+                     ? '❌ Admin commands not available in groupchat. Use direct message.'
+                     : '❌ Permission denied. Admin access required.');
+                   return;
+                 }
+                if (args.length === 0 || args[0] === 'help') {
+                  await sendReply(`vCard commands:
+/vcard help - Show this help
+/vcard get - Show current vCard fields
+/vcard set fn <value> - Set Full Name
+/vcard set nickname <value> - Set Nickname
+/vcard set url <value> - Set URL
+/vcard set desc <value> - Set Description
+/vcard set avatarUrl <value> - Set Avatar URL`);
+                  return;
+                }
+                const subcmd = args[0].toLowerCase();
+                if (subcmd === 'get') {
+                  const data = vcard.getData();
+                  await sendReply(`Current vCard:
+FN: ${data.fn || '(not set)'}
+Nickname: ${data.nickname || '(not set)'}
+URL: ${data.url || '(not set)'}
+Description: ${data.desc || '(not set)'}
+Avatar URL: ${data.avatarUrl || '(not set)'}`);
+                  return;
+                } else if (subcmd === 'set') {
+                  if (args.length < 3) {
+                    await sendReply('Usage: /vcard set <field> <value>');
                     return;
-                    
-                  default:
-                    await sendReply(`Unknown whiteboard subcommand: ${subcommand}. Use /whiteboard help for available commands.`);
+                  }
+                  const field = args[1].toLowerCase();
+                  const value = args.slice(2).join(' ');
+                  let updated = false;
+                  switch (field) {
+                    case 'fn':
+                      vcard.setFN(value);
+                      updated = true;
+                      break;
+                    case 'nickname':
+                      vcard.setNickname(value);
+                      updated = true;
+                      break;
+                    case 'url':
+                      vcard.setURL(value);
+                      updated = true;
+                      break;
+                    case 'desc':
+                      vcard.setDesc(value);
+                      updated = true;
+                      break;
+                    case 'avatarurl':
+                      vcard.setAvatarUrl(value);
+                      updated = true;
+                      break;
+                    default:
+                      await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, avatarUrl`);
+                      return;
+                  }
+                  if (updated) {
+                    await sendReply(`✅ vCard field '${field}' updated to: ${value}`);
+                  }
+                  return;
+                } else {
+                  await sendReply(`Unknown vCard subcommand: ${subcmd}. Use /vcard help for available commands.`);
                 }
                 return;
+
+
                
               default:
                 // Should not reach here for non-plugin commands (handled earlier)
@@ -1524,16 +1751,26 @@ export function register(api: any) {
     },
     configSchema: {
       type: "object",
-      properties: {
-        service: { type: "string" },
-        domain: { type: "string" },
-        jid: { type: "string" },
-        password: { type: "string" },
-        dataDir: { type: "string" },
-        resource: { type: "string" },
-        adminJid: { type: "string" },
-        rooms: { type: "array", items: { type: "string" } },
-      },
+       properties: {
+         service: { type: "string" },
+         domain: { type: "string" },
+         jid: { type: "string" },
+         password: { type: "string" },
+         dataDir: { type: "string" },
+         resource: { type: "string" },
+         adminJid: { type: "string" },
+         rooms: { type: "array", items: { type: "string" } },
+         vcard: {
+           type: "object",
+           properties: {
+             fn: { type: "string" },
+             nickname: { type: "string" },
+             url: { type: "string" },
+             desc: { type: "string" },
+             avatarUrl: { type: "string" }
+           }
+         }
+       },
       required: ["service", "domain", "jid", "password", "dataDir"],
     },
     config: {
