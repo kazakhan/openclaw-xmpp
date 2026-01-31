@@ -109,7 +109,6 @@ Add the following configuration to your `clawdbot.json`:
           "domain": "your-server.com",
           "jid": "bot@your-server.com",
           "password": "your-password",
-          "resource": "clawdbot",
           "adminJid": "admin@your-server.com",
           "rooms": [
             "general@conference.your-server.com",

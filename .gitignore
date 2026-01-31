@@ -30,3 +30,7 @@ build/
 .env
 .env.local
 .env.*.local
+
+data/xmpp-admins.json
+data/xmpp-contacts.json
+data/xmpp-vcard.json
