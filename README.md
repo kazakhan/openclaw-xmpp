@@ -2,6 +2,11 @@
 
 A full-featured XMPP channel plugin for ClawdBot that enables XMPP/Jabber integration with support for 1:1 chat, multi-user chat (MUC), file transfer, and whiteboard functionality.
 
+Written by Deepseek reasoner using ['Opencode'](https://opencode.ai/).
+
+Need an XMPP server, try [Prosody](https://prosody.im/).
+
+
 ## Features
 
 ### 🚀 Core XMPP Protocol
