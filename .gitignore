@@ -36,3 +36,8 @@ data/xmpp-contacts.json
 data/xmpp-vcard.json
 
 *.log:
+
+plugin.md
+
+nul
+-

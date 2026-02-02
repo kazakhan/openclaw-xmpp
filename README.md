@@ -4,7 +4,40 @@ A full-featured XMPP channel plugin for ClawdBot that enables XMPP/Jabber integr
 
 ## Status: ✅ WORKING
 
-The XMPP plugin is now fully functional with CLI command support!
+The XMPP plugin is now fully functional with CLI command support, shared sessions, and memory continuity!
+
+## Shared Sessions & Memory
+
+The XMPP plugin supports **shared session memory** between direct chat and groupchat:
+
+### How It Works
+1. **Direct Chat**: Messages create sessions keyed by user's bare JID (e.g., `xmpp:user@domain.com`)
+2. **GroupChat**: When user is identified, uses same session key for memory continuity
+3. **Memory**: Agent remembers conversation context across both conversation types
+
+### User Identification
+- **Occupant-ID (XEP-0327)**: Server provides stable occupant IDs for automatic identification
+- **Nick Mapping**: Use `/mapnick :nickname user@domain.com` to manually map room nicks to JIDs
+- **Known Users**: When a user messages directly first, their nick is learned for future groupchat sessions
+
+### Session Memory Configuration
+Add to `~/.clawdbot/clawdbot.json`:
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": true,
+        "experimental": {
+          "sessionMemory": true
+        }
+      }
+    }
+  }
+}
+```
+
+## Commands
 
 ```
 clawdbot xmpp --help
@@ -16,6 +49,7 @@ clawdbot xmpp join <room> [nick]
 clawdbot xmpp poll
 clawdbot xmpp clear
 clawdbot xmpp queue
+clawdbot xmpp mapnick :nickname user@domain.com  # Map room nick to JID
 ```
 
 Or use the standard ClawdBot message command:
@@ -32,6 +66,12 @@ clawdbot message send --channel xmpp --target user@domain.com --message "Hello"
 - **Presence Management**: Online/offline status handling
 - **Auto-Reconnection**: Automatic reconnection on network issues
 - **TLS Support**: Secure connections
+- **Occupant-ID (XEP-0327)**: Stable user identification in MUC rooms
+
+### 👥 Shared Sessions & Memory
+- **Session Continuity**: Same session used for direct chat and groupchat when user identified
+- **Nick Mapping**: `/mapnick` command for manual nick-to-JID mapping
+- **Automatic Learning**: Users who message directly have their nicks learned for groupchat
 
 ### 👥 Contact & Roster Management
 - **Contact Storage**: In-memory roster with nickname support
@@ -53,6 +93,7 @@ clawdbot xmpp nick <jid> <name>  # Set roster nickname
 clawdbot xmpp poll               # Poll message queue
 clawdbot xmpp clear              # Clear message queue
 clawdbot xmpp queue              # Show queue status
+clawdbot xmpp mapnick :nick jid  # Map room nick to JID for shared sessions
 ```
 
 ### 🔄 Message Queue System

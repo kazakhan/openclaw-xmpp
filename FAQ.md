@@ -20,6 +20,73 @@ Yes, you can configure it with public servers like:
 
 Check the server's terms of service and ensure bot accounts are allowed.
 
+## vCard (User Profile)
+
+### How do I set my vCard (profile info)?
+vCard is stored on the **XMPP server**, not by the bot. Use your XMPP client:
+- **Conversations**: Settings → Profile → Edit Profile
+- **Gajim**: Actions → Personal Information
+- **Other clients**: Look for "Profile" or "vCard" in settings
+
+### Can users set vCard through the bot?
+No. Users must set their vCard through their XMPP client. The bot only:
+- Responds to vCard requests for itself
+- Forwards vCard GET requests to the server for other users
+
+### Why do I get "Not Found" when querying vCard?
+This means the user hasn't set their vCard on the server. They need to:
+1. Open their XMPP client
+2. Go to Profile/Account settings
+3. Set their display name, nickname, etc.
+
+The bot cannot create or modify user vCards on the server.
+
+### Does the bot have a vCard?
+Yes! The bot responds to vCard GET requests with its profile info. Configure it with `/vcard set` commands (admin only).
+
+### Can I see who's online with their vCard?
+XMPP doesn't provide a standard way to query all users' vCards at once. You can query individual users' vCards if they're online and your server allows it.
+
+## Shared Sessions & Memory
+
+### What are shared sessions?
+Shared sessions allow the bot to maintain memory continuity between direct chat and groupchat. When a user is identified (via occupant-ID or nick mapping), both conversation types use the same session key, enabling the agent to remember context across both.
+
+### How does user identification work?
+1. **Occupant-ID (XEP-0327)**: Servers like Prosody provide stable occupant IDs in MUC rooms. The plugin uses these for consistent user identification.
+2. **Direct Message Learning**: When a user messages the bot directly, their nick is learned for future groupchat correlation.
+3. **Manual Mapping**: Use `/mapnick :nickname user@domain.com` to manually map room nicks to JIDs.
+
+### How do I enable session memory searching?
+Add to `~/.clawdbot/clawdbot.json`:
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": true,
+        "experimental": {
+          "sessionMemory": true
+        }
+      }
+    }
+  }
+}
+```
+This enables the `memory_search` tool to search both memory files and session transcripts.
+
+### Why doesn't the bot remember my groupchat messages?
+Common reasons:
+1. **User not identified**: The bot doesn't know who "KazaKhan" is. Use `/mapnick :KazaKhan your-jid@domain.com`
+2. **Session memory disabled**: Enable `memorySearch.experimental.sessionMemory` in config
+3. **New session**: Each conversation starts fresh unless shared session is established
+
+### How does the bot identify users in groupchat?
+The bot uses:
+1. **Occupant-ID** (XEP-0327) if server provides it
+2. **Nick-to-JID mappings** learned from direct messages
+3. **Manual mappings** via `/mapnick` command
+
 ## Configuration
 
 ### Why isn't my bot connecting?
@@ -135,3 +202,38 @@ Messages are routed through ClawdBot's channel system. Ensure your agent is list
 
 ### Can I use it with webhooks or APIs?
 Not directly, but you could extend the plugin to support webhook integration.
+
+## Shared Sessions FAQ
+
+### How do I check if a user is mapped?
+The bot logs nick-to-JID mappings when messages are received. Look for:
+```
+[SESSION] Learned nick→JID mapping: "jamie" -> jamie@kazakhan.com
+[SESSION] Admin mapped ":KazaKhan" -> jamie@kazakhan.com
+```
+
+### What if the server doesn't support Occupant-ID?
+The plugin falls back to:
+1. Nick-to-JID mappings learned from direct messages
+2. Manual `/mapnick` commands
+
+Configure your Prosody server with `mod_occupant_id` for automatic occupant identification.
+
+### Does shared session work with different nicks?
+Yes, but you need to map each nick:
+```
+/mapnick :Jamie user@domain.com
+/mapnick :KazaKhan user@domain.com
+```
+Both will use the same session.
+
+### Can I see current session mappings?
+Check the debug logs for:
+```
+[DEBUG] nickToJidMap contents: [ [ ':jamie', 'jamie@kazakhan.com' ], [ ':KazaKhan', 'jamie@kazakhan.com' ] ]
+```
+
+### What's the session key format?
+- Direct chat: `xmpp:user@domain.com`
+- Groupchat (known user): `xmpp:user@domain.com` (shared with direct)
+- Groupchat (unknown): `xmpp:room@conference.domain.com:nick` (separate session)

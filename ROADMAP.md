@@ -2,7 +2,7 @@
 
 This document outlines the planned development direction for the ClawdBot XMPP plugin.
 
-## Phase 1: Core Stability (Current)
+## Phase 1: Core Stability (Complete)
 - [x] Basic XMPP connection and messaging
 - [x] Multi-User Chat (MUC) support
 - [x] File transfer (HTTP Upload)
@@ -10,8 +10,11 @@ This document outlines the planned development direction for the ClawdBot XMPP p
 - [x] Whiteboard command framework
 - [x] Basic administration commands
 - [x] Documentation and project structure
+- [x] Shared sessions between direct chat and groupchat
+- [x] XEP-0327 Occupant-ID for user identification
+- [x] Session memory configuration
 
-## Phase 2: Enhanced Features (Next)
+## Phase 2: Enhanced Features (In Progress)
 - [ ] SOCKS5 Bytestreams support (XEP-0065)
 - [ ] Improved error handling and logging
 - [ ] File size limits and validation
@@ -20,6 +23,7 @@ This document outlines the planned development direction for the ClawdBot XMPP p
 - [ ] Room configuration assistance
 - [ ] Automated testing framework
 - [ ] Performance optimizations
+- [ ] Multi-account support
 
 ## Phase 3: Advanced Protocols
 - [ ] Jingle file transfer (XEP-0234)
