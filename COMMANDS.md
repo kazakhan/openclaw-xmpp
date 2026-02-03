@@ -12,6 +12,13 @@ Shows help for all XMPP commands.
 clawdbot xmpp
 ```
 
+### `clawdbot xmpp start`
+Start the ClawdBot gateway in background.
+
+```bash
+clawdbot xmpp start
+```
+
 ### `clawdbot xmpp status`
 Shows the current XMPP connection status.
 

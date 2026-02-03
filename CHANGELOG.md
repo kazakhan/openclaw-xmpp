@@ -5,6 +5,18 @@ All notable changes to the ClawdBot XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-03
+
+### Fixed
+- **CLI Registration**: Fixed `registerCli` callback to properly register XMPP commands
+- **Message Routing**: `clawdbot xmpp msg` now routes through gateway to agents via `clawdbot message send --channel xmpp`
+- **Auto-Join**: Disabled auto-join by default to prevent connection drops on non-existent rooms; requires `autoJoinRooms: true` in config
+- **Connection Stability**: Added keepalive presence pings and offline handler to prevent ECONNRESET errors
+
+### Changed
+- **CLI Commands**: Simplified command structure with proper Commander.js pattern
+- **Message Archive**: Removed conflicting `messages` subcommand to avoid clashes with clawdbot built-in commands
+
 ## [1.0.0] - 2026-01-31
 
 ### Added
