@@ -1,5 +1,5 @@
 import { xml } from "@xmpp/client";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import { fileURLToPath } from "node:url";
 import path from "path";
 
@@ -18,11 +18,15 @@ async function saveRoster() {
   console.log("Roster saved (in-memory only)");
 }
 
+
+
 // Helper to call clawdbot message send via gateway
 async function sendViaGateway(jid: string, message: string): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn("cmd.exe", ["/c", "clawdbot", "message", "send", "--channel", "xmpp", "--target", jid, "--message", message], {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+      windowsHide: true
     });
 
     let stdout = '';
@@ -222,9 +226,106 @@ export function registerXmppCli({
          console.log(`${i+1}. ${msg.processed ? '✓' : '✗'} [${msg.accountId}] ${msg.from}: ${msg.body.substring(0, 50)}${msg.body.length > 50 ? '...' : ''}`);
        });
      });
+
+  // Subcommand: vcard <action> [args]
+  xmpp
+    .command("vcard <action> [args...]")
+    .description("Manage vCard profile")
+    .action(async (action: string, args: string[]) => {
+      if (action === 'help') {
+        console.log(`vCard commands:
+  clawdbot xmpp vcard get - View current vCard
+  clawdbot xmpp vcard set fn <value> - Set Full Name
+  clawdbot xmpp vcard set nickname <value> - Set Nickname
+  clawdbot xmpp vcard set url <value> - Set URL
+  clawdbot xmpp vcard set desc <value> - Set Description
+  clawdbot xmpp vcard set avatarUrl <value> - Set Avatar URL
+
+Examples:
+  clawdbot xmpp vcard get
+  clawdbot xmpp vcard set fn "My Bot"
+  clawdbot xmpp vcard set nickname "bot"
+  clawdbot xmpp vcard set url "https://github.com/anomalyco/clawdbot"
+  clawdbot xmpp vcard set desc "AI Assistant"
+
+Note: Commands connect directly to XMPP server.`);
+      } else if (action === 'get') {
+        try {
+          const { getVCard } = await import('./vcard-cli.js');
+          const result = await getVCard();
+          if (result.ok && result.data) {
+            console.log('Current vCard:');
+            console.log(`  FN: ${result.data.fn || '(not set)'}`);
+            console.log(`  Nickname: ${result.data.nickname || '(not set)'}`);
+            console.log(`  URL: ${result.data.url || '(not set)'}`);
+            console.log(`  Desc: ${result.data.desc || '(not set)'}`);
+            console.log(`  Avatar URL: ${result.data.avatarUrl || '(not set)'}`);
+          } else {
+            console.log('Failed to get vCard:', result.error || 'Unknown error');
+          }
+        } catch (err: any) {
+          console.log('Failed to get vCard:', err.message);
+        }
+      } else if (action === 'set' && args.length >= 1) {
+        const field = args[0];
+        const value = args.slice(1).join(' ');
+        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatarUrl'];
+
+        if (!validFields.includes(field)) {
+          console.log(`Invalid field: ${field}`);
+          console.log(`Valid fields: ${validFields.join(', ')}`);
+          console.log(`Use: clawdbot xmpp vcard set <field> <value>`);
+          return;
+        }
+
+        if (!value) {
+          console.log(`Missing value for ${field}`);
+          return;
+        }
+
+        try {
+          const { setVCard } = await import('./vcard-cli.js');
+          const result = await setVCard(field, value);
+          if (result.ok) {
+            console.log(`vCard field '${field}' updated successfully`);
+          } else {
+            console.log('Failed to update vCard:', result.error || 'Unknown error');
+          }
+        } catch (err: any) {
+          console.log('Failed to update vCard:', err.message);
+        }
+      } else {
+        console.log('Invalid vCard command');
+        console.log('Use: clawdbot xmpp vcard help');
+      }
+    });
+
 }
 
-// Legacy function for backward compatibility
+// Legacy function for backward compatibility - now delegates to registerXmppCli
 export function registerCommands(api: any, dataPath: string) {
-  console.warn("registerCommands is deprecated, use registerXmppCli instead");
+  console.log("Registering XMPP CLI commands via registerCommands (legacy)");
+  
+  // Access globals from main module
+  const globals = global as any;
+  
+  registerXmppCli({
+    program: api.program,
+    getXmppClient: () => {
+      if (globals.xmppClients) {
+        const clients = Array.from(globals.xmppClients.values());
+        return clients.length > 0 ? clients[0] : null;
+      }
+      return null;
+    },
+    logger: console,
+    getUnprocessedMessages: () => {
+      return globals.getUnprocessedMessages ? globals.getUnprocessedMessages() : [];
+    },
+    clearOldMessages: () => {
+      if (globals.clearOldMessages) globals.clearOldMessages();
+    },
+    messageQueue: globals.messageQueue || []
+  });
+  console.log("XMPP CLI commands registered successfully");
 }

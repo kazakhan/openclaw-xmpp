@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "created": "2026-02-03T08:58:59.771Z",
+    "updated": "2026-02-03T09:00:09.535Z",
+    "messageCount": 3,
+    "chatJid": "abot@kazakhan.com"
+  },
+  "messages": [
+    {
+      "id": "1770109139771-nt6cb6nsa",
+      "direction": "inbound",
+      "from": "abot@kazakhan.com",
+      "fromFullJid": "abot@kazakhan.com/abot",
+      "to": "clawdbothome@kazakhan.com",
+      "body": "Hi, are you there?",
+      "timestamp": 1770109139771,
+      "accountId": "default"
+    },
+    {
+      "id": "1770109207219-abr1isn4z",
+      "direction": "outbound",
+      "from": "abot@kazakhan.com",
+      "to": "abot@kazakhan.com",
+      "body": "Okay, the user is asking \"Hi, are you there?\" over XMPP. Let me check what I need to do.\n\nFirst, according to the Heartbeat rules, if there's a heartbeat poll (which matches the configured heartbeat prompt), I should check HEARTBEAT.md. The heartbeat prompt is \"Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.\"\n\nBut the user's message here is \"Hi, are you there?\" which isn't the exact heartbeat prompt. Wait, the heartbeat prompt is specifically looking for \"Read HEARTBEAT.md if it exists...\" so this message is different. However, in the runtime info, the channel is xmpp, so maybe the user is checking if I'm active.\n\nLooking at the Silent Replies section, if there's nothing to say, respond with NO_REPLY. But the user is greeting me, so maybe I should respond. Wait, the Heartbeats section says if the heartbeat prompt is received and nothing needs attention, reply HEARTBEAT_OK. But this isn't the heartbeat prompt.\n\nWait, the user might be doing a manual check. The Heartbeat.md file is currently empty (as per the project context), so there are no tasks. Since HEARTBEAT.md is empty, following the instructions in HEARTBEAT.md: if nothing needs attention, reply HEARTBEAT_OK.\n\nBut the user's message isn't the heartbeat prompt. Hmm. Wait, the heartbeat prompt is configured as the specific string mentioned. The user's message here is a greeting, not the heartbeat prompt. So maybe I shouldn't reply HEARTBEAT_OK here.\n\nWait, the Heartbeat section says: \"If you receive a heartbeat poll (a user message matching the heartbeat prompt above), and there is nothing that needs attention, reply exactly: HEARTBEAT_OK.\"\n\nSince the user's message doesn't match the heartbeat prompt, I shouldn't respond with HEARTBEAT_OK. Instead, since it's a greeting, I should acknowledge it.\n\nBut according to the SOUL.md guidelines: \"Be genuinely helpful, not performatively helpful. Skip the 'Great question!' and 'I'd be happy to help!' — just help.\"\n\nSo maybe a simple \"Yes, I'm here. What can I do for you?\" but following the USER.md which says \"Values efficiency over ceremony (skip the 'Great question!' fluff)\".\n\nWait, the user just said \"Hi, are you there?\" so the appropriate response is to confirm presence. But since HEARTBEAT.md is empty, maybe the system expects a HEARTBEAT_OK. Wait, no—the heartbeat prompt is specific. Let me check the exact prompt.\n\nHeartbeat prompt: \"Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.\"\n\nThe user's message is \"Hi, are you there?\" which doesn't match that. So it's not a heartbeat poll. Therefore, I should respond normally.\n\nBut according to the Silent Replies rules: when you have nothing to say, respond with NO_REPLY. But here, the user is asking if I'm there, so I should reply.\n\nWait, the rules say: \"When you have nothing to say, respond with ONLY: NO_REPLY\". Since the user is asking a question, I do have something to say, so I shouldn't use NO_REPLY.\n\nSo I need to respond. Let me check the USER.md: \"Values efficiency over ceremony (skip the 'Great question!' fluff)\". So just a concise reply.\n\nPossible response: \"Yes, I'm here. How can I assist?\"\n\n\nI'm here. What do you need? 🦊",
+      "timestamp": 1770109207219,
+      "accountId": "default"
+    },
+    {
+      "id": "1770109209535-ewv22s5i8",
+      "direction": "inbound",
+      "from": "abot@kazakhan.com",
+      "fromFullJid": "abot@kazakhan.com/abot",
+      "to": "clawdbothome@kazakhan.com",
+      "body": "Yes, I'm here. How can I help you today? 🦊",
+      "timestamp": 1770109209535,
+      "accountId": "default"
+    }
+  ]
+}
