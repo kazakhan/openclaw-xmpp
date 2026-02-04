@@ -5,6 +5,56 @@ All notable changes to the ClawdBot XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **TLS Certificate Verification**: Removed insecure NODE_TLS_REJECT_UNAUTHORIZED workaround now that XMPP server has proper certificate
+
+### Added
+- **Shared Session Memory**: Direct chat and groupchat messages now share the same session when users are identified, enabling persistent memory across conversation types
+- **XEP-0327 Occupant-ID Support**: Automatic user identification in MUC rooms using stable occupant IDs for consistent session tracking
+- **Session Memory Configuration**: Support for `memorySearch.experimental.sessionMemory` in agent config to enable session transcript searching
+
+### Changed
+- **Debug Logging Reduced**: Removed verbose console.log output throughout the plugin; debug information now writes to `cli-debug.log` file instead
+- **Cleaner Console Output**: Only essential operational messages (connections, presence, vCard, room events) are logged to console
+- **Session Key Format**: Sessions now use `xmpp:user@domain.com` for both direct and groupchat when user is identified
+- **Chat Type**: All XMPP conversations use "direct" chatType to prevent separate session buckets
+- **Reply Routing**: Groupchat replies correctly route to room JID instead of user JID
+- **Context Payload**: From field consistently uses user's bare JID for session continuity
+
+### Fixed
+- Groupchat replies now sent to correct room JID instead of user's personal JID
+- Session sharing between direct chat and groupchat for identified users
+- Agent context properly uses shared session key for memory continuity
+
+### Configuration
+Add to `~/.clawdbot/clawdbot.json` for session memory:
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "enabled": true,
+        "experimental": {
+          "sessionMemory": true
+        }
+      }
+    }
+  }
+}
+```
+
+### Planned Features
+- SOCKS5 Bytestreams support (XEP-0065)
+- Jingle file transfer (XEP-0234)
+- Enhanced whiteboard with drawing tools
+- Image optimization before sending
+- File size limits and validation
+- Improved error handling and logging
+- Unit tests and integration tests
+- Documentation improvements
+
 ## [1.2.0] - 2026-02-04
 
 ### Security
@@ -121,48 +171,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin Access**: Admin JID configuration for privileged commands
 - **Data Directory**: Configurable path for contacts, downloads, and plugin data storage
 
-## [Unreleased]
-
-### Added
-- **Shared Session Memory**: Direct chat and groupchat messages now share the same session when users are identified, enabling persistent memory across conversation types
-- **XEP-0327 Occupant-ID Support**: Automatic user identification in MUC rooms using stable occupant IDs for consistent session tracking
-- **Nick-to-JID Mapping**: `/mapnick` command for manually mapping room nicks to JIDs when occupant-id is unavailable
-- **Session Memory Configuration**: Support for `memorySearch.experimental.sessionMemory` in agent config to enable session transcript searching
-
-### Changed
-- **Session Key Format**: Sessions now use `xmpp:user@domain.com` for both direct and groupchat when user is identified
-- **Chat Type**: All XMPP conversations use "direct" chatType to prevent separate session buckets
-- **Reply Routing**: Groupchat replies correctly route to room JID instead of user JID
-- **Context Payload**: From field consistently uses user's bare JID for session continuity
-
-### Fixed
-- Groupchat replies now sent to correct room JID instead of user's personal JID
-- Session sharing between direct chat and groupchat for identified users
-- Agent context properly uses shared session key for memory continuity
-
-### Configuration
-Add to `~/.clawdbot/clawdbot.json` for session memory:
-```json
-{
-  "agents": {
-    "defaults": {
-      "memorySearch": {
-        "enabled": true,
-        "experimental": {
-          "sessionMemory": true
-        }
-      }
-    }
-  }
-}
-```
-
-### Planned Features
-- SOCKS5 Bytestreams support (XEP-0065)
-- Jingle file transfer (XEP-0234)
-- Enhanced whiteboard with drawing tools
-- Image optimization before sending
-- File size limits and validation
-- Improved error handling and logging
-- Unit tests and integration tests
-- Documentation improvements
+## [1.2.0] - 2026-02-04

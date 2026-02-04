@@ -11,12 +11,10 @@ const debugLog = (msg: string) => {
   try {
     fs.appendFileSync(logFile, line);
   } catch (err) {
-    console.error('Failed to write debug log:', err);
+    // Silently ignore logging errors
   }
 };
 
-console.log("XMPP plugin loading at", new Date().toISOString());
-console.error("XMPP PLUGIN MODULE LOADED - CHECK IF THIS APPEARS");
 debugLog(`XMPP plugin loading at ${new Date().toISOString()}`);
 
 let pluginRegistered = false;
@@ -356,35 +354,33 @@ function clearOldMessages(maxAgeMs: number = 24 * 60 * 60 * 1000) {
 export { addToQueue, getUnprocessedMessages, markAsProcessed, clearOldMessages, messageQueue };
 
 async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => void) {
-  // Helper to get default resource/nick from JID local part
-  const getDefaultResource = () => {
-    const result = cfg?.resource || cfg?.jid?.split("@")[0] || "clawdbot";
-    console.log(`getDefaultResource: cfg.resource=${cfg?.resource}, cfg.jid=${cfg?.jid}, result=${result}`);
-    return result;
-  };
-  const getDefaultNick = () => {
-    const result = cfg.jid ? cfg.jid.split("@")[0] : "clawdbot";
-    console.log(`getDefaultNick: cfg.jid=${cfg.jid}, result=${result}`);
-    return result;
+   // Helper to get default resource/nick from JID local part
+   const getDefaultResource = () => {
+     const result = cfg?.resource || cfg?.jid?.split("@")[0] || "clawdbot";
+     return result;
    };
-   
-   // File download helper for inbound attachments (available in stanza handler)
-   const downloadFile = async (url: string, tempDir: string): Promise<string> => {
-     console.log(`Downloading file from ${url}`);
-     
-     // Create temp directory if needed
-     if (!fs.existsSync(tempDir)) {
-       fs.mkdirSync(tempDir, { recursive: true });
-     }
-     
-      // Generate filename from URL with path traversal protection
-      const urlObj = new URL(url);
-      const pathname = urlObj.pathname;
-      let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
+   const getDefaultNick = () => {
+     const result = cfg.jid ? cfg.jid.split("@")[0] : "clawdbot";
+     return result;
+    };
+    
+    // File download helper for inbound attachments (available in stanza handler)
+    const downloadFile = async (url: string, tempDir: string): Promise<string> => {
+      debugLog(`Downloading file from ${url}`);
       
-      // Validate filename - only allow safe characters, no path separators
-      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-      if (safeFilename !== filename) {
+      // Create temp directory if needed
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+       // Generate filename from URL with path traversal protection
+       const urlObj = new URL(url);
+       const pathname = urlObj.pathname;
+       let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
+       
+       // Validate filename - only allow safe characters, no path separators
+       const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+       if (safeFilename !== filename) {
         console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
         filename = safeFilename;
       }
@@ -432,36 +428,29 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
        }
      }
      
-     return localPaths;
-   };
+      return localPaths;
+    };
+    
+    debugLog(`Starting XMPP connection to ${cfg?.service}`);
+    debugLog(`XMPP config: jid=${cfg?.jid}, domain=${cfg?.domain}`);
    
-   console.log("Starting XMPP connection with TLS rejection disabled");
-  console.log("startXmpp config:", {
-    service: cfg?.service,
-    domain: cfg?.domain,
-    jid: cfg?.jid,
-    resource: cfg?.resource,
-    hasResource: cfg?.resource !== undefined,
-    jidLocalPart: cfg?.jid ? cfg.jid.split("@")[0] : 'undefined'
-  });
-  
-  // Lazy load @xmpp/client module
-  if (!xmppClientModule) {
-    console.log("Loading @xmpp/client module...");
-    xmppClientModule = await import("@xmpp/client");
-    console.log("XMPP client module loaded");
-  }
-  
-  const { client, xml } = xmppClientModule;
-  
-    const xmpp = client({
-      service: cfg?.service,
-      domain: cfg?.domain,
-      username: cfg?.jid?.split("@")[0],
-      password: cfg?.password,
-       resource: getDefaultResource(),
-      tls: { rejectUnauthorized: false }
-    });
+   // Lazy load @xmpp/client module
+   if (!xmppClientModule) {
+     debugLog("Loading @xmpp/client module...");
+     xmppClientModule = await import("@xmpp/client");
+     debugLog("XMPP client module loaded");
+   }
+   
+   const { client, xml } = xmppClientModule;
+   
+     const xmpp = client({
+       service: cfg?.service,
+       domain: cfg?.domain,
+       username: cfg?.jid?.split("@")[0],
+       password: cfg?.password,
+        resource: getDefaultResource(),
+       tls: { rejectUnauthorized: false }
+     });
 
    // Helper to resolve room JID - add conference domain if missing
    const resolveRoomJid = (room: string): string => {
@@ -478,22 +467,22 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
   });
   
    xmpp.on("online", async (address: any) => {
-     log.info("XMPP online as", address.toString());
-     console.log("XMPP connected successfully as", address.toString());
-
-     // Send initial presence to appear online
-     try {
-       const presence = xml("presence");
-       await xmpp.send(presence);
-       console.log("✅ Presence sent - should appear online now as", address.toString());
-       log.info("Presence sent");
-     } catch (err) {
-       console.error("❌ Failed to send presence:", err);
-       log.error("Failed to send presence", err);
-     }
-
-     // Register vCard with the XMPP server so clients can query it
-     try {
+      log.info("XMPP online as", address.toString());
+      debugLog("XMPP connected successfully");
+ 
+      // Send initial presence to appear online
+      try {
+        const presence = xml("presence");
+        await xmpp.send(presence);
+        console.log("✅ Presence sent - should appear online now as", address.toString());
+        log.info("Presence sent");
+      } catch (err) {
+        console.error("❌ Failed to send presence:", err);
+        log.error("Failed to send presence", err);
+      }
+ 
+      // Register vCard with the XMPP server so clients can query it
+      try {
        console.log("📝 Registering vCard with XMPP server...");
        const vcardData = vcard.getData();
        const fn = vcardData.fn || `ClawdBot (${cfg.jid?.split('@')[0]})`;
@@ -542,10 +531,10 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       }
     }
 
-   xmpp.on("stanza", async (stanza: any) => {
-    console.log("XMPP stanza received:", stanza.toString());
-    
-    if (stanza.is("presence")) {
+    xmpp.on("stanza", async (stanza: any) => {
+     // debugLog("XMPP stanza received: " + stanza.toString().substring(0, 200));
+     
+     if (stanza.is("presence")) {
       const from = stanza.attrs.from;
       const type = stanza.attrs.type || "available";
       const parts = from.split('/');
@@ -642,19 +631,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       const to = stanza.attrs.to;
       const type = stanza.attrs.type;
       const id = stanza.attrs.id;
-      console.log(`IQ stanza received - Type: ${type}, From: ${from}, To: ${to}, ID: ${id}`);
+      debugLog(`IQ stanza: type=${type}, from=${from}, id=${id}`);
       
       // Handle SI File Transfer requests (XEP-0096)
       if (type === "set") {
         const si = stanza.getChild("si", "http://jabber.org/protocol/si");
         if (si) {
-          console.log(`SI file transfer offer from ${from}`);
+          debugLog(`SI file transfer offer from ${from}`);
           // Check for file transfer profile
           const file = si.getChild("file", "http://jabber.org/protocol/si/profile/file-transfer");
           if (file) {
             const filename = file.attrs.name || "unknown";
             const size = file.attrs.size ? parseInt(file.attrs.size) : 0;
-            console.log(`File offer: ${filename} (${size} bytes)`);
+            debugLog(`File offer: ${filename} (${size} bytes)`);
             
             // Check for supported stream methods
             const feature = si.getChild("feature", "http://jabber.org/protocol/feature-neg");
@@ -979,25 +968,24 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
        }
        
        // Only process messages with body
-       const body = stanza.getChildText("body");
-       if (!body && mediaUrls.length === 0) return;
-      
-      console.log(`Received XMPP message - Type: ${messageType}, From: ${from}, To: ${to}, Body: ${body}`);
-      
-      // Strip resource from sender JID for contact check
-      const fromBareJid = from.split("/")[0];
-      
-       // Check for slash commands (in both chat and groupchat)
-       // Behavior:
-       // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
-       // - Chat: Plugin commands handled locally, /help also forwarded to agent
-       // - Chat non-plugin commands: Forwarded to agent only if sender is contact
-       // Plugin commands: list, add, remove, admins, whoami, join, rooms, leave, invite, whiteboard, help
-       if (body && body.startsWith('/')) {
-          console.log(`[SLASH] Command detected from ${from} (bare=${fromBareJid}, type=${messageType}): ${body}`);
-          console.log(`[SLASH] Body starts with '/', length=${body.length}, first char='${body[0]}'`);
-         
-         // Extract room and nick for groupchat
+        const body = stanza.getChildText("body");
+        if (!body && mediaUrls.length === 0) return;
+       
+        debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
+        
+        // Strip resource from sender JID for contact check
+        const fromBareJid = from.split("/")[0];
+        
+         // Check for slash commands (in both chat and groupchat)
+        // Behavior:
+        // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
+        // - Chat: Plugin commands handled locally, /help also forwarded to agent
+        // - Chat non-plugin commands: Forwarded to agent only if sender is contact
+        // Plugin commands: list, add, remove, admins, whoami, join, rooms, leave, invite, whiteboard, help
+        if (body && body.startsWith('/')) {
+           debugLog(`[SLASH] Command: ${body.substring(0, 100)}`);
+          
+          // Extract room and nick for groupchat
          const roomJid = messageType === "groupchat" ? from.split("/")[0] : null;
          const nick = messageType === "groupchat" ? from.split("/")[1] || "" : null;
          const botNick = roomJid ? roomNicks.get(roomJid) : null;
@@ -1037,41 +1025,34 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
         
           // Define plugin-specific commands
           const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'help']);
-         const isPluginCommand = pluginCommands.has(command);
-        
-        // Groupchat handling: only process plugin commands, ignore others
-        console.log(`[SLASH] Groupchat check: type=${messageType}, isPluginCommand=${isPluginCommand}`);
-        if (messageType === "groupchat") {
-          if (!isPluginCommand) {
-            console.log(`Ignoring non-plugin slash command in groupchat: /${command}`);
-            console.log(`[SLASH] Returning early, not forwarding non-plugin command`);
-            return; // DO NOT forward to agents
+          const isPluginCommand = pluginCommands.has(command);
+          
+          debugLog(`[SLASH] type=${messageType}, cmd=/${command}, isPlugin=${isPluginCommand}`);
+         
+          // Groupchat handling: only process plugin commands, ignore others
+          if (messageType === "groupchat") {
+            if (!isPluginCommand) {
+              debugLog(`Ignoring non-plugin slash command in groupchat: /${command}`);
+              return; // DO NOT forward to agents
+            }
           }
-          // For plugin commands in groupchat, continue to handle locally
-          console.log(`Processing plugin command in groupchat: /${command}`);
-        }
-        
-        // Chat handling: plugin commands handled locally, non-plugin forwarded if contact
-        console.log(`[SLASH] Chat check: type=${messageType}, isPluginCommand=${isPluginCommand}`);
-        if (messageType === "chat") {
-          if (isPluginCommand) {
-            // Plugin command in chat - handle locally (except /help special case)
-            console.log(`Processing plugin command in chat: /${command}`);
-          } else {
-            // Non-plugin command in chat - only forward if sender is contact
-            if (contacts.exists(fromBareJid)) {
-              console.log(`Forwarding non-plugin slash command from contact to agent: /${command}`);
-               // Forward to agent for clawdbot processing
-               console.log(`[SLASH] Forwarding non-plugin command to agent: /${command}`);
-               onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
+          
+          // Chat handling: plugin commands handled locally, non-plugin forwarded if contact
+          if (messageType === "chat") {
+            if (isPluginCommand) {
+              // Plugin command in chat - handle locally (except /help special case)
             } else {
-              console.log(`Ignoring non-plugin slash command from non-contact: /${command}`);
-               await sendReply(`❌ Unknown command: /${command}. You must be a contact to use bot commands.`);
-               console.log(`[SLASH] Returning early, not forwarding non-plugin command from non-contact`);
-             }
-             return; // Stop further processing
+              // Non-plugin command in chat - only forward if sender is contact
+              if (contacts.exists(fromBareJid)) {
+                debugLog(`Forwarding non-plugin command /${command} to agent`);
+                onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
+              } else {
+                debugLog(`Ignoring non-plugin slash command from non-contact: /${command}`);
+                await sendReply(`❌ Unknown command: /${command}. You must be a contact to use bot commands.`);
+              }
+              return; // Stop further processing
+            }
           }
-        }
         
          // Process plugin commands (both chat and groupchat)
          try {
@@ -1101,14 +1082,13 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
    /vcard - Manage vCard profile (admin only - direct chat)
    /help - Show this help`);
               
-               // SPECIAL CASE: /help forwards to agent ONLY in direct chat (not groupchat)
-               if (messageType === "chat" && contacts.exists(fromBareJid)) {
-                  console.log(`Forwarding /help to agent for additional help (direct chat only)`);
-                  console.log(`[SLASH] Forwarding /help to agent (chat)`);
-                  onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
-               }
-               // NO FORWARDING in groupchat - only local processing
-              return; // Stop further processing
+                // SPECIAL CASE: /help forwards to agent ONLY in direct chat (not groupchat)
+                if (messageType === "chat" && contacts.exists(fromBareJid)) {
+                   debugLog(`Forwarding /help to agent`);
+                   onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
+                }
+                // NO FORWARDING in groupchat - only local processing
+               return; // Stop further processing
               
              case 'list':
                // Admin only - not available in groupchat
@@ -1386,175 +1366,172 @@ Avatar URL: ${data.avatarUrl || '(not set)'}`);
         return;
       }
       
-      // Normal message processing
-      console.log(`[NORMAL] Processing message (type=${messageType}, body=${body?.substring(0, 50)}${body?.length > 50 ? '...' : ''})`);
-      // Safety check: slash commands should never reach here
-      if (body.startsWith('/')) {
-        console.log(`[ERROR] Slash command reached normal processing! This should not happen.`);
-        return;
-      }
-      if (messageType === "groupchat") {
-        // MUC message
-        const roomJid = from.split("/")[0];
-        const nick = from.split("/")[1] || "";
-        if (!nick) {
-          console.log(`Ignoring room message without nick (likely room subject): ${body}`);
-          return;
-        }
-        console.log(`MUC message from room ${roomJid}, nick ${nick}, forwarding to agent`);
-        const botNick = roomNicks.get(roomJid);
-        console.log(`Bot nick for room ${roomJid}: ${botNick}`);
-        // Ignore messages from ourselves
-        if (botNick && nick === botNick) {
-          console.log(`Ignoring self-message from bot (nick: ${nick})`);
-          return;
-        }
-         console.log(`[NORMAL] Forwarding groupchat message to agent`);
-        // For groupchat, use room JID for session
-        onMessage(roomJid, body, { type: "groupchat", room: roomJid, nick, botNick, mediaUrls, mediaPaths });
-      } else {
-        // Direct message
-        if (contacts.exists(fromBareJid)) {
-          console.log(`Message from contact ${fromBareJid}, forwarding to agent`);
-           console.log(`[NORMAL] Forwarding chat message to agent`);
+       // Normal message processing
+       debugLog(`[NORMAL] Processing message (type=${messageType})`);
+       // Safety check: slash commands should never reach here
+       if (body.startsWith('/')) {
+         debugLog(`[ERROR] Slash command reached normal processing! This should not happen.`);
+         return;
+       }
+       if (messageType === "groupchat") {
+         // MUC message
+         const roomJid = from.split("/")[0];
+         const nick = from.split("/")[1] || "";
+         if (!nick) {
+           debugLog(`Ignoring room message without nick (likely room subject)`);
+           return;
+         }
+         const botNick = roomNicks.get(roomJid);
+         // Ignore messages from ourselves
+         if (botNick && nick === botNick) {
+           debugLog(`Ignoring self-message from bot`);
+           return;
+         }
+         debugLog(`[NORMAL] Forwarding groupchat message from ${nick} to agent`);
+         // For groupchat, use room JID for session
+         onMessage(roomJid, body, { type: "groupchat", room: roomJid, nick, botNick, mediaUrls, mediaPaths });
+       } else {
+         // Direct message
+         if (contacts.exists(fromBareJid)) {
+           debugLog(`[NORMAL] Forwarding chat message from ${fromBareJid} to agent`);
 
-          // Use bare JID for session
-          onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
-        } else {
-          console.log(`Ignoring message from non-contact: ${fromBareJid}`);
-          log.debug(`Ignoring message from non-contact: ${fromBareJid}`);
-        }
-      }
-    }
-  });
+           // Use bare JID for session
+           onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
+         } else {
+           debugLog(`Ignoring message from non-contact: ${fromBareJid}`);
+           log.debug(`Ignoring message from non-contact: ${fromBareJid}`);
+         }
+       }
+     }
+   });
 
   xmpp.start().catch((err: any) => {
     log.error("XMPP start failed", err);
     console.error("XMPP start failed details:", err);
   });
 
-  // HTTP File Upload (XEP-0363) helpers
-  const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}> => {
-    console.log(`Requesting upload slot for ${filename} (${size} bytes)`);
-    
-    // Create IQ request for upload slot
-    const iqId = Math.random().toString(36).substring(2);
-    const requestStanza = xml("iq", { type: "get", to: cfg.domain, id: iqId },
-      xml("request", { xmlns: "urn:xmpp:http:upload:0", filename, size: size.toString() })
-    );
-    
-    try {
-      const response = await xmpp.send(requestStanza);
-      console.log("Upload slot response:", response.toString());
-      
-      const slot = response.getChild("slot", "urn:xmpp:http:upload:0");
-      if (!slot) {
-        throw new Error("No upload slot in response");
-      }
-      
-      const putUrl = slot.getChildText("put");
-      const getUrl = slot.getChildText("get");
-      
-      if (!putUrl || !getUrl) {
-        throw new Error("Missing put or get URL in slot");
-      }
-      
-      // Parse optional headers
-      const putHeaders: Record<string, string> = {};
-      const putElement = slot.getChild("put");
-      if (putElement) {
-        const headerElements = putElement.getChildren("header");
-        for (const header of headerElements) {
-          const name = header.attrs.name;
-          const value = header.getText();
-          if (name && value) {
-            putHeaders[name] = value;
-          }
+   // HTTP File Upload (XEP-0363) helpers
+   const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}> => {
+     debugLog(`Requesting upload slot for ${filename} (${size} bytes)`);
+     
+     // Create IQ request for upload slot
+     const iqId = Math.random().toString(36).substring(2);
+     const requestStanza = xml("iq", { type: "get", to: cfg.domain, id: iqId },
+       xml("request", { xmlns: "urn:xmpp:http:upload:0", filename, size: size.toString() })
+     );
+     
+     try {
+       const response = await xmpp.send(requestStanza);
+       debugLog("Upload slot response received");
+       
+       const slot = response.getChild("slot", "urn:xmpp:http:upload:0");
+       if (!slot) {
+         throw new Error("No upload slot in response");
+       }
+       
+       const putUrl = slot.getChildText("put");
+       const getUrl = slot.getChildText("get");
+       
+       if (!putUrl || !getUrl) {
+         throw new Error("Missing put or get URL in slot");
+       }
+       
+       // Parse optional headers
+       const putHeaders: Record<string, string> = {};
+       const putElement = slot.getChild("put");
+       if (putElement) {
+         const headerElements = putElement.getChildren("header");
+         for (const header of headerElements) {
+           const name = header.attrs.name;
+           const value = header.getText();
+           if (name && value) {
+             putHeaders[name] = value;
+           }
         }
-      }
-      
-      console.log(`Upload slot obtained: PUT ${putUrl}, GET ${getUrl}`);
-      return { putUrl, getUrl, headers: Object.keys(putHeaders).length > 0 ? putHeaders : undefined };
-    } catch (err) {
-      console.error("Failed to request upload slot:", err);
-      throw err;
-    }
-  };
+       }
+       
+       debugLog(`Upload slot obtained for ${filename}`);
+       return { putUrl, getUrl, headers: Object.keys(putHeaders).length > 0 ? putHeaders : undefined };
+     } catch (err) {
+       console.error("Failed to request upload slot:", err);
+       throw err;
+     }
+   };
 
-  const uploadFileViaHTTP = async (filePath: string, putUrl: string, headers?: Record<string, string>): Promise<void> => {
-    console.log(`Uploading file ${filePath} to ${putUrl}`);
-    
-    try {
-      // Read file
-      const fileBuffer = await fs.promises.readFile(filePath);
-      const fileSize = fileBuffer.length;
-      
-      // Prepare headers
-      const fetchHeaders: Record<string, string> = {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': fileSize.toString(),
-      };
-      
-      if (headers) {
-        Object.assign(fetchHeaders, headers);
-      }
-      
-      // Upload via PUT
+   const uploadFileViaHTTP = async (filePath: string, putUrl: string, headers?: Record<string, string>): Promise<void> => {
+     debugLog(`Uploading file ${filePath}`);
+     
+     try {
+       // Read file
+       const fileBuffer = await fs.promises.readFile(filePath);
+       const fileSize = fileBuffer.length;
+       
+       // Prepare headers
+       const fetchHeaders: Record<string, string> = {
+         'Content-Type': 'application/octet-stream',
+         'Content-Length': fileSize.toString(),
+       };
+       
+       if (headers) {
+         Object.assign(fetchHeaders, headers);
+       }
+       
+       // Upload via PUT
       const response = await fetch(putUrl, {
         method: 'PUT',
         headers: fetchHeaders,
         body: fileBuffer,
       });
       
-      if (!response.ok) {
-        throw new Error(`HTTP upload failed: ${response.status} ${response.statusText}`);
-      }
-      
-      console.log(`File uploaded successfully: ${filePath}`);
-    } catch (err) {
-      console.error("File upload failed:", err);
-      throw err;
-    }
-  };
+       if (!response.ok) {
+         throw new Error(`HTTP upload failed: ${response.status} ${response.statusText}`);
+       }
+       
+       debugLog(`File uploaded successfully`);
+     } catch (err) {
+       console.error("File upload failed:", err);
+       throw err;
+     }
+   };
 
-  const sendFileWithHTTPUpload = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
-    try {
-      // Get file stats
-      const stats = await fs.promises.stat(filePath);
-      const filename = path.basename(filePath);
-      const size = stats.size;
-      
-      // Request upload slot
-      const slot = await requestUploadSlot(filename, size);
-      
-      // Upload file
-      await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
-      
-      // Send message with file URL
-      const messageType = isGroupChat ? "groupchat" : "chat";
-      const message = xml("message", { type: messageType, to },
-        text ? xml("body", {}, text) : null,
-        xml("x", { xmlns: "jabber:x:oob" },
+   const sendFileWithHTTPUpload = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
+     try {
+       // Get file stats
+       const stats = await fs.promises.stat(filePath);
+       const filename = path.basename(filePath);
+       const size = stats.size;
+       
+       // Request upload slot
+       const slot = await requestUploadSlot(filename, size);
+       
+       // Upload file
+       await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
+       
+       // Send message with file URL
+       const messageType = isGroupChat ? "groupchat" : "chat";
+       const message = xml("message", { type: messageType, to },
+         text ? xml("body", {}, text) : null,
+         xml("x", { xmlns: "jabber:x:oob" },
           xml("url", {}, slot.getUrl)
         )
-      );
-      
-      await xmpp.send(message);
-      console.log(`File sent successfully to ${to}: ${slot.getUrl}`);
-    } catch (err) {
-      console.error("Failed to send file via HTTP Upload:", err);
-      throw err;
-    }
-  };
+       );
+       
+       await xmpp.send(message);
+       debugLog(`File sent successfully to ${to}`);
+     } catch (err) {
+       console.error("Failed to send file via HTTP Upload:", err);
+       throw err;
+     }
+   };
 
-  // SI File Transfer (XEP-0096) helpers (fallback)
-  const sendFileWithSITransfer = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
-    console.log(`Attempting SI file transfer to ${to} for ${filePath}`);
-    // For now, fallback to out-of-band URL sharing
-    // TODO: Implement proper SI file transfer with bytestreams
-    const filename = path.basename(filePath);
-    const message = `[File: ${filename}] ${text || ''}`;
-    if (isGroupChat) {
+   // SI File Transfer (XEP-0096) helpers (fallback)
+   const sendFileWithSITransfer = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
+     debugLog(`Attempting SI file transfer to ${to}`);
+     // For now, fallback to out-of-band URL sharing
+     // TODO: Implement proper SI file transfer with bytestreams
+     const filename = path.basename(filePath);
+     const message = `[File: ${filename}] ${text || ''}`;
+     if (isGroupChat) {
       await xmpp.sendGroupchat(to, message);
     } else {
       await xmpp.send(to, message);
@@ -1669,78 +1646,78 @@ export function register(api: any) {
   const isCliRegistration = !api.runtime;
   console.log(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
   console.log(`api.runtime available: ${api.runtime ? 'yes' : 'no'}`);
-  debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
-  
+debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
+
    // Debug: Inspect the api object
-   console.log("=== API OBJECT INSPECTION ===");
-   console.log("api keys:", Object.keys(api));
+   debugLog("=== API OBJECT INSPECTION ===");
+   debugLog("api keys: " + Object.keys(api).join(", "));
    const allApiProps: string[] = [];
    for (const key in api) {
      allApiProps.push(key);
    }
-  console.log("All api properties:", allApiProps);
-  const apiMethods = allApiProps.filter(k => typeof api[k] === 'function');
-  console.log("All api methods:", apiMethods);
-  
-  // Check for runtime access (only for Gateway registration, not CLI)
-  if (api.runtime && !isCliRegistration) {
-    pluginRuntime = api.runtime;
-    console.log("✅ api.runtime set for Gateway registration, keys:", Object.keys(api.runtime));
+   debugLog("All api properties: " + allApiProps.join(", "));
+   const apiMethods = allApiProps.filter(k => typeof api[k] === 'function');
+   debugLog("All api methods: " + apiMethods.join(", "));
+   
+   // Check for runtime access (only for Gateway registration, not CLI)
+   if (api.runtime && !isCliRegistration) {
+     pluginRuntime = api.runtime;
+     debugLog("api.runtime set for Gateway registration, keys: " + Object.keys(api.runtime).join(", "));
 
-    if (api.runtime.channel) {
-      console.log("api.runtime.channel exists, keys:", Object.keys(api.runtime.channel));
+     if (api.runtime.channel) {
+       debugLog("api.runtime.channel exists, keys: " + Object.keys(api.runtime.channel).join(", "));
 
-      // Check if there's a generic message forwarding method
-      const channelMethods = Object.keys(api.runtime.channel);
-      console.log("Channel methods available:", channelMethods);
+       // Check if there's a generic message forwarding method
+       const channelMethods = Object.keys(api.runtime.channel);
+       debugLog("Channel methods available: " + channelMethods.join(", "));
 
-      // Look for text, message, or routing methods
-      const possibleForwardMethods = ['text', 'message', 'routing', 'dispatch', 'receive'];
-      for (const method of possibleForwardMethods) {
-        if (api.runtime.channel[method]) {
-          console.log(`✅ Found channel.${method}:`, typeof api.runtime.channel[method]);
+       // Look for text, message, or routing methods
+       const possibleForwardMethods = ['text', 'message', 'routing', 'dispatch', 'receive'];
+       for (const method of possibleForwardMethods) {
+         if (api.runtime.channel[method]) {
+           debugLog("Found channel." + method);
 
-          // If it's an object, log its methods
-          if (typeof api.runtime.channel[method] === 'object') {
-            const subMethods = Object.keys(api.runtime.channel[method]);
-            console.log(`  channel.${method} methods:`, subMethods.slice(0, 10)); // First 10 methods
-          }
-        }
-      }
+           // If it's an object, log its methods
+           if (typeof api.runtime.channel[method] === 'object') {
+             const subMethods = Object.keys(api.runtime.channel[method]);
+             debugLog("  channel." + method + " methods: " + subMethods.slice(0, 10).join(", "));
+           }
+         }
+       }
 
-      // Also check session and activity which might handle messages
-      if (api.runtime.channel.session) {
-        const sessionMethods = Object.keys(api.runtime.channel.session);
-        console.log("channel.session methods:", sessionMethods.slice(0, 10));
-      }
-      if (api.runtime.channel.activity) {
-        const activityMethods = Object.keys(api.runtime.channel.activity);
-        console.log("channel.activity methods:", activityMethods.slice(0, 10));
-      }
-    }
-  } else if (isCliRegistration) {
-    console.log("ℹ️ CLI registration - not setting pluginRuntime");
-  } else {
-    console.log("⚠️ api.runtime not available");
-  }
-  console.log("=== END API INSPECTION ===");
-  
-  // Check for emit method
-  console.log("Checking for api.emit method...");
-  if (typeof api.emit === 'function') {
-    console.log("✅ api.emit is available");
-  } else {
-    console.log("❌ api.emit not found");
-    // Check if emit is on a different object
-    if (api.runtime?.emit) {
-      console.log("✅ api.runtime.emit is available");
-    }
-  }
-  
-  // Try to use api.on for event-based message forwarding
-  if (typeof api.on === 'function') {
-    console.log("api.on is available for listening to events");
-  }
+       // Also check session and activity which might handle messages
+       if (api.runtime.channel.session) {
+         const sessionMethods = Object.keys(api.runtime.channel.session);
+         debugLog("channel.session methods: " + sessionMethods.slice(0, 10).join(", "));
+       }
+       if (api.runtime.channel.activity) {
+         const activityMethods = Object.keys(api.runtime.channel.activity);
+         debugLog("channel.activity methods: " + activityMethods.slice(0, 10).join(", "));
+       }
+     }
+   } else if (isCliRegistration) {
+     debugLog("CLI registration - not setting pluginRuntime");
+   } else {
+     debugLog("api.runtime not available");
+   }
+   debugLog("=== END API INSPECTION ===");
+   
+   // Check for emit method
+   debugLog("Checking for api.emit method...");
+   if (typeof api.emit === 'function') {
+     debugLog("api.emit is available");
+   } else {
+     debugLog("api.emit not found");
+     // Check if emit is on a different object
+     if (api.runtime?.emit) {
+       debugLog("api.runtime.emit is available");
+     }
+   }
+   
+   // Try to use api.on for event-based message forwarding
+   if (typeof api.on === 'function') {
+     debugLog("api.on is available for listening to events");
+   }
 
   const xmppChannelPlugin = {
       id: "xmpp",
@@ -1939,47 +1916,24 @@ export function register(api: any) {
         }
       },
     },
-    gateway: {
+gateway: {
       startAccount: async (ctx: any) => {
-        console.log("XMPP gateway.startAccount called");
-        
-        // Log ALL ctx methods to find the inbound message method
-        console.log("=== CTX INSPECTION ===");
-        console.log("ctx keys:", Object.keys(ctx));
-        const allProps: string[] = [];
-        for (const key in ctx) {
-          allProps.push(key);
-        }
-        console.log("All ctx properties (including inherited):", allProps);
-        const methods = allProps.filter(k => typeof ctx[k] === 'function');
-        console.log("All ctx methods:", methods);
-        
-        // Check specific possible inbound methods
-        const possibleInboundMethods = [
-          'receive', 'receiveText', 'receiveMessage', 'inbound',
-          'dispatch', 'dispatchInbound', 'handleInbound', 'onMessage',
-          'message', 'text', 'chat', 'send', 'post'
-        ];
-        for (const method of possibleInboundMethods) {
-          if (typeof ctx[method] === 'function') {
-            console.log(`✅ Found potential inbound method: ctx.${method}`);
-          }
-        }
-        console.log("=== END CTX INSPECTION ===");
+        const log = ctx.log;
+        log?.info("XMPP gateway.startAccount called");
+        debugLog("XMPP gateway.startAccount called");
         
         const account = ctx.account;
         const config = account.config;
-        const log = ctx.log;
         
-        console.log(`XMPP startAccount called for account ${account.accountId}`);
+        debugLog(`XMPP startAccount called for account ${account.accountId}`);
         
         if (!config?.jid?.trim() || !config?.password?.trim()) {
-          console.log("Missing jid or password");
+          debugLog("Missing jid or password");
           throw new Error("XMPP account missing jid or password");
         }
         
         log?.info(`[${account.accountId}] starting XMPP connection to ${config.service}`);
-        console.log(`Starting XMPP connection to ${config.service}`);
+        debugLog(`Starting XMPP connection to ${config.service}`);
         
         const contacts = new Contacts(config.dataDir);
         const contactList = contacts.list();
@@ -2004,35 +1958,20 @@ export function register(api: any) {
         const dataDir = config.dataDir || path.join(process.cwd(), 'data');
         const messageStore = new MessageStore(dataDir);
         
-        let isRunning = true;
-
-        // Use pluginRuntime (from api.runtime) instead of ctx.runtime
-        const runtime = pluginRuntime;
-        console.log("Using pluginRuntime in startAccount:", runtime ? "exists" : "undefined");
-        console.log("pluginRuntime.channel exists?", runtime?.channel ? "yes" : "no");
-        if (runtime?.channel) {
-          console.log("pluginRuntime.channel methods:", Object.keys(runtime.channel));
-        }
-        
-        const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
-          if (!isRunning) {
-            console.log("XMPP message ignored - plugin not running");
-            return;
-          }
-
-           console.log("=== XMPP INBOUND MESSAGE ===");
-           console.log("From:", from);
-           console.log("Body:", body);
-           console.log("Options:", JSON.stringify(options, null, 2));
-           console.log("runtime (pluginRuntime):", runtime ? "exists" : "undefined");
-           if (runtime) {
-             console.log("runtime.channel:", runtime.channel ? "exists" : "undefined");
+         let isRunning = true;
+ 
+         // Use pluginRuntime (from api.runtime) instead of ctx.runtime
+         const runtime = pluginRuntime;
+         debugLog("Using pluginRuntime in startAccount");
+         
+         const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
+           if (!isRunning) {
+             debugLog("XMPP message ignored - plugin not running");
+             return;
            }
-           console.log("pluginRuntime (global):", pluginRuntime ? "exists" : "undefined");
-           if (pluginRuntime) {
-             console.log("pluginRuntime.channel:", pluginRuntime.channel ? "exists" : "undefined");
-           }
-           
+
+            debugLog(`XMPP inbound from ${from}`);
+            
               // Helper to build context payload based on message type
              // Uses shared session key (bare JID) for both direct and groupchat
               const buildContextPayload = (sessionKey: string, senderBareJid: string) => {
@@ -2050,7 +1989,7 @@ export function register(api: any) {
                 const chatType = "direct" as const;
                 const conversationLabel = `XMPP: ${senderBareJid}`;
                 const botNick = options?.botNick || null;
-                console.log(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}, chatType=direct`);
+                debugLog(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}`);
 
                return {
                  Body: body,
