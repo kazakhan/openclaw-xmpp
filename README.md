@@ -6,6 +6,25 @@ A full-featured XMPP channel plugin for ClawdBot that enables XMPP/Jabber integr
 
 The XMPP plugin is now fully functional with CLI command support, shared sessions, and memory continuity!
 
+## Security
+
+The XMPP plugin implements multiple security measures:
+
+### Input Validation
+- **Path Traversal Protection**: File downloads and transfers sanitize filenames to prevent directory traversal attacks
+- **Rate Limiting**: Command rate limiting per JID (10 commands/minute) to prevent abuse
+- **Queue Enforcement**: Message queue limited to 100 messages to prevent memory exhaustion
+
+### Rate Limiting
+- Commands are rate limited per sender JID
+- Users exceeding the limit receive: "Too many commands. Please wait before sending more."
+- Rate limit window: 1 minute
+
+### Path Traversal Protection
+- Download filenames are sanitized: illegal characters replaced with `_`
+- Paths are normalized and checked for `..` or absolute paths
+- IBB file transfers also sanitize filenames on completion
+
 ## Shared Sessions & Memory
 
 The XMPP plugin supports **shared session memory** between direct chat and groupchat:
@@ -17,7 +36,6 @@ The XMPP plugin supports **shared session memory** between direct chat and group
 
 ### User Identification
 - **Occupant-ID (XEP-0327)**: Server provides stable occupant IDs for automatic identification
-- **Nick Mapping**: Use `/mapnick :nickname user@domain.com` to manually map room nicks to JIDs
 - **Known Users**: When a user messages directly first, their nick is learned for future groupchat sessions
 
 ### Session Memory Configuration
@@ -49,7 +67,6 @@ clawdbot xmpp join <room> [nick]
 clawdbot xmpp poll
 clawdbot xmpp clear
 clawdbot xmpp queue
-clawdbot xmpp mapnick :nickname user@domain.com  # Map room nick to JID
 ```
 
 Or use the standard ClawdBot message command:
@@ -70,7 +87,6 @@ clawdbot message send --channel xmpp --target user@domain.com --message "Hello"
 
 ### 👥 Shared Sessions & Memory
 - **Session Continuity**: Same session used for direct chat and groupchat when user identified
-- **Nick Mapping**: `/mapnick` command for manual nick-to-JID mapping
 - **Automatic Learning**: Users who message directly have their nicks learned for groupchat
 
 ### 👥 Contact & Roster Management
@@ -93,7 +109,6 @@ clawdbot xmpp nick <jid> <name>  # Set roster nickname
 clawdbot xmpp poll               # Poll message queue
 clawdbot xmpp clear              # Clear message queue
 clawdbot xmpp queue              # Show queue status
-clawdbot xmpp mapnick :nick jid  # Map room nick to JID for shared sessions
 ```
 
 ### 🔄 Message Queue System

@@ -143,8 +143,6 @@ export class MessageStore {
       data.messages.push(newMessage);
       data.meta.roomJid = options.roomJid;
       this.saveMessageFile(filePath, data);
-      
-      console.log(`[MessageStore] Saved ${options.direction} message to group ${options.roomJid} on ${date}`);
     } else {
       const filePath = this.getDirectFilePath(options.fromBareJid);
       const data = this.loadMessageFile(filePath);
@@ -167,8 +165,6 @@ export class MessageStore {
       data.messages.push(newMessage);
       data.meta.chatJid = options.fromBareJid;
       this.saveMessageFile(filePath, data);
-      
-      console.log(`[MessageStore] Saved ${options.direction} message from direct ${options.fromBareJid}`);
     }
   }
   

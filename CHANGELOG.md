@@ -5,6 +5,30 @@ All notable changes to the ClawdBot XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-04
+
+### Security
+- **Path Traversal Protection**: Added filename sanitization for file downloads and IBB transfers to prevent directory traversal attacks
+- **Rate Limiting**: Added per-JID rate limiting (10 commands/minute) to prevent abuse
+- **Message Queue Limits**: Queue limited to 100 messages to prevent memory exhaustion
+- **Error Message Sanitization**: Replaced internal error details with generic user-friendly messages
+
+### Added
+- **Message Persistence**: Inbound and outbound messages now saved to `data/messages/direct/<jid>.json` and `data/messages/group/<room>/<date>.json`
+- **MessageStore Integration**: Uses MessageStore class for reliable JSON persistence with max 256 messages per file
+
+### Removed
+- **Nick-to-JID Mapping**: Removed `/mapnick` command and `nickToJidMap` session mapping functionality
+
+### Fixed
+- **TypeScript Errors**: Fixed duplicate `xmppClients` export, missing type properties, and hoisting issues
+- **CLI Registration**: Fixed import path for commands module
+- **Outbound Message Saving**: Fixed saving to recipient's conversation file instead of bot's file
+- **Dispatch Blocking**: Made dispatch fire-and-forget to prevent gateway from blocking on slow agent responses
+
+### Known Issues
+- AI occasionally makes catastrophic mistakes by using git commands without permission, overwriting local changes, and failing to maintain proper backups
+
 ## [1.1.0] - 2026-02-03
 
 ### Fixed

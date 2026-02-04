@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import { emptyPluginConfigSchema } from "clawdbot/plugin-sdk";
-import { MessageStore } from "./src/messageStore.js";
 
 // Simple file logger for debugging
 const debugLog = (msg: string) => {
@@ -27,6 +26,10 @@ export const xmppClients = new Map<string, any>();
 // Store runtime for message forwarding
 let pluginRuntime: any = null;
 
+// Track nick→JID mappings for groupchat users (learned from direct messages)
+// Key format: ":nick" (room-agnostic) or "roomJid:nick" (room-specific)
+export const nickToJidMap = new Map<string, string>();
+
 // Message queue for inbound messages (workaround for missing inbound API)
 interface QueuedMessage {
   id: string;
@@ -39,34 +42,6 @@ interface QueuedMessage {
 
 const messageQueue: QueuedMessage[] = [];
 const messageQueueMaxSize = 100;
-
-// Rate limiting for commands (per JID)
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const rateLimitMaxRequests = 10; // Max commands per window
-const rateLimitWindowMs = 60000; // 1 minute window
-
-function checkRateLimit(jid: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(jid);
-  
-  if (!entry || now - entry.windowStart > rateLimitWindowMs) {
-    // Start new window
-    rateLimitMap.set(jid, { count: 1, windowStart: now });
-    return true;
-  }
-  
-  if (entry.count >= rateLimitMaxRequests) {
-    console.log(`[RATE LIMIT] Rejected command from ${jid} (${entry.count} requests in window)`);
-    return false;
-  }
-  
-  entry.count++;
-  return true;
-}
 
 // Set TLS environment variable at module load time
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -354,7 +329,7 @@ function clearOldMessages(maxAgeMs: number = 24 * 60 * 60 * 1000) {
 }
 
 // Export queue functions for commands module
-export { addToQueue, getUnprocessedMessages, markAsProcessed, clearOldMessages, messageQueue };
+export { addToQueue, getUnprocessedMessages, markAsProcessed, clearOldMessages, messageQueue, xmppClients };
 
 async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => void) {
   // Helper to get default resource/nick from JID local part
@@ -378,26 +353,11 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
        fs.mkdirSync(tempDir, { recursive: true });
      }
      
-      // Generate filename from URL with path traversal protection
-      const urlObj = new URL(url);
-      const pathname = urlObj.pathname;
-      let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
-      
-      // Validate filename - only allow safe characters, no path separators
-      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-      if (safeFilename !== filename) {
-        console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
-        filename = safeFilename;
-      }
-      
-      // Ensure filename doesn't escape tempDir using path normalization
-      const normalizedPath = path.normalize(filename);
-      if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-        filename = `file_${Date.now()}_${safeFilename}`;
-        console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
-      }
-      
-      const filePath = path.join(tempDir, filename);
+     // Generate filename from URL
+     const urlObj = new URL(url);
+     const pathname = urlObj.pathname;
+     const filename = path.basename(pathname) || `file_${Date.now()}.bin`;
+     const filePath = path.join(tempDir, filename);
      
      try {
        const response = await fetch(url);
@@ -762,29 +722,20 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
            const resultIq = xml("iq", { to: from, type: "result", id });
            await xmpp.send(resultIq);
            
-            // If we've received all data, close session and process file
-            if (session.size > 0 && session.received >= session.size) {
-              console.log(`File ${session.filename} received completely (${session.received} bytes)`);
-              // Save file to downloads directory with path traversal protection
-              const tempDir = path.join(cfg.dataDir, 'downloads');
-              if (!fs.existsSync(tempDir)) {
-                fs.mkdirSync(tempDir, { recursive: true });
-              }
-              
-              // Sanitize filename from sender to prevent path traversal
-              let safeFilename = session.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const normalizedPath = path.normalize(safeFilename);
-              if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-                safeFilename = `file_${Date.now()}_${safeFilename}`;
-                console.log(`[SECURITY] IBB: Rejected unsafe filename, using: ${safeFilename}`);
-              }
-              
-              const filePath = path.join(tempDir, safeFilename);
-              await fs.promises.writeFile(filePath, session.data);
-              console.log(`File saved to ${filePath}`);
-              ibbSessions.delete(sid);
-              // TODO: Notify about incoming file
-            }
+           // If we've received all data, close session and process file
+           if (session.size > 0 && session.received >= session.size) {
+             console.log(`File ${session.filename} received completely (${session.received} bytes)`);
+             // Save file to downloads directory
+             const tempDir = path.join(cfg.dataDir, 'downloads');
+             if (!fs.existsSync(tempDir)) {
+               fs.mkdirSync(tempDir, { recursive: true });
+             }
+             const filePath = path.join(tempDir, session.filename);
+             await fs.promises.writeFile(filePath, session.data);
+             console.log(`File saved to ${filePath}`);
+             ibbSessions.delete(sid);
+             // TODO: Notify about incoming file
+           }
          } catch (err) {
            console.error(`Error processing IBB data:`, err);
            const errorIq = xml("iq", { to: from, type: "error", id },
@@ -797,28 +748,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          return;
        }
        
-        const ibbClose = stanza.getChild("close", "http://jabber.org/protocol/ibb");
-        if (ibbClose) {
-          const sid = ibbClose.attrs.sid;
-          const session = ibbSessions.get(sid);
-          if (session) {
-            console.log(`IBB session ${sid} closed, received ${session.received} bytes`);
-            // Save file if we have data with path traversal protection
-            if (session.received > 0) {
-              const tempDir = path.join(cfg.dataDir, 'downloads');
-              if (!fs.existsSync(tempDir)) {
-                fs.mkdirSync(tempDir, { recursive: true });
-              }
-              
-              // Sanitize filename from sender
-              let safeFilename = session.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const normalizedPath = path.normalize(safeFilename);
-              if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-                safeFilename = `file_${Date.now()}_${safeFilename}`;
-                console.log(`[SECURITY] IBB Close: Rejected unsafe filename, using: ${safeFilename}`);
-              }
-              
-              const filePath = path.join(tempDir, safeFilename);
+       const ibbClose = stanza.getChild("close", "http://jabber.org/protocol/ibb");
+       if (ibbClose) {
+         const sid = ibbClose.attrs.sid;
+         const session = ibbSessions.get(sid);
+         if (session) {
+           console.log(`IBB session ${sid} closed, received ${session.received} bytes`);
+           // Save file if we have data
+           if (session.received > 0) {
+             const tempDir = path.join(cfg.dataDir, 'downloads');
+             if (!fs.existsSync(tempDir)) {
+               fs.mkdirSync(tempDir, { recursive: true });
+             }
+             const filePath = path.join(tempDir, session.filename);
              await fs.promises.writeFile(filePath, session.data);
              console.log(`File saved to ${filePath}`);
              // TODO: Notify about incoming file
@@ -1005,10 +947,10 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          
          // Parse command and arguments
           const parts = body?.trim()?.split(/\s+/) || [];
-          const command = parts[0].substring(1).toLowerCase(); // Remove leading '/'
-          const args = parts.slice(1);
-          
-          // Helper to send reply (works for both chat and groupchat)
+         const command = parts[0].substring(1).toLowerCase(); // Remove leading '/'
+         const args = parts.slice(1);
+        
+         // Helper to send reply (works for both chat and groupchat)
           const sendReply = async (replyText: string) => {
             try {
               // For groupchat, send to room JID only (without nick)
@@ -1029,15 +971,9 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
               console.error("Error details:", err.message || err);
             }
           };
-          
-          // Rate limit check
-          if (!checkRateLimit(fromBareJid)) {
-            await sendReply("❌ Too many commands. Please wait before sending more.");
-            return;
-          }
         
-          // Define plugin-specific commands
-          const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'help']);
+         // Define plugin-specific commands
+         const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'mapnick', 'help']);
          const isPluginCommand = pluginCommands.has(command);
         
         // Groupchat handling: only process plugin commands, ignore others
@@ -1087,8 +1023,8 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
            };
            
            switch (command) {
-             case 'help':
-                   await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
+              case 'help':
+                    await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
   /list - Show contacts (admin only - direct chat)
   /add <jid> [name] - Add contact (admin only - direct chat)
   /remove <jid> - Remove contact (admin only - direct chat)
@@ -1096,11 +1032,12 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
   /whoami - Show your info (room/nick in groupchat)
   /join <room> [nick] - Join MUC room (admin only - direct chat)
   /rooms - List joined rooms (admin only - direct chat)
-   /leave <room> - Leave MUC room (admin only - direct chat)
-   /invite <contact> <room> - Invite contact to room (admin only - direct chat)
-   /whiteboard - Whiteboard drawing and image sharing
-   /vcard - Manage vCard profile (admin only - direct chat)
-   /help - Show this help`);
+  /leave <room> - Leave MUC room (admin only - direct chat)
+  /invite <contact> <room> - Invite contact to room (admin only - direct chat)
+  /mapnick <room:nick> <jid> - Map nick to JID for shared sessions (admin only)
+  /whiteboard - Whiteboard drawing and image sharing
+  /vcard - Manage vCard profile (admin only - direct chat)
+  /help - Show this help`);
               
                // SPECIAL CASE: /help forwards to agent ONLY in direct chat (not groupchat)
                if (messageType === "chat" && contacts.exists(fromBareJid)) {
@@ -1241,7 +1178,7 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
                 await sendReply(`✅ Joined room: ${room} as ${nick}`);
               } catch (err) {
                 console.error("Error joining room:", err);
-                await sendReply(`❌ Failed to join room. Please check the room address and try again.`);
+                await sendReply(`❌ Failed to join room: ${err.message}`);
               }
               return;
               
@@ -1289,11 +1226,159 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
                 const room = resolveRoomJid(args[0]);
                 joinedRooms.delete(room); // Still remove from tracking since we attempted to leave
                 roomNicks.delete(room);
-                await sendReply(`❌ Failed to leave room. Please try again.`);
+                await sendReply(`❌ Failed to leave room: ${err.message}`);
               }
+              return;
+              
+             case 'invite':
+               // Admin only - not available in groupchat
+               if (!checkAdminAccess()) {
+                 await sendReply(messageType === "groupchat" 
+                   ? "❌ Admin commands not available in groupchat. Use direct message."
+                   : "❌ Permission denied. Admin access required.");
+                 return;
+               }
+              if (args.length < 2) {
+                await sendReply("Usage: /invite <contact> <room>");
                 return;
-
-              case 'vcard':
+              }
+              try {
+                const contact = args[0];
+                const roomRaw = args[1];
+                const room = resolveRoomJid(roomRaw);
+                const invite = xml("message", { to: room },
+                  xml("x", { xmlns: "http://jabber.org/protocol/muc#user" },
+                    xml("invite", { to: contact })
+                  )
+                );
+                await xmpp.send(invite);
+                await sendReply(`✅ Invited ${contact} to ${room}`);
+              } catch (err) {
+                console.error("Error sending invite:", err);
+                await sendReply(`❌ Failed to send invite: ${err.message}`);
+              }
+               return;
+               
+              case 'whiteboard':
+                // Whiteboard command integration
+                if (args.length === 0 || args[0] === 'help') {
+                  await sendReply(`Whiteboard commands:
+/whiteboard help - Show this help
+/whiteboard draw <prompt> - Generate image from text prompt (forwards to agent)
+/whiteboard send <image_url> - Send whiteboard image via file transfer
+/whiteboard status - Check whiteboard availability`);
+                  return;
+                }
+                
+                const subcommand = args[0].toLowerCase();
+                switch (subcommand) {
+                  case 'draw':
+                    if (args.length < 2) {
+                      await sendReply("Usage: /whiteboard draw <prompt>");
+                      return;
+                    }
+                    const prompt = args.slice(1).join(' ');
+                    console.log(`Whiteboard draw request from ${from}: "${prompt}"`);
+                    
+                    // Forward to agent with whiteboard flag
+                    // Create modified body for agent processing
+                    const whiteboardBody = `whiteboard draw: ${prompt}`;
+                    
+                    // Determine if this is a groupchat or direct message
+                    if (messageType === "groupchat") {
+                      const roomJid = from.split("/")[0];
+                      const nick = from.split("/")[1] || "";
+                      const botNick = roomNicks.get(roomJid);
+                      
+                      // Ignore self-messages
+                      if (botNick && nick === botNick) {
+                        console.log(`Ignoring whiteboard self-message from bot`);
+                        return;
+                      }
+                      
+                       // Forward to agent with whiteboard metadata
+                       console.log(`[SLASH] Forwarding whiteboard draw to agent (groupchat): "${prompt}"`);
+                       onMessage(roomJid, whiteboardBody, { 
+                        type: "groupchat", 
+                        room: roomJid, 
+                        nick, 
+                        botNick, 
+                        mediaUrls: [],
+                        mediaPaths: [],
+                        whiteboardPrompt: prompt,
+                        whiteboardRequest: true
+                      });
+                     } else {
+                       // Direct message
+                       console.log(`[SLASH] Forwarding whiteboard draw to agent (chat): "${prompt}"`);
+                       onMessage(fromBareJid, whiteboardBody, { 
+                        type: "chat", 
+                        mediaUrls: [],
+                        mediaPaths: [],
+                        whiteboardPrompt: prompt,
+                        whiteboardRequest: true
+                      });
+                    }
+                    
+                    // Send acknowledgement
+                    await sendReply(`🎨 Whiteboard drawing requested: "${prompt}". Processing...`);
+                    return;
+                    
+                  case 'send':
+                    if (args.length < 2) {
+                      await sendReply("Usage: /whiteboard send <image_url>");
+                      return;
+                    }
+                    const imageUrl = args[1];
+                    
+                    // Check if we have a valid URL
+                    try {
+                      new URL(imageUrl);
+                      await sendReply(`🖼️ Whiteboard image URL received: ${imageUrl}. Sending via file transfer...`);
+                      
+                      // Forward to agent with image URL
+                      const imageBody = `whiteboard send image: ${imageUrl}`;
+                      if (messageType === "groupchat") {
+                        const roomJid = from.split("/")[0];
+                        const nick = from.split("/")[1] || "";
+                        const botNick = roomNicks.get(roomJid);
+                        
+                        if (!(botNick && nick === botNick)) {
+                           console.log(`[SLASH] Forwarding whiteboard send to agent (groupchat): ${imageUrl}`);
+                           onMessage(roomJid, imageBody, { 
+                             type: "groupchat", 
+                             room: roomJid, 
+                             nick, 
+                             botNick, 
+                             mediaUrls: [imageUrl],
+                             mediaPaths: [],
+                             whiteboardImage: true
+                           });
+                         }
+                       } else {
+                         console.log(`[SLASH] Forwarding whiteboard send to agent (chat): ${imageUrl}`);
+                         onMessage(fromBareJid, imageBody, { 
+                           type: "chat", 
+                           mediaUrls: [imageUrl],
+                           mediaPaths: [],
+                           whiteboardImage: true
+                         });
+                       }
+                    } catch (err) {
+                      await sendReply(`❌ Invalid URL: ${imageUrl}. Please provide a valid http:// or https:// URL.`);
+                    }
+                    return;
+                    
+                  case 'status':
+                    await sendReply(`✅ Whiteboard support enabled:
+• Image generation: Forwarded to agent system
+• File transfer: HTTP Upload (XEP-0363) and SI transfer (XEP-0096)
+• Max file size: Configurable via server
+• Supported formats: PNG, JPEG, GIF, WebP`);
+                return;
+              }
+              
+               case 'vcard':
                  // vCard management
                  if (!checkAdminAccess()) {
                    await sendReply(messageType === 'groupchat' 
@@ -1301,8 +1386,8 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
                      : '❌ Permission denied. Admin access required.');
                    return;
                  }
-                if (args.length === 0 || args[0] === 'help') {
-                  await sendReply(`vCard commands:
+                 if (args.length === 0 || args[0] === 'help') {
+                   await sendReply(`vCard commands:
 /vcard help - Show this help
 /vcard get - Show current vCard fields
 /vcard set fn <value> - Set Full Name
@@ -1310,19 +1395,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
 /vcard set url <value> - Set URL
 /vcard set desc <value> - Set Description
 /vcard set avatarUrl <value> - Set Avatar URL`);
-                  return;
-                }
-                const subcmd = args[0].toLowerCase();
-                if (subcmd === 'get') {
-                  const data = vcard.getData();
-                  await sendReply(`Current vCard:
+                   return;
+                 }
+                 const subcmd = args[0].toLowerCase();
+                 if (subcmd === 'get') {
+                   const data = vcard.getData();
+                   await sendReply(`Current vCard:
 FN: ${data.fn || '(not set)'}
 Nickname: ${data.nickname || '(not set)'}
 URL: ${data.url || '(not set)'}
 Description: ${data.desc || '(not set)'}
 Avatar URL: ${data.avatarUrl || '(not set)'}`);
-                  return;
-                } else if (subcmd === 'set') {
+                   return;
+                 } else if (subcmd === 'set') {
                   if (args.length < 3) {
                     await sendReply('Usage: /vcard set <field> <value>');
                     return;
@@ -1355,16 +1440,64 @@ Avatar URL: ${data.avatarUrl || '(not set)'}`);
                       await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, avatarUrl`);
                       return;
                   }
-                  if (updated) {
-                    await sendReply(`✅ vCard field '${field}' updated to: ${value}`);
-                  }
-                  return;
+                   if (updated) {
+                     await sendReply(`✅ vCard field '${field}' updated to: ${value}`);
+                   }
+                   // Also update vCard on XMPP server
+                   try {
+                     const vcardData = vcard.getData();
+                     const fn = vcardData.fn || `ClawdBot (${cfg.jid?.split('@')[0]})`;
+                     const nickname = vcardData.nickname || cfg.jid?.split('@')[0] || "clawdbot";
+                     const url = vcardData.url || "https://github.com/anomalyco/clawdbot";
+                     const desc = vcardData.desc || "ClawdBot XMPP Plugin - AI Assistant";
+                     const avatarUrl = vcardData.avatarUrl || "";
+
+                     const vcardId = `vcard-update-${Date.now()}`;
+                     const vcardSet = xml("iq", { type: "set", id: vcardId },
+                       xml("vCard", { xmlns: "vcard-temp" },
+                         xml("FN", {}, fn),
+                         xml("NICKNAME", {}, nickname),
+                         xml("URL", {}, url),
+                         xml("DESC", {}, desc),
+                         avatarUrl ? xml("PHOTO", {}, xml("URI", {}, avatarUrl)) : undefined
+                       )
+                     );
+                     await xmpp.send(vcardSet);
+                     console.log(`vCard updated on server (${vcardId})`);
+                   } catch (err) {
+                     console.error("Failed to update vCard on server:", err);
+                   }
+                   return;
                 } else {
                   await sendReply(`Unknown vCard subcommand: ${subcmd}. Use /vcard help for available commands.`);
                 }
                 return;
 
-              
+              case 'mapnick':
+                // Map a room nick to a JID for shared sessions (admin only)
+                if (!checkAdminAccess()) {
+                  await sendReply(messageType === "groupchat"
+                    ? "❌ Admin commands not available in groupchat. Use direct message."
+                    : "❌ Permission denied. Admin access required.");
+                  return;
+                }
+                if (args.length < 2) {
+                  await sendReply(`Usage: /mapnick <room:nick> <jid>
+Example: /mapnick general:KazaKhan jamie@kazakhan.com
+         /mapnick :KazaKhan jamie@kazakhan.com (any room)`);
+                  return;
+                }
+                const roomNickArg = args[0];
+                const jidArg = args[1];
+                const mapKey = roomNickArg.includes(':') ? roomNickArg : `:${roomNickArg}`;
+                nickToJidMap.set(mapKey, jidArg);
+                console.log(`[SESSION] Admin mapped "${mapKey}" -> ${jidArg}`);
+                await sendReply(`✅ Nick mapped: "${mapKey}" → ${jidArg}
+This enables shared sessions between direct chat and groupchat.`);
+                return;
+
+
+
 
                
               default:
@@ -1410,16 +1543,31 @@ Avatar URL: ${data.avatarUrl || '(not set)'}`);
           console.log(`Ignoring self-message from bot (nick: ${nick})`);
           return;
         }
-         console.log(`[NORMAL] Forwarding groupchat message to agent`);
-        // For groupchat, use room JID for session
-        onMessage(roomJid, body, { type: "groupchat", room: roomJid, nick, botNick, mediaUrls, mediaPaths });
+        console.log(`[NORMAL] Forwarding groupchat message to agent`);
+        // For groupchat, try to use known JID from nick→JID mapping for shared sessions
+        // First check room-specific mapping, then fall back to room-agnostic
+        const roomNickKey = `${roomJid}:${nick}`;
+        const roomAgnosticKey = `:${nick}`;
+        let knownJid = nickToJidMap.get(roomNickKey) || nickToJidMap.get(roomAgnosticKey);
+        const sessionFrom = knownJid || roomJid; // Use known JID if available, else room JID
+        console.log(`[SESSION] Groupchat: roomNickKey=${roomNickKey}, roomAgnosticKey=${roomAgnosticKey}, knownJid=${knownJid || 'none'}, sessionFrom=${sessionFrom}`);
+        // Pass room JID explicitly callback in options so knows where to reply
+        onMessage(sessionFrom, body, { type: "groupchat", room: roomJid, roomJid: roomJid, nick, botNick, mediaUrls, mediaPaths });
       } else {
         // Direct message
         if (contacts.exists(fromBareJid)) {
           console.log(`Message from contact ${fromBareJid}, forwarding to agent`);
-           console.log(`[NORMAL] Forwarding chat message to agent`);
+          console.log(`[NORMAL] Forwarding chat message to agent`);
 
-          // Use bare JID for session
+          // Learn the nick→JID mapping for potential shared sessions
+          const senderNick = fromBareJid.split('@')[0];
+          const roomNickKey = `:${senderNick}`; // Room-agnostic key
+          if (!nickToJidMap.has(roomNickKey)) {
+            nickToJidMap.set(roomNickKey, fromBareJid);
+            console.log(`[SESSION] Learned nick→JID mapping: "${senderNick}" -> ${fromBareJid}`);
+          }
+
+          // Use bare JID for shared sessions
           onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
         } else {
           console.log(`Ignoring message from non-contact: ${fromBareJid}`);
@@ -1565,7 +1713,7 @@ Avatar URL: ${data.avatarUrl || '(not set)'}`);
 
  
 
-    const xmppClient: any = {
+   const xmppClient = {
       // Access to raw XMPP connection for status and low-level operations
       get xmpp() { return xmpp; },
       get status() { return xmpp?.status; },
@@ -1648,8 +1796,8 @@ Avatar URL: ${data.avatarUrl || '(not set)'}`);
   return xmppClient;
 }
 
- // Import CLI commands module
-  import { registerXmppCli } from "./src/commands.js";
+// Import CLI commands module
+import { registerXmppCli } from "./data/commands.ts";
 
 export function register(api: any) {
   debugLog(`register() called, pluginRegistered=${pluginRegistered}`);
@@ -1672,13 +1820,13 @@ export function register(api: any) {
   console.log(`api.runtime available: ${api.runtime ? 'yes' : 'no'}`);
   debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
   
-   // Debug: Inspect the api object
-   console.log("=== API OBJECT INSPECTION ===");
-   console.log("api keys:", Object.keys(api));
-   const allApiProps: string[] = [];
-   for (const key in api) {
-     allApiProps.push(key);
-   }
+  // Debug: Inspect the api object
+  console.log("=== API OBJECT INSPECTION ===");
+  console.log("api keys:", Object.keys(api));
+  const allApiProps = [];
+  for (let key in api) {
+    allApiProps.push(key);
+  }
   console.log("All api properties:", allApiProps);
   const apiMethods = allApiProps.filter(k => typeof api[k] === 'function');
   console.log("All api methods:", apiMethods);
@@ -1947,8 +2095,8 @@ export function register(api: any) {
         // Log ALL ctx methods to find the inbound message method
         console.log("=== CTX INSPECTION ===");
         console.log("ctx keys:", Object.keys(ctx));
-        const allProps: string[] = [];
-        for (const key in ctx) {
+        const allProps = [];
+        for (let key in ctx) {
           allProps.push(key);
         }
         console.log("All ctx properties (including inherited):", allProps);
@@ -2001,10 +2149,6 @@ export function register(api: any) {
         console.log(`[${account.accountId}] Total admins: ${adminCount}`);
         log?.info(`[${account.accountId}] Total admins: ${adminCount}`);
         
-        // Initialize message store for persistence
-        const dataDir = config.dataDir || path.join(process.cwd(), 'data');
-        const messageStore = new MessageStore(dataDir);
-        
         let isRunning = true;
 
         // Use pluginRuntime (from api.runtime) instead of ctx.runtime
@@ -2015,7 +2159,7 @@ export function register(api: any) {
           console.log("pluginRuntime.channel methods:", Object.keys(runtime.channel));
         }
         
-        const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
+        const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[] }) => {
           if (!isRunning) {
             console.log("XMPP message ignored - plugin not running");
             return;
@@ -2091,41 +2235,52 @@ export function register(api: any) {
               accountId: account.accountId,
             });
            
-            console.log(`Message ${messageId} added to queue`);
-            
-            // Persist message to JSON storage
-            const senderBareJid = from.split('/')[0];
-            const senderNick = from.split('/')[1];
-            const msgType = options?.type || 'chat';
-            
-            console.log(`[DEBUG] Persist: type=${msgType}, room=${options?.room}, fromBareJid=${senderBareJid}`);
-            
-            try {
-              messageStore.saveMessage({
-                direction: 'inbound',
-                type: msgType as 'chat' | 'groupchat',
-                roomJid: options?.room || undefined,
-                fromBareJid: senderBareJid,
-                fromFullJid: from,
-                fromNick: senderNick,
-                to: config.jid,
-                body: body,
-                timestamp: Date.now(),
-                accountId: account.accountId
-              });
-              console.log(`[MessageStore] Persisted ${msgType} message from ${senderBareJid}`);
-            } catch (err) {
-              console.error('[MessageStore] Failed to persist message:', err);
-            }
-            
-             // Try to forward message using runtime channel methods
-            // Use captured runtime from closure
-            if (runtime?.channel) {
-              console.log("Attempting to forward via runtime.channel methods");
-              
-              // Route-based routing is disabled (future feature)
-              // const route: { agentId: string; sessionKey: string; mainSessionKey?: string } | null = null;
-              // if (route) { ... }
+           console.log(`Message ${messageId} added to queue`);
+           
+           // Try to forward message using runtime channel methods
+           // Use captured runtime from closure
+           if (runtime?.channel) {
+             console.log("Attempting to forward via runtime.channel methods");
+             
+              // Skip routing for now
+              let route = null;
+             
+             // If we have a route, try to process like Matrix
+             if (route) {
+               try {
+                 console.log("Processing message with route");
+                 
+                 // Get store path
+                 const storePath = runtime.channel.session.resolveStorePath(ctx.cfg.session?.store, {
+                   agentId: route.agentId,
+                 });
+                 
+                   // Build context payload similar to Matrix
+                   const senderBareJid = from.split('/')[0];
+                   const ctxPayload = buildContextPayload(route.sessionKey, senderBareJid);
+                 
+                 await runtime.channel.session.recordInboundSession({
+                   storePath,
+                    sessionKey: ctxPayload.SessionKey,
+                    ctx: ctxPayload,
+                    updateLastRoute: {
+                      sessionKey: route.mainSessionKey || route.sessionKey,
+                      channel: "xmpp",
+                      to: `xmpp:${from.split('/')[0]}`,
+                      accountId: account.accountId,
+                    },
+                   onRecordError: (err) => {
+                     console.error("Error recording session:", err);
+                   },
+                 });
+                 
+                 console.log("✅ Message processed via channel.session.recordInboundSession");
+                 markAsProcessed(messageId);
+                 return;
+               } catch (err) {
+                 console.error("❌ Error processing with route:", err);
+               }
+             }
              
               // Fallback: Try the simple approach if routing failed
               if (runtime.channel.session?.recordInboundSession) {
@@ -2140,32 +2295,53 @@ export function register(api: any) {
                   console.log("storePath resolved to:", storePath);
                   console.log("ctx.cfg.session?.store:", ctx.cfg.session?.store);
                   
-                   // Use bare JID for session key
-                   const senderBareJid = from.split('/')[0];
-                   const isRoomJid = !!options?.room;
-                   
-                   let sessionKey: string;
-                   let replyTo: string;
-                   
-                    if (isRoomJid) {
-                      // Groupchat: session uses sender bare JID, reply to room
-                      sessionKey = `xmpp:${senderBareJid}`;
-                      replyTo = options!.room || senderBareJid;
-                      console.log("sessionKey (groupchat):", sessionKey, "replyTo:", replyTo);
-                   } else {
-                     // Direct message
-                     sessionKey = `xmpp:${senderBareJid}`;
-                     replyTo = senderBareJid;
-                     console.log("sessionKey (direct chat):", sessionKey);
-                   }
-                   
-                   console.log(`replyTo set to: ${replyTo}`);
+                     // Use shared session key based on bare JID for both direct and groupchat
+                     // This allows agents to have memory across conversation types
+                      const senderBareJid = from.split('/')[0];
+                      // Check options.roomJid to determine if this is groupchat (more reliable)
+                      const isRoomJid = !!options?.roomJid;
 
-                      // Determine the JID to use in context payload
-                      const nick = options?.nick || from.split('/')[1] || 'unknown';
-                      // Use bare JID directly (no nickToJidMap)
-                      const payloadJid = senderBareJid;
-                      const ctxPayload = buildContextPayload(sessionKey, payloadJid);
+                      // For groupchat, try to use known JID from nick→JID mapping
+                       let sessionKey: string;
+                       let finalFrom: string;
+                       let replyTo: string; // The address to send replies to
+
+                       if (isRoomJid) {
+                         // Groupchat: use mapped JID for session, but reply to ROOM
+                         const nick = options?.nick || from.split('/')[1] || 'unknown';
+                         const roomAgnosticKey = `:${nick}`;
+                         const knownJid = nickToJidMap.get(roomAgnosticKey);
+
+                         // Get room JID from options (preserved from original stanza)
+                         const actualRoomJid = options!.roomJid;
+
+                         if (knownJid) {
+                           // We know this user's real JID from direct messages
+                           sessionKey = `xmpp:${knownJid}`;
+                           finalFrom = `xmpp:${knownJid}`;
+                           replyTo = actualRoomJid; // Send replies to the ROOM
+                           console.log("sessionKey (shared with known JID):", sessionKey, "nick:", nick);
+                         } else {
+                           // Don't know user yet - use room:nick for this session
+                           sessionKey = `xmpp:${senderBareJid}:${nick}`;
+                           finalFrom = `xmpp:${senderBareJid}`;
+                           replyTo = actualRoomJid; // Send replies to the ROOM
+                           console.log("sessionKey (room:nick, user unknown):", sessionKey, "nick:", nick);
+                         }
+                       } else {
+                        // Direct message - use bare JID
+                        sessionKey = `xmpp:${senderBareJid}`;
+                        finalFrom = `xmpp:${senderBareJid}`;
+                        replyTo = senderBareJid; // Send replies to the user
+                        console.log("sessionKey (direct chat):", sessionKey);
+                      }
+
+                      console.log(`replyTo set to: ${replyTo}`);
+
+                     // Determine the JID to use in context payload
+                     const nick = options?.nick || from.split('/')[1] || 'unknown';
+                     const payloadJid = (isRoomJid && nickToJidMap.get(`:${nick}`)) ? nickToJidMap.get(`:${nick}`)! : senderBareJid;
+                     const ctxPayload = buildContextPayload(sessionKey, payloadJid);
 
                     await runtime.channel.session.recordInboundSession({
                       storePath,
@@ -2221,40 +2397,19 @@ export function register(api: any) {
                              cleanText = text.slice(match[0].length).trim();
                            }
 
-                            try {
-                              if (options?.type === "groupchat") {
-                                await xmpp.sendGroupchat(jid, cleanText);
-                                console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
-                              } else {
-                                await xmpp.send(jid, cleanText);
-                                console.log("✅✅✅ DIRECT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
-                              }
-                              
-                               // Save outbound message to persistence
-                               // For direct messages, save to the RECIPIENT's file (jid), not sender's (config.jid)
-                               try {
-                                 const saveStart = Date.now();
-                                 messageStore.saveMessage({
-                                   direction: 'outbound',
-                                   type: (options?.type || 'chat') as 'chat' | 'groupchat',
-                                   roomJid: options?.room || undefined,
-                                   fromBareJid: jid,  // Save to recipient's file
-                                   fromFullJid: `${config.jid}/clawdbot`,
-                                   to: config.jid,
-                                   body: cleanText,
-                                   timestamp: Date.now(),
-                                   accountId: account.accountId
-                                 });
-                                 console.log(`[MessageStore] Persisted outbound ${options?.type || 'chat'} message to ${jid} (${Date.now() - saveStart}ms)`);
-                               } catch (err) {
-                                 console.error('[MessageStore] Failed to save outbound message:', err);
-                               }
-                              
-                              return { ok: true, channel: "xmpp" };
-                            } catch (err) {
-                              console.error("❌ XMPP SEND ERROR:", err);
-                              return { ok: false, error: String(err) };
-                            }
+                           try {
+                             if (options?.type === "groupchat") {
+                               await xmpp.sendGroupchat(jid, cleanText);
+                               console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
+                             } else {
+                               await xmpp.send(jid, cleanText);
+                               console.log("✅✅✅ DIRECT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
+                             }
+                             return { ok: true, channel: "xmpp" };
+                           } catch (err) {
+                             console.error("❌ XMPP SEND ERROR:", err);
+                             return { ok: false, error: String(err) };
+                           }
                         };
                         
                          // Create a SIMPLE dispatcher that executes immediately
@@ -2272,20 +2427,14 @@ export function register(api: any) {
                           getQueuedCounts: async () => ({ ok: true, counts: {} }),
                         };
                         
-                         const dispatchStart = Date.now();
-                         
-                         // Fire-and-forget: dispatch without await to prevent blocking
-                         // The simpleDispatcher will call immediateSendText when agent responds
-                         runtime.channel.reply.dispatchReplyFromConfig({
-                           ctx: ctxPayload,
-                           cfg: ctx.cfg,
-                           dispatcher: simpleDispatcher,
-                           replyOptions: {},
-                         }).catch((err: any) => {
-                           console.error("Dispatch error (non-blocking):", err);
-                         });
-                         
-                         console.log(`✅ METHOD 1 dispatched (non-blocking)`);
+                        const dispatchStart = Date.now();
+                        await runtime.channel.reply.dispatchReplyFromConfig({
+                          ctx: ctxPayload,
+                          cfg: ctx.cfg,
+                          dispatcher: simpleDispatcher,
+                          replyOptions: {},
+                        });
+                        console.log(`✅ METHOD 1 completed in ${Date.now() - dispatchStart}ms`);
                       }
                       
                       // METHOD 2: dispatchReplyWithBufferedBlockDispatcher (if first fails)
@@ -2317,19 +2466,14 @@ export function register(api: any) {
                            }
                         };
                         
-                         const dispatchStart = Date.now();
-                         
-                         // Fire-and-forget dispatch
-                         runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-                           ctx: ctxPayload,
-                           cfg: ctx.cfg,
-                           sendText: sendText,
-                           dispatcherOptions: {},
-                         }).catch((err: any) => {
-                           console.error("Method 2 dispatch error (non-blocking):", err);
-                         });
-                         
-                         console.log(`✅ METHOD 2 dispatched (non-blocking)`);
+                        const dispatchStart = Date.now();
+                        await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+                          ctx: ctxPayload,
+                          cfg: ctx.cfg,
+                          sendText: sendText,
+                          dispatcherOptions: {},
+                        });
+                        console.log(`✅ METHOD 2 completed in ${Date.now() - dispatchStart}ms`);
                       }
                       
                       console.log("=== DISPATCH COMPLETE ===");
@@ -2423,13 +2567,28 @@ export function register(api: any) {
            // Note: api.emit doesn't exist, only api.on for listening
          });
 
-          // Auto-join configured rooms - DISABLED by default
-          // Rooms require invites, do not auto-join
-          if (Array.isArray(config.rooms) && config.rooms.length > 0 && config.rooms.length > 0) {
-            console.log(`[${account.accountId}] Auto-join config found but disabled (rooms require invites)`);
-            console.log(`[${account.accountId}] Rooms in config:`, config.rooms);
-            console.log(`[${account.accountId}] To enable auto-join, set autoJoinRooms: true in config`);
-          }
+          // Auto-join configured rooms
+          if (Array.isArray(config.rooms) && config.rooms.length > 0) {
+            console.log(`[${account.accountId}] Auto-join config debug:`, {
+              resource: config.resource,
+              jid: config.jid,
+              jidLocalPart: config.jid ? config.jid.split("@")[0] : 'undefined',
+              rooms: config.rooms
+            });
+            const nick = config.jid ? config.jid.split("@")[0] : "clawdbot";
+            console.log(`[${account.accountId}] Auto-joining ${config.rooms.length} rooms as ${nick} (computed nick)`);
+           log?.info(`[${account.accountId}] Auto-joining ${config.rooms.length} rooms`);
+           for (const room of config.rooms) {
+             try {
+               await xmpp.joinRoom(room, nick);
+               console.log(`[${account.accountId}] Joined room: ${room}`);
+               log?.info(`[${account.accountId}] Joined room: ${room}`);
+             } catch (err) {
+               console.error(`[${account.accountId}] Failed to join room ${room}:`, err);
+               log?.error(`[${account.accountId}] Failed to join room ${room}:`, err);
+             }
+           }
+         }
 
          // Store client globally by account ID
         xmppClients.set(account.accountId, xmpp);
@@ -2459,9 +2618,74 @@ export function register(api: any) {
     },
   };
 
-  console.log("About to register XMPP channel plugin");
+   console.log("About to register XMPP channel plugin");
   api.registerChannel({ plugin: xmppChannelPlugin });
   log.info("XMPP channel plugin registered");
+
+  // Register gateway methods for CLI vCard commands
+  if (api.registerGatewayMethod) {
+    // xmpp.vcard.get - Get current vCard
+    api.registerGatewayMethod('xmpp.vcard.get', async ({ respond }) => {
+      const data = vcard.getData();
+      return respond(data, { ok: true });
+    });
+
+    // xmpp.vcard.set - Update vCard
+    api.registerGatewayMethod('xmpp.vcard.set', async ({ body, respond }) => {
+      try {
+        if (!body || typeof body !== 'object') {
+          return respond({ error: 'Invalid request body' }, { ok: false, status: 400 });
+        }
+
+        // Update local vCard storage
+        const fieldMap: Record<string, (v: string) => void> = {
+          fn: (v) => vcard.setFN(v),
+          nickname: (v) => vcard.setNickname(v),
+          url: (v) => vcard.setURL(v),
+          desc: (v) => vcard.setDesc(v),
+          avatarUrl: (v) => vcard.setAvatarUrl(v),
+        };
+
+        for (const [field, setter] of Object.entries(fieldMap)) {
+          if (body[field] !== undefined) {
+            setter(body[field]);
+          }
+        }
+
+        // Update vCard on XMPP server
+        const xmpp = xmppClients.get("default");
+        if (xmpp && xmpp.status === 'online') {
+          const vcardData = vcard.getData();
+          const fn = vcardData.fn || `ClawdBot (${config.jid?.split('@')[0]})`;
+          const nickname = vcardData.nickname || config.jid?.split('@')[0] || "clawdbot";
+          const url = vcardData.url || "https://github.com/anomalyco/clawdbot";
+          const desc = vcardData.desc || "ClawdBot XMPP Plugin - AI Assistant";
+          const avatarUrl = vcardData.avatarUrl || "";
+
+          const vcardId = `vcard-cli-${Date.now()}`;
+          const vcardSet = xml("iq", { type: "set", id: vcardId },
+            xml("vCard", { xmlns: "vcard-temp" },
+              xml("FN", {}, fn),
+              xml("NICKNAME", {}, nickname),
+              xml("URL", {}, url),
+              xml("DESC", {}, desc),
+              avatarUrl ? xml("PHOTO", {}, xml("URI", {}, avatarUrl)) : undefined
+            )
+          );
+
+          await xmpp.send(vcardSet);
+          console.log(`vCard updated on server via gateway method (${vcardId})`);
+        }
+
+        return respond({ ok: true, vCard: vcard.getData() });
+      } catch (err) {
+        console.error("Failed to update vCard:", err);
+        return respond({ error: String(err) }, { ok: false, status: 500 });
+      }
+    });
+
+    log.info("XMPP gateway methods registered");
+  }
 
   // Register CLI commands using registerCli
   api.registerCli(
