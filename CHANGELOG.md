@@ -5,6 +5,30 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-05
+
+### Added
+- **FTP File Management**: CLI commands to upload, download, list, and delete files via FTP using same credentials as XMPP server
+  - `openclaw xmpp ftp upload <local-path> [remote-name]` - Upload file to FTP (overwrites existing)
+  - `openclaw xmpp ftp download <remote-name> [local-path]` - Download file from FTP
+  - `openclaw xmpp ftp ls` - List files in your folder
+  - `openclaw xmpp ftp rm <remote-name>` - Delete file
+  - `openclaw xmpp ftp help` - Show FTP help
+
+### Configuration
+Add `ftpPort` to your XMPP account config for FTP file management:
+```json
+{
+  "xmpp": {
+    "accounts": {
+      "default": {
+        "ftpPort": 17323
+      }
+    }
+  }
+}
+```
+
 ## [Unreleased]
 
 ### Security
@@ -150,6 +174,7 @@ Add to `~/.openclaw/openclaw.json` for session memory:
 - **Queue Operations**: `openclaw xmpp poll|clear|queue` - Manage message queue
 - **Roster Access**: `openclaw xmpp roster` - View current roster
 - **Nick Management**: `openclaw xmpp nick <jid> <name>` - Set roster nicknames
+- **vCard Commands**: `openclaw xmpp vcard get|set <field> <value>` - Manage vCard profile
 
 ### Message Queue System
 - **Inbound Queue**: Temporary storage for inbound messages awaiting agent processing
@@ -172,5 +197,3 @@ Add to `~/.openclaw/openclaw.json` for session memory:
 - **Room Management**: Array of MUC rooms for auto-join on connection
 - **Admin Access**: Admin JID configuration for privileged commands
 - **Data Directory**: Configurable path for contacts, downloads, and plugin data storage
-
-## [1.2.0] - 2026-02-04

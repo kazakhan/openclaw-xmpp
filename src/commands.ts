@@ -300,6 +300,75 @@ Note: Commands connect directly to XMPP server.`);
       }
     });
 
+  // Subcommand: ftp <action> [args]
+  xmpp
+    .command("ftp <action> [args...]")
+    .description("FTP file management (upload, download, list, delete)")
+    .action(async (action: string, args: string[]) => {
+      const { ftpUpload, ftpDownload, ftpList, ftpDelete, ftpHelp } = await import('./ftp.js');
+
+      if (action === 'help') {
+        console.log(ftpHelp());
+        return;
+      }
+
+      if (action === 'upload' && args.length >= 1) {
+        const localPath = args[0];
+        const remoteName = args[1];
+        console.log(`Uploading ${localPath}...`);
+        const result = await ftpUpload(localPath, remoteName);
+        if (result.ok) {
+          console.log(`Uploaded: ${result.data}`);
+        } else {
+          console.error(`Upload failed: ${result.error}`);
+        }
+        return;
+      }
+
+      if (action === 'download' && args.length >= 1) {
+        const remoteName = args[0];
+        const localPath = args[1];
+        console.log(`Downloading ${remoteName}...`);
+        const result = await ftpDownload(remoteName, localPath);
+        if (result.ok) {
+          console.log(`Downloaded: ${result.data}`);
+        } else {
+          console.error(`Download failed: ${result.error}`);
+        }
+        return;
+      }
+
+      if (action === 'ls') {
+        console.log('Listing files...');
+        const result = await ftpList();
+        if (result.ok && result.data) {
+          if (result.data.length === 0) {
+            console.log('No files in your folder');
+          } else {
+            result.data.forEach(f => console.log(`  ${f}`));
+          }
+        } else {
+          console.error(`List failed: ${result.error}`);
+        }
+        return;
+      }
+
+      if (action === 'rm' && args.length >= 1) {
+        const remoteName = args[0];
+        console.log(`Deleting ${remoteName}...`);
+        const result = await ftpDelete(remoteName);
+        if (result.ok) {
+          console.log('Deleted successfully');
+        } else {
+          console.error(`Delete failed: ${result.error}`);
+        }
+        return;
+      }
+
+      console.log(`Invalid FTP command: ${action}`);
+      console.log('Use: openclaw xmpp ftp help');
+    });
+
 }
 
 // Legacy function for backward compatibility - now delegates to registerXmppCli
