@@ -42,7 +42,6 @@ function loadXmppConfig(): XmppConfig {
 export async function ftpUpload(localPath: string, remoteName?: string): Promise<FtpResult<string>> {
   const config = loadXmppConfig();
   const client = new ftp.Client();
-  client.ftp.verbose = true;
   const ftpPort = config.ftpPort || 17323;
   const username = config.jid.split('@')[0];
 
