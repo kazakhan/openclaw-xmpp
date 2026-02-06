@@ -55,6 +55,43 @@ interface PendingSubscription {
 }
 export const pendingSubscriptions = new Map<string, PendingSubscription>();
 
+// File transfer size limits
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_CONCURRENT_DOWNLOADS = 3;
+const activeDownloads = new Map<string, { size: number; startTime: number }>();
+
+// Validate file size before transfer
+function validateFileSize(size: number): { valid: boolean; reason?: string } {
+  if (size > MAX_FILE_SIZE_BYTES) {
+    return {
+      valid: false,
+      reason: `File too large: ${(size / 1024 / 1024).toFixed(2)}MB > ${MAX_FILE_SIZE_MB}MB limit`
+    };
+  }
+  if (size <= 0) {
+    return { valid: false, reason: 'Invalid file size: 0 bytes' };
+  }
+  return { valid: true };
+}
+
+// Check concurrent download limit
+function checkConcurrentDownloadLimit(remoteJid: string): { allowed: boolean; reason?: string } {
+  const userDownloads = Array.from(activeDownloads.entries())
+    .filter(([_, data]) => {
+      const elapsed = Date.now() - data.startTime;
+      return elapsed < 5 * 60 * 1000; // Count downloads from last 5 minutes
+    }).length;
+
+  if (userDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+    return {
+      allowed: false,
+      reason: `Too many concurrent downloads (${MAX_CONCURRENT_DOWNLOADS} max). Please wait.`
+    };
+  }
+  return { allowed: true };
+}
+
 function checkRateLimit(jid: string): boolean {
   const now = Date.now();
   const entry = rateLimitMap.get(jid);
@@ -373,14 +410,22 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
     };
     
     // File download helper for inbound attachments (available in stanza handler)
-    const downloadFile = async (url: string, tempDir: string): Promise<string> => {
+    const downloadFile = async (url: string, tempDir: string, remoteJid?: string): Promise<string> => {
       debugLog(`Downloading file from ${url}`);
-      
+
+      // Check concurrent download limit
+      if (remoteJid) {
+        const limitCheck = checkConcurrentDownloadLimit(remoteJid);
+        if (!limitCheck.allowed) {
+          throw new Error(limitCheck.reason);
+        }
+      }
+
       // Create temp directory if needed
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
       }
-      
+
        // Generate filename from URL with path traversal protection
        const urlObj = new URL(url);
        const pathname = urlObj.pathname;
@@ -407,31 +452,57 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
        if (!response.ok) {
          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
        }
-       
+
+       // Check content-length header before downloading
+       const contentLength = response.headers.get('content-length');
+       if (contentLength) {
+         const size = parseInt(contentLength, 10);
+         const validation = validateFileSize(size);
+         if (!validation.valid) {
+           throw new Error(validation.reason);
+         }
+       }
+
        const buffer = await response.arrayBuffer();
+       const bufferSize = buffer.byteLength;
+
+       // Validate actual downloaded size
+       const sizeValidation = validateFileSize(bufferSize);
+       if (!sizeValidation.valid) {
+         throw new Error(sizeValidation.reason);
+       }
+
+       // Track this download
+       const downloadId = `${remoteJid || 'unknown'}_${Date.now()}`;
+       activeDownloads.set(downloadId, { size: bufferSize, startTime: Date.now() });
+
        await fs.promises.writeFile(filePath, Buffer.from(buffer));
-       
-       console.log(`File downloaded to ${filePath} (${buffer.byteLength} bytes)`);
+
+       console.log(`File downloaded to ${filePath} (${bufferSize} bytes)`);
+
+       // Cleanup download tracking
+       activeDownloads.delete(downloadId);
+
        return filePath;
      } catch (err) {
        console.error("File download failed:", err);
        throw err;
      }
-   };
-
-   const processInboundFiles = async (urls: string[]): Promise<string[]> => {
-     if (urls.length === 0) return [];
-     
-     // Create temp directory for downloads
-     const tempDir = path.join(cfg.dataDir, 'downloads');
-     const localPaths: string[] = [];
-     
-     for (const url of urls) {
-       try {
-         const localPath = await downloadFile(url, tempDir);
-         localPaths.push(localPath);
-       } catch (err) {
-         console.error(`Failed to download ${url}:`, err);
+     };
+       
+     const processInboundFiles = async (urls: string[], remoteJid?: string): Promise<string[]> => {
+      if (urls.length === 0) return [];
+      
+      // Create temp directory for downloads
+      const tempDir = path.join(cfg.dataDir, 'downloads');
+      const localPaths: string[] = [];
+      
+      for (const url of urls) {
+        try {
+          const localPath = await downloadFile(url, tempDir, remoteJid);
+          localPaths.push(localPath);
+        } catch (err) {
+          console.error(`Failed to download ${url}:`, err);
          // Continue with other files
        }
      }
@@ -858,12 +929,28 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
           debugLog(`SI file transfer offer from ${from}`);
           // Check for file transfer profile
           const file = si.getChild("file", "http://jabber.org/protocol/si/profile/file-transfer");
-          if (file) {
-            const filename = file.attrs.name || "unknown";
-            const size = file.attrs.size ? parseInt(file.attrs.size) : 0;
-            debugLog(`File offer: ${filename} (${size} bytes)`);
-            
-            // Check for supported stream methods
+           if (file) {
+             const filename = file.attrs.name || "unknown";
+             const size = file.attrs.size ? parseInt(file.attrs.size) : 0;
+             debugLog(`File offer: ${filename} (${size} bytes)`);
+
+             // Validate file size
+             if (size > 0) {
+               const sizeValidation = validateFileSize(size);
+               if (!sizeValidation.valid) {
+                 console.log(`[SECURITY] Rejected file transfer: ${sizeValidation.reason}`);
+                 const errorIq = xml("iq", { to: from, type: "error", id },
+                   xml("error", { type: "cancel" },
+                     xml("file-size-too-big", { xmlns: "urn:xmpp:filesize:0" }),
+                     xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }, sizeValidation.reason)
+                   )
+                 );
+                 await xmpp.send(errorIq);
+                 return;
+               }
+             }
+
+             // Check for supported stream methods
             const feature = si.getChild("feature", "http://jabber.org/protocol/feature-neg");
             let supportedMethod = null;
             if (feature) {
@@ -1163,8 +1250,12 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
           }
           return;
         }
-      }
-       // Check for file attachments (XEP-0066: Out of Band Data)
+       }
+       
+       // Strip resource from sender JID early for file downloads
+       const fromBareJid = from.split("/")[0];
+       
+        // Check for file attachments (XEP-0066: Out of Band Data)
        const oobElement = stanza.getChild('x', 'jabber:x:oob');
        let mediaUrls: string[] = [];
        let mediaPaths: string[] = [];
@@ -1172,29 +1263,28 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          const url = oobElement.getChildText('url');
          if (url) {
            mediaUrls.push(url);
-           console.log(`Detected file attachment: ${url}`);
-           
-           // Download file locally for agent processing
-           try {
-             const localPaths = await processInboundFiles([url]);
-             mediaPaths = localPaths;
-             console.log(`Downloaded file to local paths: ${localPaths.join(', ')}`);
-           } catch (err) {
-             console.error("Failed to download file, will pass URL only:", err);
-           }
-         }
+            console.log(`Detected file attachment: ${url}`);
+            
+            // Download file locally for agent processing
+            try {
+              const localPaths = await processInboundFiles([url], fromBareJid);
+              mediaPaths = localPaths;
+              console.log(`Downloaded file to local paths: ${localPaths.join(', ')}`);
+            } catch (err) {
+              console.error("Failed to download file, will pass URL only:", err);
+            }
+          }
        }
        
        // Only process messages with body
         const body = stanza.getChildText("body");
         if (!body && mediaUrls.length === 0) return;
-       
-        debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
-        
-        // Strip resource from sender JID for contact check
-        const fromBareJid = from.split("/")[0];
-        
-         // Check for slash commands (in both chat and groupchat)
+         
+         debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
+          
+         // fromBareJid already defined above for file downloads
+         
+          // Check for slash commands (in both chat and groupchat)
         // Behavior:
         // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
         // - Chat: Plugin commands handled locally, /help also forwarded to agent

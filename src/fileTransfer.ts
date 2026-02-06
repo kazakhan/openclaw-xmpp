@@ -3,6 +3,23 @@ import path from "path";
 import { xml } from "@xmpp/client";
 import { UploadSlot } from "./types.js";
 
+// File transfer size limits
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+function validateFileSize(size: number): { valid: boolean; reason?: string } {
+  if (size > MAX_FILE_SIZE_BYTES) {
+    return {
+      valid: false,
+      reason: `File too large: ${(size / 1024 / 1024).toFixed(2)}MB > ${MAX_FILE_SIZE_MB}MB limit`
+    };
+  }
+  if (size <= 0) {
+    return { valid: false, reason: 'Invalid file size: 0 bytes' };
+  }
+  return { valid: true };
+}
+
 export interface FileTransferOptions {
   xmpp: any;
   domain: string;
@@ -11,10 +28,16 @@ export interface FileTransferOptions {
 
 export function createFileTransferHandlers(options: FileTransferOptions) {
   const { xmpp, domain, dataDir } = options;
-  
+
   const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<UploadSlot> => {
     console.log(`Requesting upload slot for ${filename} (${size} bytes)`);
-    
+
+    // Validate file size
+    const sizeValidation = validateFileSize(size);
+    if (!sizeValidation.valid) {
+      throw new Error(sizeValidation.reason);
+    }
+
     const iqId = Math.random().toString(36).substring(2);
     const requestStanza = xml("iq", { type: "get", to: domain, id: iqId },
       xml("request", { xmlns: "urn:xmpp:http:upload:0", filename, size: size.toString() })
@@ -95,7 +118,13 @@ export function createFileTransferHandlers(options: FileTransferOptions) {
       const stats = await fs.promises.stat(filePath);
       const filename = path.basename(filePath);
       const size = stats.size;
-      
+
+      // Validate file size before requesting slot
+      const sizeValidation = validateFileSize(size);
+      if (!sizeValidation.valid) {
+        throw new Error(sizeValidation.reason);
+      }
+
       const slot = await requestUploadSlot(filename, size);
       
       await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);

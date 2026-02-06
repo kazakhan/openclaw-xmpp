@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `denySubscription()` helper function to reject requests
 - **Behavior Change**: Any XMPP user can no longer auto-subscribe; must be approved by admin
 
+**3. Add File Size Limits to File Transfers**
+- **Issue**: No limits on file sizes in IBB transfers, HTTP uploads, or file downloads, allowing potential DoS attacks through disk space exhaustion
+- **Solution**: Implemented comprehensive file size limits across all file transfer methods:
+  - **IBB Transfers** (`index.ts`): Added `validateFileSize()` check in SI file transfer handler before accepting transfers
+  - **HTTP Uploads** (`fileTransfer.ts`): Added size validation in `requestUploadSlot()` and `sendFileWithHTTPUpload()` functions
+  - **File Downloads** (`index.ts`): Added size validation in `downloadFile()` using Content-Length header and actual buffer size
+  - **Concurrent Download Limits**: Added `MAX_CONCURRENT_DOWNLOADS = 3` limit per user with `activeDownloads` tracking
+- **New Configuration**:
+  - `MAX_FILE_SIZE_MB = 10` (10MB limit)
+  - `MAX_CONCURRENT_DOWNLOADS = 3` per user
+- **Affected Functions**:
+  - `validateFileSize(size)` - Validates file size against limit
+  - `checkConcurrentDownloadLimit(remoteJid)` - Enforces concurrent download limit
+  - Updated `downloadFile()` to track and limit downloads
+  - Updated `requestUploadSlot()` to validate sizes
+  - Updated SI file transfer handler to reject oversized files
+
 ### Added
 - **Subscription Management Commands**: New CLI commands to manage pending subscription requests
   - `openclaw xmpp subscriptions` - Show help
