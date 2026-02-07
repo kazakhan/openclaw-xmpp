@@ -30,7 +30,8 @@
   "license": "ISC",
   "dependencies": {
     "@xmpp/client": "^0.13.6",
-    "basic-ftp": "^5.0.5"
+    "basic-ftp": "^5.0.5",
+    "ssh2": "^1.17.0"
   },
   "engines": {
     "node": ">=16.0.0"

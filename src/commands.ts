@@ -300,15 +300,15 @@ Note: Commands connect directly to XMPP server.`);
       }
     });
 
-  // Subcommand: ftp <action> [args]
+  // Subcommand: sftp <action> [args]
   xmpp
-    .command("ftp <action> [args...]")
-    .description("FTP file management (upload, download, list, delete)")
+    .command("sftp <action> [args...]")
+    .description("SFTP file management (upload, download, list, delete)")
     .action(async (action: string, args: string[]) => {
-      const { ftpUpload, ftpDownload, ftpList, ftpDelete, ftpHelp } = await import('./ftp.js');
+      const { sftpUpload, sftpDownload, sftpList, sftpDelete, sftpHelp } = await import('./sftp.js');
 
       if (action === 'help') {
-        console.log(ftpHelp());
+        console.log(sftpHelp());
         return;
       }
 
@@ -316,7 +316,7 @@ Note: Commands connect directly to XMPP server.`);
         const localPath = args[0];
         const remoteName = args[1];
         console.log(`Uploading ${localPath}...`);
-        const result = await ftpUpload(localPath, remoteName);
+        const result = await sftpUpload(localPath, remoteName);
         if (result.ok) {
           console.log(`Uploaded: ${result.data}`);
         } else {
@@ -329,7 +329,7 @@ Note: Commands connect directly to XMPP server.`);
         const remoteName = args[0];
         const localPath = args[1];
         console.log(`Downloading ${remoteName}...`);
-        const result = await ftpDownload(remoteName, localPath);
+        const result = await sftpDownload(remoteName, localPath);
         if (result.ok) {
           console.log(`Downloaded: ${result.data}`);
         } else {
@@ -340,7 +340,7 @@ Note: Commands connect directly to XMPP server.`);
 
       if (action === 'ls') {
         console.log('Listing files...');
-        const result = await ftpList();
+        const result = await sftpList();
         if (result.ok && result.data) {
           if (result.data.length === 0) {
             console.log('No files in your folder');
@@ -356,7 +356,7 @@ Note: Commands connect directly to XMPP server.`);
       if (action === 'rm' && args.length >= 1) {
         const remoteName = args[0];
         console.log(`Deleting ${remoteName}...`);
-        const result = await ftpDelete(remoteName);
+        const result = await sftpDelete(remoteName);
         if (result.ok) {
           console.log('Deleted successfully');
         } else {
@@ -365,8 +365,8 @@ Note: Commands connect directly to XMPP server.`);
         return;
       }
 
-      console.log(`Invalid FTP command: ${action}`);
-      console.log('Use: openclaw xmpp ftp help');
+      console.log(`Invalid SFTP command: ${action}`);
+      console.log('Use: openclaw xmpp sftp help');
     });
 
 }
