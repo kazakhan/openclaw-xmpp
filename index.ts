@@ -5,6 +5,7 @@ import { MessageStore } from "./src/messageStore.js";
 import { validators } from "./src/security/validation.js";
 import { secureLog } from "./src/security/logging.js";
 import { AdvancedRateLimiter, createRateLimiter } from "./src/security/rateLimiter.js";
+import { decryptPasswordFromConfig } from "./src/security/encryption.js";
 
 // Simple file logger for debugging with sanitization
 const debugLog = (msg: string) => {
@@ -525,15 +526,24 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
      secureLog.debug("XMPP client module loaded");
    }
    
-   const { client, xml } = xmppClientModule;
-   
-      const xmpp = client({
-        service: cfg?.service,
-        domain: cfg?.domain,
-        username: cfg?.jid?.split("@")[0],
-        password: cfg?.password,
-        resource: getDefaultResource()
-      });
+    const { client, xml } = xmppClientModule;
+
+    // Decrypt password if encrypted
+    let password: string;
+    try {
+      password = decryptPasswordFromConfig(cfg || {});
+    } catch (err) {
+      secureLog.error('Failed to decrypt XMPP password', err);
+      throw new Error('Failed to decrypt XMPP password');
+    }
+
+    const xmpp = client({
+      service: cfg?.service,
+      domain: cfg?.domain,
+      username: cfg?.jid?.split("@")[0],
+      password: password,
+      resource: getDefaultResource()
+    });
 
    // Helper to resolve room JID - add conference domain if missing
     const resolveRoomJid = (room: string): string => {

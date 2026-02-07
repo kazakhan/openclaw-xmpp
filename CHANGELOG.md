@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.3] - 2026-02-07
 
+**9. Password Encryption at Rest**
+- **Issue**: Passwords stored in `openclaw.json` configuration files in plaintext, exposing credentials if config files are compromised
+- **Solution**: Created `src/security/encryption.ts` with AES-256-GCM encryption for password storage:
+  - **Algorithm**: AES-256-GCM with authenticated encryption
+  - **Key Derivation**: PBKDF2-SHA512 with 100,000 iterations
+  - **Format**: Encrypted passwords prefixed with `ENC:` (e.g., `ENC:a1b2c3...`)
+  - **Config-Based Key**: Encryption key stored in `openclaw.json` config file
+- **New Files**:
+  - `src/security/encryption.ts` - Password encryption utilities
+- **New Class**: `PasswordEncryption` with methods:
+  - `encrypt(plaintext)` - Encrypt password, returns `ENC:hexdata`
+  - `decrypt(encryptedData)` - Decrypt password
+- **New Functions**:
+  - `generateEncryptionKey()` - Generate random 32-byte base64 key
+  - `getOrCreateEncryptionKey(config)` - Get existing key or generate new one
+  - `encryptPasswordWithKey(password, key)` - Encrypt with specific key
+  - `decryptPasswordWithKey(encryptedPassword, key)` - Decrypt with specific key
+  - `decryptPasswordFromConfig(config)` - Decrypt using config's encryptionKey
+  - `encryptPasswordInConfig(config, password)` - Encrypt and update config
+  - `updateConfigWithEncryptedPassword(configPath, password)` - Update config file
+- **New CLI Command**:
+  - `openclaw xmpp encrypt-password` - Encrypts password in config file
+    - Prompts for plaintext password (hidden input)
+    - Generates encryptionKey if not present
+    - Updates config with encrypted password + encryptionKey
+- **Updated Functions**:
+  - XMPP client initialization now uses `decryptPasswordFromConfig()`
+- **Config Changes**:
+  - New field: `encryptionKey` in XMPP account config
+  - Password format: `ENC:<encrypted-data>` (encrypted) or plaintext
+- **Backward Compatibility**:
+  - Plaintext passwords still work
+  - Encrypted passwords automatically detected and decrypted
+  - Encryption key auto-generated if not present
+
 **8. Improve Rate Limiting**
 - **Issue**: `index.ts:109-126` used simple fixed-window rate limiting that could be bypassed by varying JID resources, with no persistent blocking for repeat offenders
 - **Solution**: Created `src/security/rateLimiter.ts` with `AdvancedRateLimiter` class implementing:

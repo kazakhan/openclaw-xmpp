@@ -460,6 +460,79 @@ Room invites require admin approval. Contacts are auto-approved.`);
       console.log('Use: openclaw xmpp invites help');
     });
 
+  // Subcommand: encrypt-password
+  xmpp
+    .command("encrypt-password")
+    .description("Encrypt XMPP password in config")
+    .action(async () => {
+      const fs = require('fs');
+      const readline = require('readline');
+
+      const configPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'openclaw.json');
+
+      if (!fs.existsSync(configPath)) {
+        console.error('Config file not found:', configPath);
+        console.log('Run this command after configuring your XMPP account.');
+        return;
+      }
+
+      try {
+        const configData = fs.readFileSync(configPath, 'utf8');
+        const config = JSON.parse(configData);
+
+        const xmppConfig = config.channels?.xmpp?.accounts?.default;
+        if (!xmppConfig) {
+          console.error('XMPP account config not found in config file.');
+          console.log('Make sure you have configured your XMPP account first.');
+          return;
+        }
+
+        const { encryptPasswordInConfig, generateEncryptionKey } = await import('./security/encryption.js');
+
+        if (xmppConfig.password && xmppConfig.password.startsWith('ENC:')) {
+          console.log('Password is already encrypted.');
+          return;
+        }
+
+        if (!xmppConfig.password) {
+          console.error('No password found in config.');
+          return;
+        }
+
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+        console.log('\n=== XMPP Password Encryption ===\n');
+        console.log('This will encrypt your XMPP password in the config file.');
+        console.log('An encryptionKey will be generated and stored in the config.\n');
+
+        rl.question('Enter your XMPP password to encrypt: ', async (plaintextPassword) => {
+          console.log('\nEncrypting password...');
+
+          const updatedConfig = encryptPasswordInConfig(xmppConfig, plaintextPassword);
+
+          if (!config.channels.xmpp.accounts) {
+            config.channels.xmpp.accounts = {};
+          }
+          config.channels.xmpp.accounts.default = updatedConfig;
+
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+          console.log('\nPassword encrypted successfully!');
+          console.log('Config file updated:', configPath);
+          console.log('\nIMPORTANT: Keep a backup of your config file!');
+          console.log('If you lose the encryptionKey in the config, you cannot recover the password.\n');
+
+          rl.close();
+        });
+
+        rl.on('close', () => {
+          process.exit(0);
+        });
+      } catch (err: any) {
+        console.error('Error:', err.message);
+      }
+    });
+
   // Subcommand: ftp <action> [args]
   xmpp
     .command("ftp <action> [args...]")
