@@ -305,57 +305,77 @@ Add `ftpPort` to your XMPP account config for FTP file management:
   - IBB file transfers - Uses filename sanitization and path validation
   - All file paths validated before use
 
-## [Unreleased]
+## [1.6.3] - 2026-02-07
 
 ### Security
-- **TLS Certificate Verification**: Removed insecure NODE_TLS_REJECT_UNAUTHORIZED workaround now that XMPP server has proper certificate
+**Enable SFTP (SSH File Transfer)**
+- **Issue**: `ftp.ts:54,85,114,139` used `secure: false` allowing plaintext FTP credentials and file data transmission
+- **Solution**: Replaced FTP with SFTP over SSH using the `ssh2` package
+- **Changes**:
+  - Created `src/sftp.ts` with full SFTP implementation using SSH2
+  - Updated `src/commands.ts` to use sftp command instead of ftp
+  - Maintained same CLI interface: upload, download, ls, rm
+  - Uses encrypted XMPP password from security/encryption module
+- **SFTP Configuration**:
+  - Host: kazakhan.com
+  - Port: 2211 (SSH)
+  - Username: XMPP JID (local part)
+  - Password: Decrypted from encrypted config
+  - Directory: Home directory
+- **New Files**:
+  - `src/sftp.ts` - SFTP implementation using ssh2 package
+- **CLI Commands**:
+  - `openclaw xmpp sftp upload <local-path> [remote-name]` - Upload file
+  - `openclaw xmpp sftp download <remote-name> [local-path]` - Download file
+  - `openclaw xmpp sftp ls` - List files
+  - `openclaw xmpp sftp rm <remote-name>` - Delete file
+  - `openclaw xmpp sftp help` - Show help
+- **Backward Compatibility**:
+  - Old `src/ftp.ts` preserved as fallback for FTP functionality
 
-### Added
-- **Shared Session Memory**: Direct chat and groupchat messages now share the same session when users are identified, enabling persistent memory across conversation types
-- **XEP-0327 Occupant-ID Support**: Automatic user identification in MUC rooms using stable occupant IDs for consistent session tracking
-- **Session Memory Configuration**: Support for `memorySearch.experimental.sessionMemory` in agent config to enable session transcript searching
-- **Query Any User's vCard**: `/vcard get <jid>` command to retrieve vCard information for any XMPP user from the server
+## [1.6.2] - 2026-02-07
 
-### Changed
-- **Debug Logging Reduced**: Removed verbose console.log output throughout the plugin; debug information now writes to `cli-debug.log` file instead
-- **Cleaner Console Output**: Only essential operational messages (connections, presence, vCard, room events) are logged to console
-- **vCard Commands Now Query Server**: `/vcard get` and `/vcard set` now query/update the XMPP server instead of using local storage
-- **Session Key Format**: Sessions now use `xmpp:user@domain.com` for both direct and groupchat when user is identified
-- **Chat Type**: All XMPP conversations use "direct" chatType to prevent separate session buckets
-- **Reply Routing**: Groupchat replies correctly route to room JID instead of user JID
-- **Context Payload**: From field consistently uses user's bare JID for session continuity
+### Security
+**Add File Size Limits to File Transfers**
+- **Issue**: No limits on file sizes in IBB transfers, HTTP uploads, or file downloads, allowing potential DoS attacks through disk space exhaustion
+- **Solution**: Implemented comprehensive file size limits across all file transfer methods:
+  - **IBB Transfers** (`index.ts`): Added `validateFileSize()` check in SI file transfer handler before accepting transfers
+  - **HTTP Uploads** (`fileTransfer.ts`): Added size validation in `requestUploadSlot()` and `sendFileWithHTTPUpload()` functions
+  - **File Downloads** (`index.ts`): Added size validation in `downloadFile()` using Content-Length header and actual buffer size
+  - **Concurrent Download Limits**: Added `MAX_CONCURRENT_DOWNLOADS = 3` limit per user with `activeDownloads` tracking
+- **New Configuration**:
+  - `MAX_FILE_SIZE_MB = 10` (10MB limit)
+  - `MAX_CONCURRENT_DOWNLOADS = 3` per user
+- **Affected Functions**:
+  - `validateFileSize(size)` - Validates file size against limit
+  - `checkConcurrentDownloadLimit(remoteJid)` - Enforces concurrent download limit
+  - Updated `downloadFile()` to track and limit downloads
+  - Updated `requestUploadSlot()` to validate sizes
+  - Updated SI file transfer handler to reject oversized files
 
-### Fixed
-- Groupchat replies now sent to correct room JID instead of user's personal JID
-- Session sharing between direct chat and groupchat for identified users
-- Agent context properly uses shared session key for memory continuity
+## [1.6.1] - 2026-02-07
 
-### Configuration
-Add to `~/.openclaw/openclaw.json` for session memory:
-```json
-{
-  "agents": {
-    "defaults": {
-      "memorySearch": {
-        "enabled": true,
-        "experimental": {
-          "sessionMemory": true
-        }
-      }
-    }
-  }
-}
-```
+### Security
+**Remove Auto-Subscription Approval**
+- **Issue**: `index.ts:6647-6680` automatically approved ALL subscription requests and added senders as contacts, allowing any XMPP user to become a contact
+- **Solution**: Modified subscription handler to require admin approval:
+  - Existing contacts are still auto-approved (backward compatible)
+  - New requests are queued in `pendingSubscriptions` Map
+  - Admins receive XMPP notifications of pending requests
+  - Added CLI commands: `openclaw xmpp subscriptions pending|approve|deny`
+- **New Files/Modules**:
+  - `PendingSubscription` interface for tracking pending requests
+  - `approveSubscription()` helper function to approve and add contacts
+  - `denySubscription()` helper function to reject requests
+- **Behavior Change**: Any XMPP user can no longer auto-subscribe; must be approved by admin
 
-### Planned Features
-- SOCKS5 Bytestreams support (XEP-0065)
-- Jingle file transfer (XEP-0234)
-- Enhanced whiteboard with drawing tools
-- Image optimization before sending
-- File size limits and validation
-- Improved error handling and logging
-- Unit tests and integration tests
-- Documentation improvements
+## [1.6.0] - 2026-02-07
+
+### Security
+**Enable TLS Certificate Verification**
+- **Issue**: `index.ts:452` had `tls: { rejectUnauthorized: false }` which disabled certificate verification, making connections vulnerable to MITM attacks
+- **Solution**: Removed the insecure TLS configuration. XMPP client now properly validates server certificates by default
+- **Risk**: If connecting to servers with self-signed certificates, add the server's certificate to the system's trust store
 
 ## [1.2.0] - 2026-02-04
 
