@@ -55,14 +55,6 @@ openclaw xmpp subscriptions approve <jid>  # Approve
 openclaw xmpp subscriptions deny <jid>     # Deny
 ```
 
-### MUC Invite Approval
-Room invites from non-contacts require admin approval. Use:
-```bash
-openclaw xmpp invites pending   # List pending invites
-openclaw xmpp invites accept <room>  # Accept and join
-openclaw xmpp invites deny <room>     # Decline
-```
-
 ### Rate Limiting
 - 10 commands/minute per JID
 - Excess commands receive: "Too many commands. Please wait before sending more."
@@ -101,7 +93,15 @@ openclaw xmpp nick <jid> <name>   # Set nickname
 ### Room Management
 ```bash
 openclaw xmpp join <room> [nick]  # Join MUC room
+openclaw xmpp invite <jid> <room>  # Invite a contact to a MUC room
 ```
+
+### MUC Invites
+The bot auto-accepts all MUC invites. When you invite someone:
+```bash
+/invite clawdbothome@kazakhan.com general
+```
+The invited contact receives the invite and automatically joins the room.
 
 ### Message Queue
 ```bash
@@ -116,14 +116,6 @@ openclaw xmpp subscriptions pending   # List pending requests
 openclaw xmpp subscriptions approve <jid>  # Approve
 openclaw xmpp subscriptions deny <jid>     # Deny
 openclaw xmpp subscriptions help          # Show help
-```
-
-### Room Invite Management
-```bash
-openclaw xmpp invites pending   # List pending invites
-openclaw xmpp invites accept <room>  # Accept and join
-openclaw xmpp invites deny <room>     # Decline
-openclaw xmpp invites help          # Show help
 ```
 
 ### SFTP File Management
@@ -171,6 +163,7 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 /remove <jid>                    # Remove a contact
 /admins                          # List admin users
 /join <room> [nick]              # Join a MUC room
+/invite <jid> <room>             # Invite a contact to a MUC room
 /rooms                           # List joined rooms
 /leave <room>                   # Leave a MUC room
 /vcard                           # Manage vCard profile

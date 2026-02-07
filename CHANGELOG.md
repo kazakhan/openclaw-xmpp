@@ -5,6 +5,28 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-02-07
+
+### Fixed
+
+**MUC Invite Auto-Accept**
+- **Issue**: Added pending invite system requiring admin approval for MUC invites, breaking the original simple auto-accept behavior
+- **Solution**: Restored original invite handler that auto-accepts any MUC invite
+- **Changes**:
+  - Removed `PendingInvite` interface and `pendingInvites` Map
+  - Restored simple invite handler that joins room immediately on invite
+  - Removed `/invites` slash command (no longer needed)
+  - Removed CLI commands: `openclaw xmpp invites pending|accept|deny`
+- **Behavior**:
+  - `/invite <jid> <room>` sends XMPP MUC invite, recipient auto-joins
+  - Any MUC invite received is auto-accepted (original behavior)
+
+### Changed
+
+**Invite Command Syntax**
+- `/invite <jid> <room>` - Invite a contact to a room (XEP-0246 MUC invite)
+- No pending approval required
+
 ## [1.5.3] - 2026-02-07
 
 ### Security
