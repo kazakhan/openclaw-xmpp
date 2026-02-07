@@ -50,4 +50,4 @@ package-lock.json
 PLAN.md
 
 dist/
-logs/
+logs/*

@@ -1,12 +1,12 @@
 # OpenClaw XMPP Plugin
 
-A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, and FTP file transfers.
-FTP was added so the OpenClaw bot could upload to a server to have it's own webpage. I just wanted to see what they made, FTP was probably not the way to go...
+A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, and SFTP file transfers.
+SFTP was added so the OpenClaw bot could upload files to a server using SSH. Uses the same credentials as your XMPP account.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
 ## Status: ✅ WORKING
 
-Fully functional with shared sessions, memory continuity, and FTP file transfers.
+Fully functional with shared sessions, memory continuity, rate limiting, audit logging, and secure SFTP file transfers.
 
 ## Installation
 
@@ -33,8 +33,10 @@ npm install
 ```
 
 ## Setup
-- Configure your XMPP account in ~/.openclaw/openclaw.json
-- Format in Configuration below
+
+1. Configure your XMPP account in `~/.openclaw/openclaw.json`
+2. See Configuration section below for format
+3. Run `openclaw xmpp status` to test connection
 
 ## Security
 
@@ -45,9 +47,32 @@ openclaw xmpp add jid@domain.com
 ```
 Or message the bot with `/add jid@domain.com` in chat.
 
+### Subscription Approval
+New subscription requests require admin approval. Use:
+```bash
+openclaw xmpp subscriptions pending   # List pending requests
+openclaw xmpp subscriptions approve <jid>  # Approve
+openclaw xmpp subscriptions deny <jid>     # Deny
+```
+
+### MUC Invite Approval
+Room invites from non-contacts require admin approval. Use:
+```bash
+openclaw xmpp invites pending   # List pending invites
+openclaw xmpp invites accept <room>  # Accept and join
+openclaw xmpp invites deny <room>     # Decline
+```
+
 ### Rate Limiting
 - 10 commands/minute per JID
 - Excess commands receive: "Too many commands. Please wait before sending more."
+- Temporary block after repeated violations
+
+### Password Encryption
+Passwords are encrypted at rest using AES-256-GCM. Encrypt your password:
+```bash
+openclaw xmpp encrypt-password
+```
 
 ### Path Traversal Protection
 - Filenames sanitized: illegal chars replaced with `_`
@@ -55,64 +80,114 @@ Or message the bot with `/add jid@domain.com` in chat.
 
 ## Commands
 
-### Core Commands
+### Connection & Status
 ```bash
 openclaw xmpp status              # Check connection status
-openclaw xmpp msg <jid> <msg>     # Send direct message
-openclaw xmpp add <jid>           # Whitelist contact (required for bot responses)
-openclaw xmpp roster               # View roster
-openclaw xmpp nick <jid> <name>  # Set nickname
-openclaw xmpp join <room> [nick]  # Join MUC room
-openclaw xmpp poll                # Poll message queue
-openclaw xmpp clear               # Clear message queue
-openclaw xmpp queue               # Show queue status
+openclaw xmpp start               # Start gateway in background
 ```
 
-### FTP Commands
+### Messaging
 ```bash
-openclaw xmpp ftp upload <local-path> [remote-name]  # Upload file
-openclaw xmpp ftp download <remote-name> [local-path] # Download file
-openclaw xmpp ftp ls                                # List files
-openclaw xmpp ftp rm <remote-name>                  # Delete file
-openclaw xmpp ftp help                              # Show help
+openclaw xmpp msg <jid> <msg>    # Send direct message
 ```
 
-## FTP File Management
-
-Uses same credentials as XMPP server. Files stored in personal folder.
-
-### Configuration
-Add to `~/.openclaw/openclaw.json`:
-```json
-{
-  "channels": {
-    "xmpp": {
-      "accounts": {
-        "default": {
-          "ftpPort": 17323
-        }
-      }
-    }
-  }
-}
+### Contact Management
+```bash
+openclaw xmpp add <jid>           # Whitelist contact (required for bot responses)
+openclaw xmpp roster              # View roster
+openclaw xmpp nick <jid> <name>   # Set nickname
 ```
 
-### FTP Details
+### Room Management
+```bash
+openclaw xmpp join <room> [nick]  # Join MUC room
+```
+
+### Message Queue
+```bash
+openclaw xmpp poll                # Poll message queue
+openclaw xmpp clear              # Clear message queue
+openclaw xmpp queue              # Show queue status
+```
+
+### Subscription Management
+```bash
+openclaw xmpp subscriptions pending   # List pending requests
+openclaw xmpp subscriptions approve <jid>  # Approve
+openclaw xmpp subscriptions deny <jid>     # Deny
+openclaw xmpp subscriptions help          # Show help
+```
+
+### Room Invite Management
+```bash
+openclaw xmpp invites pending   # List pending invites
+openclaw xmpp invites accept <room>  # Accept and join
+openclaw xmpp invites deny <room>     # Decline
+openclaw xmpp invites help          # Show help
+```
+
+### SFTP File Management
+```bash
+openclaw xmpp sftp upload <local-path> [remote-name]  # Upload file
+openclaw xmpp sftp download <remote-name> [local-path] # Download file
+openclaw xmpp sftp ls                                # List files
+openclaw xmpp sftp rm <remote-name>                  # Delete file
+openclaw xmpp sftp help                              # Show help
+```
+
+### Security Commands
+```bash
+openclaw xmpp encrypt-password    # Encrypt password in config
+openclaw xmpp file-transfer-security status   # Show file transfer security status
+openclaw xmpp audit status        # Show audit logging status
+openclaw xmpp audit list [limit] # List recent audit events
+```
+
+### vCard Commands
+```bash
+openclaw xmpp vcard get           # View current vCard
+openclaw xmpp vcard set fn <name> # Set Full Name
+openclaw xmpp vcard set nickname <name>  # Set Nickname
+openclaw xmpp vcard set url <url>  # Set URL
+openclaw xmpp vcard set desc <desc>  # Set Description
+```
+
+## SFTP File Management
+
+Uses SSH/SFTP with your XMPP account credentials. Files stored in your home directory.
+
+### SFTP Details
 | Setting | Value |
 |---------|-------|
-| Host | Same as XMPP domain |
-| Port | 17323 (configurable) |
+| Host | kazakhan.com |
+| Port | 2211 (SSH) |
 | User | JID local part |
-| Password | Same as XMPP |
-| Storage | Personal folder |
+| Password | Same as XMPP (encrypted at rest) |
+| Storage | Home directory |
+
+### Legacy FTP (Deprecated)
+The old FTP implementation is preserved for backward compatibility:
+```bash
+openclaw xmpp ftp upload <local-path> [remote-name]
+openclaw xmpp ftp download <remote-name> [local-path]
+openclaw xmpp ftp ls
+openclaw xmpp ftp rm <remote-name>
+```
+Note: FTP transmits data unencrypted. Use SFTP instead.
 
 ## Features
-- Full XMPP protocol with TLS
+
+- Full XMPP protocol with TLS certificate verification
 - Multi-User Chat (MUC)
 - Shared sessions between direct chat and groupchat
 - Contact & roster management
 - vCard support
-- FTP file transfers
+- SFTP file transfers via SSH
+- Comprehensive input validation
+- Rate limiting with graduated blocking
+- Audit logging for security events
+- Admin approval workflows for subscriptions and invites
+- Password encryption at rest
 
 ## Configuration
 
@@ -130,8 +205,7 @@ Add to `~/.openclaw/openclaw.json`:
           "password": "your-password",
           "adminJid": "admin@your-server.com",
           "rooms": ["general@conference.your-server.com"],
-          "dataDir": "/path/to/data",
-          "ftpPort": 17323
+          "dataDir": "/path/to/data"
         }
       }
     }
@@ -139,32 +213,53 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
+### Optional: Password Encryption
+After configuring your account, encrypt the password:
+```bash
+openclaw xmpp encrypt-password
+```
+This adds `encryptionKey` to your config and stores the password encrypted.
+
 ## Quick Start
+
 ```bash
 # Configure account in ~/.openclaw/openclaw.json
 openclaw xmpp add user@domain.com  # Whitelist contact
 openclaw xmpp status               # Test connection
-openclaw xmpp ftp upload /path/to/file.pdf
+openclaw xmpp sftp upload /path/to/file.pdf  # Upload via SFTP
 ```
 
 ## Files
+
 ```
 xmpp/
-├── index.ts            # Main plugin
-├── package.json        # Dependencies
+├── index.ts              # Main plugin
+├── package.json          # Dependencies
 ├── openclaw.plugin.json
 ├── src/
-│   ├── commands.ts    # CLI commands
-│   ├── ftp.ts         # FTP client
-│   ├── contacts.ts    # Contact management
+│   ├── commands.ts      # CLI commands
+│   ├── sftp.ts          # SFTP client (NEW)
+│   ├── ftp.ts           # Legacy FTP client
+│   ├── contacts.ts      # Contact management
 │   ├── messageStore.ts
-│   ├── vcard.ts       # vCard handling
-│   └── fileTransfer.ts
-├── data/              # Storage
+│   ├── vcard.ts         # vCard handling
+│   ├── fileTransfer.ts   # Secure file transfer
+│   └── security/        # Security modules
+│       ├── audit.ts      # Audit logging
+│       ├── encryption.ts # Password encryption
+│       ├── fileTransfer.ts
+│       ├── logging.ts    # Secure logging
+│       ├── rateLimiter.ts
+│       └── validation.ts # Input validation
+├── data/                # Storage
 │   ├── xmpp-contacts.json
 │   ├── xmpp-admins.json
 │   ├── xmpp-vcard.json
 │   └── messages/
+├── logs/                # Audit logs
+│   └── audit-*.log
+├── temp/                # Temporary files
+├── quarantine/          # Suspicious files
 ├── README.md
 └── CHANGELOG.md
 ```
