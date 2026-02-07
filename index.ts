@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { MessageStore } from "./src/messageStore.js";
+import { validators } from "./src/security/validation.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
 const MAX_CONCURRENT_TRANSFERS = 3;
@@ -372,31 +373,35 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
     const downloadFile = async (url: string, tempDir: string): Promise<string> => {
       debugLog(`Downloading file from ${url}`);
       
-      // Create temp directory if needed
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-      
+       // Create temp directory if needed
+       if (!fs.existsSync(tempDir)) {
+         fs.mkdirSync(tempDir, { recursive: true });
+       }
+       
+       // Validate URL
+       if (!validators.isValidUrl(url)) {
+         throw new Error(`Invalid URL: ${url}`);
+       }
+       
        // Generate filename from URL with path traversal protection
        const urlObj = new URL(url);
        const pathname = urlObj.pathname;
        let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
        
-       // Validate filename - only allow safe characters, no path separators
-       const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+       // Sanitize filename using validator
+       const safeFilename = validators.sanitizeFilename(filename);
        if (safeFilename !== filename) {
-        console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
-        filename = safeFilename;
-      }
-      
-      // Ensure filename doesn't escape tempDir using path normalization
-      const normalizedPath = path.normalize(filename);
-      if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-        filename = `file_${Date.now()}_${safeFilename}`;
-        console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
-      }
-      
-      const filePath = path.join(tempDir, filename);
+         console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
+         filename = safeFilename;
+       }
+       
+       // Ensure filename doesn't escape tempDir using validator
+       if (!validators.isSafePath(filename, tempDir)) {
+         filename = `file_${Date.now()}_${safeFilename}`;
+         console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
+       }
+       
+       const filePath = path.join(tempDir, filename);
      
       try {
         const response = await fetch(url);
@@ -859,24 +864,23 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
            const resultIq = xml("iq", { to: from, type: "result", id });
            await xmpp.send(resultIq);
            
-            // If we've received all data, close session and process file
-            if (session.size > 0 && session.received >= session.size) {
-              console.log(`File ${session.filename} received completely (${session.received} bytes)`);
-              // Save file to downloads directory with path traversal protection
-              const tempDir = path.join(cfg.dataDir, 'downloads');
-              if (!fs.existsSync(tempDir)) {
-                fs.mkdirSync(tempDir, { recursive: true });
-              }
-              
-              // Sanitize filename from sender to prevent path traversal
-              let safeFilename = session.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const normalizedPath = path.normalize(safeFilename);
-              if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-                safeFilename = `file_${Date.now()}_${safeFilename}`;
-                console.log(`[SECURITY] IBB: Rejected unsafe filename, using: ${safeFilename}`);
-              }
-              
-              const filePath = path.join(tempDir, safeFilename);
+             // If we've received all data, close session and process file
+             if (session.size > 0 && session.received >= session.size) {
+               console.log(`File ${session.filename} received completely (${session.received} bytes)`);
+               // Save file to downloads directory with path traversal protection
+               const tempDir = path.join(cfg.dataDir, 'downloads');
+               if (!fs.existsSync(tempDir)) {
+                 fs.mkdirSync(tempDir, { recursive: true });
+               }
+               
+               // Sanitize filename from sender using validator
+               let safeFilename = validators.sanitizeFilename(session.filename);
+               if (!validators.isSafePath(safeFilename, tempDir)) {
+                 safeFilename = `file_${Date.now()}_${safeFilename}`;
+                 console.log(`[SECURITY] IBB: Rejected unsafe filename, using: ${safeFilename}`);
+               }
+               
+               const filePath = path.join(tempDir, safeFilename);
               await fs.promises.writeFile(filePath, session.data);
               console.log(`File saved to ${filePath}`);
               ibbSessions.delete(sid);
@@ -899,34 +903,32 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
           const sid = ibbClose.attrs.sid;
           const session = ibbSessions.get(sid);
           if (session) {
-            console.log(`IBB session ${sid} closed, received ${session.received} bytes`);
-            // Save file if we have data with path traversal protection
-            if (session.received > 0) {
-              const tempDir = path.join(cfg.dataDir, 'downloads');
-              if (!fs.existsSync(tempDir)) {
-                fs.mkdirSync(tempDir, { recursive: true });
-              }
-              
-              // Sanitize filename from sender
-              let safeFilename = session.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const normalizedPath = path.normalize(safeFilename);
-              if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-                safeFilename = `file_${Date.now()}_${safeFilename}`;
-                console.log(`[SECURITY] IBB Close: Rejected unsafe filename, using: ${safeFilename}`);
-              }
-              
-              const filePath = path.join(tempDir, safeFilename);
-             await fs.promises.writeFile(filePath, session.data);
-             console.log(`File saved to ${filePath}`);
-             // TODO: Notify about incoming file
+             console.log(`IBB session ${sid} closed, received ${session.received} bytes`);
+             // Save file if we have data with path traversal protection
+             if (session.received > 0) {
+               const tempDir = path.join(cfg.dataDir, 'downloads');
+               if (!fs.existsSync(tempDir)) {
+                 fs.mkdirSync(tempDir, { recursive: true });
+               }
+               
+               // Sanitize filename from sender using validator
+               let safeFilename = validators.sanitizeFilename(session.filename);
+               if (!validators.isSafePath(safeFilename, tempDir)) {
+                 safeFilename = `file_${Date.now()}_${safeFilename}`;
+                 console.log(`[SECURITY] IBB Close: Rejected unsafe filename, using: ${safeFilename}`);
+               }
+               
+               const filePath = path.join(tempDir, safeFilename);
+               await fs.promises.writeFile(filePath, session.data);
+               console.log(`File saved to ${filePath}`);
+             }
+             ibbSessions.delete(sid);
            }
-           ibbSessions.delete(sid);
+           const resultIq = xml("iq", { to: from, type: "result", id });
+           await xmpp.send(resultIq);
+           return;
          }
-         const resultIq = xml("iq", { to: from, type: "result", id });
-         await xmpp.send(resultIq);
-         return;
-       }
-       
+         
          // Handle vCard requests (XEP-0054)
           const vcardElement = stanza.getChild("vCard", "vcard-temp");
           if (vcardElement) {
