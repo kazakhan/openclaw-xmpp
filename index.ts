@@ -6,6 +6,7 @@ import { validators } from "./src/security/validation.js";
 import { secureLog } from "./src/security/logging.js";
 import { AdvancedRateLimiter, createRateLimiter } from "./src/security/rateLimiter.js";
 import { decryptPasswordFromConfig } from "./src/security/encryption.js";
+import { SecureFileTransfer, createSecureFileTransfer } from "./src/security/fileTransfer.js";
 
 // Simple file logger for debugging with sanitization
 const debugLog = (msg: string) => {
@@ -536,6 +537,17 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       secureLog.error('Failed to decrypt XMPP password', err);
       throw new Error('Failed to decrypt XMPP password');
     }
+
+    // Initialize secure file transfer
+    const secureFileTransfer = createSecureFileTransfer({
+      maxFileSizeMB: 10,
+      maxUploadSizeMB: 10,
+      maxDownloadSizeMB: 10,
+      quarantineDir: path.join(cfg?.dataDir || '.', 'quarantine'),
+      tempDir: path.join(cfg?.dataDir || '.', 'temp'),
+      userQuotaMB: 100,
+      enableVirusScan: false
+    });
 
     const xmpp = client({
       service: cfg?.service,

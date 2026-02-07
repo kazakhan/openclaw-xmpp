@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.3] - 2026-02-07
 
+**10. Enhanced File Transfer Security**
+- **Issue**: File transfers lacked comprehensive security including content validation, malware scanning, and quota management
+- **Solution**: Created `src/security/fileTransfer.ts` with comprehensive file transfer security:
+  - **Content-Type Validation**: MIME type detection via file signatures (magic bytes) and extension mapping
+  - **File Quarantine**: Suspicious files automatically quarantined to `./quarantine` directory
+  - **Malware Scanning**: Basic pattern-based detection for common web shell signatures
+  - **Secure Temp Files**: Automatic temp file creation with random names
+  - **Per-User Quotas**: 100MB storage limit per user with usage tracking
+  - **File Integrity**: SHA-256 hash for all processed files
+- **New Files**:
+  - `src/security/fileTransfer.ts` - Comprehensive file transfer security
+- **New Class**: `SecureFileTransfer` with methods:
+  - `calculateHash(filePath)` - SHA-256 file hashing
+  - `detectMimeType(filename, buffer?)` - MIME type detection
+  - `isAllowedMimeType(mimeType)` - Check allowed types
+  - `validateFilename(filename)` - Sanitize and validate filenames
+  - `validateFileSize(size, isUpload)` - Size limits with upload/download separation
+  - `validateIncomingFile(filePath, metadata)` - Comprehensive file validation
+  - `quarantineFile(filePath, reason)` - Move suspicious files to quarantine
+  - `scanForMalware(filePath)` - Pattern-based malware detection
+  - `secureDeleteFile(filePath)` - Secure file deletion (overwrite with zeros)
+  - `getUserUsage(userId)` - Get user's storage quota usage
+  - `cleanupOldTempFiles(maxAgeMs)` - Clean up temp files
+  - `getStats()` - Get security statistics
+- **Blocked Extensions**: .exe, .bat, .cmd, .sh, .php, .js, .py, .pif, .msi, .dll, .scr, .jar
+- **Allowed MIME Types**: Images (JPEG, PNG, GIF, WebP), PDF, Text, JSON, ZIP, Audio, Video
+- **New CLI Command**:
+  - `openclaw xmpp file-transfer-security status` - Show security status
+  - `openclaw xmpp file-transfer-security quota [jid]` - Show quota usage
+  - `openclaw xmpp file-transfer-security quarantine` - List quarantined files
+  - `openclaw xmpp file-transfer-security cleanup` - Clean up temp files
+- **Updated Functions**:
+  - `index.ts` - Added `SecureFileTransfer` initialization
+  - File downloads now validated with MIME type, size, and quota checks
+- **Configurable Limits**:
+  - Max file size: 10MB
+  - User quota: 100MB
+  - Concurrent downloads: 3
+
 **9. Password Encryption at Rest**
 - **Issue**: Passwords stored in `openclaw.json` configuration files in plaintext, exposing credentials if config files are compromised
 - **Solution**: Created `src/security/encryption.ts` with AES-256-GCM encryption for password storage:

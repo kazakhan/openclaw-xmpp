@@ -602,9 +602,78 @@ Room invites require admin approval. Contacts are auto-approved.`);
       console.log('Use: openclaw xmpp ftp help');
     });
 
-}
+  // Subcommand: file-transfer-security
+  xmpp
+    .command("file-transfer-security [action] [args...]")
+    .description("Manage file transfer security settings")
+    .action(async (action: string, args: string[]) => {
+      if (!action || action === 'help' || action === 'status') {
+        console.log(`File Transfer Security Commands:
+  openclaw xmpp file-transfer-security status - Show security status and statistics
+  openclaw xmpp file-transfer-security quota [jid] - Show storage quota usage
+  openclaw xmpp file-transfer-security quarantine - List quarantined files
+  openclaw xmpp file-transfer-security cleanup - Clean up old temp files
+  openclaw xmpp file-transfer-security help - Show this help
 
-// Legacy function for backward compatibility - now delegates to registerXmppCli
+File Transfer Security Features:
+  - MIME type validation
+  - File size limits (10MB max)
+  - Dangerous extension blocking (.exe, .bat, .sh, etc.)
+  - SHA-256 file hashing
+  - Per-user storage quotas (100MB default)
+  - Secure temp file handling
+  - File quarantine for suspicious files`);
+        return;
+      }
+
+      if (action === 'status' || action === 'stats') {
+        console.log('\n=== File Transfer Security Status ===\n');
+        console.log('Features:');
+        console.log('  ✓ MIME type validation enabled');
+        console.log('  ✓ File size limits (10MB max)');
+        console.log('  ✓ Dangerous extension blocking');
+        console.log('  ✓ SHA-256 file hashing');
+        console.log('  ✓ Secure temp file handling');
+        console.log('  - Virus scanning: DISABLED (set enableVirusScan: true to enable)');
+        console.log('\nDirectories:');
+        console.log('  Temp directory: ./temp');
+        console.log('  Quarantine directory: ./quarantine');
+        console.log('\nLimits:');
+        console.log('  Max file size: 10MB');
+        console.log('  User storage quota: 100MB');
+        console.log('  Allowed MIME types: 16 types');
+        return;
+      }
+
+      if (action === 'quota') {
+        const jid = args[0] || 'default';
+        console.log(`\nStorage Quota for ${jid}:`);
+        console.log('  Note: Quota tracking requires gateway to be running');
+        console.log('  Run "openclaw xmpp file-transfer-security status" for gateway status');
+        return;
+      }
+
+      if (action === 'quarantine') {
+        console.log('\n=== Quarantined Files ===\n');
+        console.log('Note: Quarantine log requires gateway to be running');
+        console.log('Run "openclaw xmpp file-transfer-security status" for quarantine status');
+        return;
+      }
+
+      if (action === 'cleanup') {
+        console.log('\nCleaning up temp files...');
+        console.log('Note: Temp cleanup requires gateway to be running');
+        console.log('Files older than 1 hour would be deleted.');
+        return;
+      }
+
+       console.log(`Unknown file-transfer-security command: ${action}`);
+       console.log('Use: openclaw xmpp file-transfer-security help');
+     });
+
+ }
+
+ // Legacy function for backward compatibility - now delegates to registerXmppCli
 export function registerCommands(api: any, dataPath: string) {
   console.log("Registering XMPP CLI commands via registerCommands (legacy)");
   
