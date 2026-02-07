@@ -1246,22 +1246,23 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
 
            console.log(`🤝 Received MUC invite to room ${room} from ${validInviter}: ${reason}`);
 
-           // Check if inviter is already approved (contact or admin)
-           const inviterBare = validInviter.split('/')[0];
-           const isApprovedContact = contacts.exists(inviterBare);
+            // Check if inviter is already approved (contact or admin)
+            const inviterBare = validInviter.split('/')[0];
+            const isApprovedContact = contacts.exists(inviterBare);
+            const isAdmin = contacts.isAdmin(inviterBare);
 
-           if (isApprovedContact) {
-             // Auto-accept invite from approved contacts
+            if (isApprovedContact || isAdmin) {
+              // Auto-accept invite from approved contacts or admins
              try {
                const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
                  xml("x", { xmlns: "http://jabber.org/protocol/muc" },
                    xml("history", { maxstanzas: "0" })
                  )
                );
-               await xmpp.send(presence);
-               joinedRooms.add(room);
-               roomNicks.set(room, getDefaultNick());
-               console.log(`✅ Auto-accepted invite to room ${room} (from approved contact ${inviterBare})`);
+                await xmpp.send(presence);
+                joinedRooms.add(room);
+                roomNicks.set(room, getDefaultNick());
+                console.log(`✅ Auto-accepted invite to room ${room} (from ${isAdmin ? 'admin' : 'approved contact'} ${inviterBare})`);
              } catch (err) {
                console.error(`❌ Failed to accept invite to room ${room}:`, err);
              }
@@ -1496,7 +1497,7 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
           }
         
           // Define plugin-specific commands
-          const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'help']);
+          const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'invites', 'whiteboard', 'vcard', 'help']);
           const isPluginCommand = pluginCommands.has(command);
           
           secureLog.debug(`[SLASH] type=${messageType}, cmd=/${command}, isPlugin=${isPluginCommand}`);
@@ -1538,18 +1539,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
              }
            };
            
-           switch (command) {
-            case 'help':
-                    await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
-   /list - Show contacts (admin only - direct chat)
-   /add <jid> [name] - Add contact (admin only - direct chat)
-   /remove <jid> - Remove contact (admin only - direct chat)
-   /admins - List admins (admin only - direct chat)
-   /whoami - Show your info (room/nick in groupchat)
-   /join <room> [nick] - Join MUC room (admin only - direct chat)
-   /rooms - List joined rooms (admin only - direct chat)
+            switch (command) {
+             case 'help':
+                    await sendReply(`Available commands (groupchat: only whoami, whiteboard, invites, help):
+    /list - Show contacts (admin only - direct chat)
+    /add <jid> [name] - Add contact (admin only - direct chat)
+    /remove <jid> - Remove contact (admin only - direct chat)
+    /admins - List admins (admin only - direct chat)
+    /whoami - Show your info (room/nick in groupchat)
+    /join <room> [nick] - Join MUC room (admin only - direct chat)
+    /rooms - List joined rooms (admin only - direct chat)
     /leave <room> - Leave MUC room (admin only - direct chat)
     /invite <contact> <room> - Invite contact to room (admin only - direct chat)
+    /invites accept|deny <room> - Accept or decline a room invite
     /whiteboard - Whiteboard drawing and image sharing
     /vcard - Manage vCard profile (admin only - direct chat)
     /subscriptions - Manage subscription requests (admin only - CLI)
@@ -1875,16 +1877,70 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
                       whiteboardImage: true
                     });
                     await sendReply(`🖼️ Sharing image: ${url}`);
-                  } else {
+                   } else {
                     await sendReply(`Usage: /whiteboard draw <prompt> or /whiteboard send <url>`);
                   }
                   return;
 
+                case 'invite':
+                  // Invite a contact to a room - direct MUC invite
+                  if (!checkAdminAccess()) {
+                    await sendReply(messageType === "groupchat"
+                      ? "❌ Admin commands not available in groupchat. Use direct message."
+                      : "❌ Permission denied. Admin access required.");
+                    return;
+                  }
+                  if (args.length < 2) {
+                    await sendReply("Usage: /invite <contact> <room>");
+                    return;
+                  }
+                  const contactToInvite = args[0];
+                  const room = args[1];  // Direct, no validation
+                  // Send invite TO the contact, FROM the admin (inviter)
+                  const inviterJid = fromBareJid;  // The admin's JID
+                  const invite = xml("message", { to: contactToInvite },
+                    xml("x", { xmlns: "http://jabber.org/protocol/muc#user" },
+                      xml("invite", { from: inviterJid })
+                    )
+                  );
+                  await xmpp.send(invite);
+                  await sendReply(`✅ Invited ${contactToInvite} to ${room}`);
+                  return;
+
+                case 'invites':
+                  // Handle /invites accept|deny in chat or groupchat (anyone can accept their own invites)
+                  if (args.length === 0 || args[0] === 'help') {
+                    await sendReply(`Invite commands:
+  /invites pending - List pending invites
+  /invites accept <room> - Accept invite and join
+  /invites deny <room> - Decline invite`);
+                    return;
+                  }
+                  const inviteSubcmd = args[0].toLowerCase();
+                  if (inviteSubcmd === 'pending') {
+                    const pending = Array.from(pendingInvites.values());
+                    if (pending.length === 0) {
+                      await sendReply("No pending room invites.");
+                    } else {
+                      const list = pending.map(p => `• ${p.room} from ${p.inviter}`).join('\n');
+                      await sendReply(`Pending invites (${pending.length}):\n${list}`);
+                    }
+                  } else if (inviteSubcmd === 'accept' && args[1]) {
+                    await acceptRoomInvite(args[1]);
+                    await sendReply(`✅ Joined room: ${args[1]}`);
+                  } else if (inviteSubcmd === 'deny' && args[1]) {
+                    await denyRoomInvite(args[1]);
+                    await sendReply(`✅ Declined invite: ${args[1]}`);
+                  } else {
+                    await sendReply("Usage: /invites accept|deny <room>");
+                  }
+                  return;
+
                 default:
-                // Should not reach here for non-plugin commands (handled earlier)
-                await sendReply(`Unknown command: /${command}. Type /help for available commands.`);
-                return;
-          }
+                  // Should not reach here for non-plugin commands (handled earlier)
+                  await sendReply(`Unknown command: /${command}. Type /help for available commands.`);
+                  return;
+           }
         } catch (err) {
           console.error("Error processing slash command:", err);
            try {

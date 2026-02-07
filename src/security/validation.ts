@@ -8,6 +8,8 @@ export interface ValidationResult {
 
 const JID_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
+const DOMAIN_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+
 const FILENAME_REGEX = /^[a-zA-Z0-9._-]+$/;
 
 const SAFE_URL_REGEX = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
@@ -198,11 +200,15 @@ export const validators = {
       const roomName = parts[0];
       const server = parts[1];
 
-      if (!JID_REGEX.test(server)) {
+      if (!DOMAIN_REGEX.test(server)) {
         return { valid: false, error: 'Invalid room server part' };
       }
 
-      sanitized = roomName + '@' + server.toLowerCase();
+      if (roomName.length > 0 && !FILENAME_REGEX.test(roomName)) {
+        return { valid: false, error: 'Invalid room name characters' };
+      }
+
+      sanitized = (roomName.length > 0 ? roomName : 'room') + '@' + server.toLowerCase();
     } else {
       const roomName = sanitized
         .replace(/[^a-zA-Z0-9._-]/g, '_')
