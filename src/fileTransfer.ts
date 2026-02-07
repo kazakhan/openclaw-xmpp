@@ -2,23 +2,11 @@ import fs from "fs";
 import path from "path";
 import { xml } from "@xmpp/client";
 import { UploadSlot } from "./types.js";
+import { validators } from "./security/validation.js";
 
 // File transfer size limits
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-
-function validateFileSize(size: number): { valid: boolean; reason?: string } {
-  if (size > MAX_FILE_SIZE_BYTES) {
-    return {
-      valid: false,
-      reason: `File too large: ${(size / 1024 / 1024).toFixed(2)}MB > ${MAX_FILE_SIZE_MB}MB limit`
-    };
-  }
-  if (size <= 0) {
-    return { valid: false, reason: 'Invalid file size: 0 bytes' };
-  }
-  return { valid: true };
-}
 
 export interface FileTransferOptions {
   xmpp: any;
@@ -32,10 +20,17 @@ export function createFileTransferHandlers(options: FileTransferOptions) {
   const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<UploadSlot> => {
     console.log(`Requesting upload slot for ${filename} (${size} bytes)`);
 
+    // Validate filename
+    const filenameValidation = validators.sanitizeFilename(filename);
+    if (!filenameValidation.valid) {
+      throw new Error(`Invalid filename: ${filenameValidation.error}`);
+    }
+    const validFilename = filenameValidation.sanitized || filename;
+
     // Validate file size
-    const sizeValidation = validateFileSize(size);
+    const sizeValidation = validators.isValidFileSize(size, MAX_FILE_SIZE_BYTES);
     if (!sizeValidation.valid) {
-      throw new Error(sizeValidation.reason);
+      throw new Error(sizeValidation.error);
     }
 
     const iqId = Math.random().toString(36).substring(2);
@@ -120,9 +115,9 @@ export function createFileTransferHandlers(options: FileTransferOptions) {
       const size = stats.size;
 
       // Validate file size before requesting slot
-      const sizeValidation = validateFileSize(size);
+      const sizeValidation = validators.isValidFileSize(size, MAX_FILE_SIZE_BYTES);
       if (!sizeValidation.valid) {
-        throw new Error(sizeValidation.reason);
+        throw new Error(sizeValidation.error);
       }
 
       const slot = await requestUploadSlot(filename, size);

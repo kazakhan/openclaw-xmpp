@@ -2,12 +2,15 @@ import fs from "fs";
 import path from "path";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { MessageStore } from "./src/messageStore.js";
+import { validators } from "./src/security/validation.js";
+import { secureLog } from "./src/security/logging.js";
 
-// Simple file logger for debugging
+// Simple file logger for debugging with sanitization
 const debugLog = (msg: string) => {
   const logFile = path.join(__dirname, 'cli-debug.log');
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${msg}\n`;
+  const sanitizedMsg = secureLog.sanitizeForXmpp(msg).sanitized || msg;
+  const line = `[${timestamp}] ${sanitizedMsg}\n`;
   try {
     fs.appendFileSync(logFile, line);
   } catch (err) {
@@ -15,7 +18,7 @@ const debugLog = (msg: string) => {
   }
 };
 
-debugLog(`XMPP plugin loading at ${new Date().toISOString()}`);
+secureLog.info(`XMPP plugin loading at ${new Date().toISOString()}`);
 
 let pluginRegistered = false;
 
@@ -423,6 +426,12 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
     const downloadFile = async (url: string, tempDir: string, remoteJid?: string): Promise<string> => {
       debugLog(`Downloading file from ${url}`);
 
+      // Validate URL
+      const urlValidation = validators.isValidUrl(url);
+      if (!urlValidation.valid) {
+        throw new Error(`Invalid URL: ${urlValidation.error}`);
+      }
+
       // Check concurrent download limit
       if (remoteJid) {
         const limitCheck = checkConcurrentDownloadLimit(remoteJid);
@@ -436,26 +445,24 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
         fs.mkdirSync(tempDir, { recursive: true });
       }
 
-       // Generate filename from URL with path traversal protection
-       const urlObj = new URL(url);
-       const pathname = urlObj.pathname;
-       let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
-       
-       // Validate filename - only allow safe characters, no path separators
-       const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-       if (safeFilename !== filename) {
-        console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
-        filename = safeFilename;
+      // Generate filename and validate
+      const urlObj = new URL(url);
+      const pathname = urlObj.pathname;
+      let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
+
+      const filenameValidation = validators.sanitizeFilename(filename);
+      if (!filenameValidation.valid) {
+        throw new Error(`Invalid filename: ${filenameValidation.error}`);
       }
-      
-      // Ensure filename doesn't escape tempDir using path normalization
-      const normalizedPath = path.normalize(filename);
-      if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
-        filename = `file_${Date.now()}_${safeFilename}`;
-        console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
-      }
-      
+      filename = filenameValidation.sanitized || filename;
+
       const filePath = path.join(tempDir, filename);
+
+      // Validate path doesn't escape tempDir
+      const pathValidation = validators.isSafePath(filePath, tempDir);
+      if (!pathValidation.valid) {
+        throw new Error(`Invalid path: ${pathValidation.error}`);
+      }
      
      try {
        const response = await fetch(url);
@@ -1199,13 +1206,30 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          const inviteElement = xElement.getChild('invite');
          if (inviteElement) {
            const inviter = inviteElement.attrs.from || from.split('/')[0];
-           const reason = inviteElement.getChildText('reason') || 'No reason given';
-           const room = from.split('/')[0];
 
-           console.log(`🤝 Received MUC invite to room ${room} from ${inviter}: ${reason}`);
+           // Validate inviter JID
+           const inviterValidation = validators.sanitizeJid(inviter);
+           if (!inviterValidation.valid) {
+             console.log(`[SECURITY] Invalid inviter JID: ${inviterValidation.error}`);
+             return;
+           }
+           const validInviter = inviterValidation.sanitized || inviter.split('/')[0];
+
+           const reason = inviteElement.getChildText('reason') || 'No reason given';
+
+           // Sanitize room name
+           const roomRaw = from.split('/')[0];
+           const roomValidation = validators.sanitizeRoomName(roomRaw);
+           if (!roomValidation.valid) {
+             console.log(`[SECURITY] Invalid room name: ${roomValidation.error}`);
+             return;
+           }
+           const room = roomValidation.sanitized || roomRaw;
+
+           console.log(`🤝 Received MUC invite to room ${room} from ${validInviter}: ${reason}`);
 
            // Check if inviter is already approved (contact or admin)
-           const inviterBare = inviter.split('/')[0];
+           const inviterBare = validInviter.split('/')[0];
            const isApprovedContact = contacts.exists(inviterBare);
 
            if (isApprovedContact) {

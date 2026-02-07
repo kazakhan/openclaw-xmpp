@@ -5,6 +5,35 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-02-07
+
+**6. Comprehensive Input Validation**
+- **Issue**: Multiple input points lacked validation, allowing potential JID injection, path traversal, and XSS attacks
+- **Solution**: Created `src/security/validation.ts` with comprehensive validators applied to all input points:
+  - **JID Validation** (`validators.isValidJid()`): RFC 7622 compliant format checking with length limits
+  - **JID Sanitization** (`validators.sanitizeJid()`): Lowercase normalization and format validation
+  - **Filename Sanitization** (`validators.sanitizeFilename()`): Safe character filtering, length limits, path stripping
+  - **Path Validation** (`validators.isSafePath()`): Path traversal prevention with base directory enforcement
+  - **XMPP Message Sanitization** (`validators.sanitizeForXmpp()`): Control character removal
+  - **Message Body Sanitization** (`validators.sanitizeMessageBody()`): Length limits and control character removal
+  - **URL Validation** (`validators.isValidUrl()`): Protocol and hostname validation, blocks localhost/private IPs
+  - **Room Name Sanitization** (`validators.sanitizeRoomName()`): Server part validation and name normalization
+  - **Nickname Sanitization** (`validators.sanitizeNickname()`): Length limits and control character removal
+  - **File Size Validation** (`validators.isValidFileSize()`): Reusable size validation with configurable limits
+  - **HTML Sanitization** (`validators.sanitizeForHtml()`): XSS prevention for display purposes
+- **New Files**:
+  - `src/security/validation.ts` - Comprehensive validation utilities
+- **Applied Validators**:
+  - `downloadFile()` - URL validation, filename sanitization, path validation
+  - MUC invite handler - JID validation for inviter, room name sanitization
+  - `fileTransfer.ts` - Filename validation, file size validation
+- **Blocked Attack Vectors**:
+  - Path traversal via filenames
+  - JID injection attacks
+  - XSS via message content
+  - Private/localhost URL access
+  - Control character injection
+  
 ## [1.5.2] - 2026-02-07
 
 ### Security
@@ -56,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `acceptRoomInvite()` helper function to join approved rooms
   - `denyRoomInvite()` helper function to decline invites
 - **Behavior Change**: The bot no longer auto-joins rooms; invites from non-contacts require admin approval
+
 
 ### Added
 - **Subscription Management Commands**: New CLI commands to manage pending subscription requests
