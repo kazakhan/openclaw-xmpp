@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.3] - 2026-02-07
 
+**8. Improve Rate Limiting**
+- **Issue**: `index.ts:109-126` used simple fixed-window rate limiting that could be bypassed by varying JID resources, with no persistent blocking for repeat offenders
+- **Solution**: Created `src/security/rateLimiter.ts` with `AdvancedRateLimiter` class implementing:
+  - **Sliding Window Algorithm**: More accurate rate limiting using request timestamps instead of fixed windows
+  - **IP-Based Limiting**: Separate rate limits per IP address (additional restriction layer)
+  - **Graduated Response**: Warns, then throttles, then blocks repeat offenders
+  - **Temporary Blocking**: Blocks users after 3 violations for 5 minutes
+  - **Remaining Requests**: Returns `remaining` count so users know their limit
+  - **Retry-After**: Provides `retryAfter` seconds when blocked
+- **New Configuration**:
+  - `windowMs: 60000` - 1 minute sliding window
+  - `maxRequests: 10` - Max requests per window
+  - `blockDurationMs: 300000` - 5 minute block
+  - `maxViolationsBeforeBlock: 3` - Violations before blocking
+- **New Class**: `AdvancedRateLimiter` with methods:
+  - `check(identifier, ip?)` - Check rate limit, returns `{ allowed, reason, remaining, retryAfter }`
+  - `unblock(identifier)` - Manually unblock a user
+  - `getStats(identifier)` - Get rate limit statistics
+  - `getBlockedIdentifiers()` - List all blocked JIDs
+  - `reset(identifier?)` - Reset limits for specific or all users
+- **Updated Functions**:
+  - `checkRateLimit()` now returns remaining count and uses AdvancedRateLimiter
+  - Uses `secureLog.warn()` for rate limit warnings
+- **Backward Compatibility**: `rateLimiter` exported for CLI access
+
 **7. Sanitize Debug Logs**
 - **Issue**: `index.ts` used raw `debugLog()` function that logged sensitive data including JIDs, message content, and potentially credentials to `cli-debug.log`
 - **Solution**: Created `src/security/logging.ts` with `secureLog` module that automatically sanitizes sensitive data:

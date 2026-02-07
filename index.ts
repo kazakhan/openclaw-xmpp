@@ -4,6 +4,7 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { MessageStore } from "./src/messageStore.js";
 import { validators } from "./src/security/validation.js";
 import { secureLog } from "./src/security/logging.js";
+import { AdvancedRateLimiter, createRateLimiter } from "./src/security/rateLimiter.js";
 
 // Simple file logger for debugging with sanitization
 const debugLog = (msg: string) => {
@@ -75,26 +76,31 @@ const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 const MAX_CONCURRENT_DOWNLOADS = 3;
 const activeDownloads = new Map<string, { size: number; startTime: number }>();
 
-// Validate file size before transfer
-function validateFileSize(size: number): { valid: boolean; reason?: string } {
-  if (size > MAX_FILE_SIZE_BYTES) {
-    return {
-      valid: false,
-      reason: `File too large: ${(size / 1024 / 1024).toFixed(2)}MB > ${MAX_FILE_SIZE_MB}MB limit`
-    };
+// Advanced rate limiter
+export const rateLimiter = createRateLimiter({
+  windowMs: 60000,        // 1 minute window
+  maxRequests: 10,         // Max commands per window
+  blockDurationMs: 300000, // 5 minute block
+  maxViolationsBeforeBlock: 3
+});
+
+function checkRateLimit(jid: string): { allowed: boolean; reason?: string; remaining?: number } {
+  const result = rateLimiter.check(jid);
+  if (!result.allowed && result.reason) {
+    secureLog.warn(`Rate limit exceeded for ${jid}: ${result.reason}`);
   }
-  if (size <= 0) {
-    return { valid: false, reason: 'Invalid file size: 0 bytes' };
-  }
-  return { valid: true };
+  return {
+    allowed: result.allowed,
+    reason: result.reason,
+    remaining: result.remaining
+  };
 }
 
-// Check concurrent download limit
 function checkConcurrentDownloadLimit(remoteJid: string): { allowed: boolean; reason?: string } {
   const userDownloads = Array.from(activeDownloads.entries())
     .filter(([_, data]) => {
       const elapsed = Date.now() - data.startTime;
-      return elapsed < 5 * 60 * 1000; // Count downloads from last 5 minutes
+      return elapsed < 5 * 60 * 1000;
     }).length;
 
   if (userDownloads >= MAX_CONCURRENT_DOWNLOADS) {
@@ -104,25 +110,6 @@ function checkConcurrentDownloadLimit(remoteJid: string): { allowed: boolean; re
     };
   }
   return { allowed: true };
-}
-
-function checkRateLimit(jid: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(jid);
-  
-  if (!entry || now - entry.windowStart > rateLimitWindowMs) {
-    // Start new window
-    rateLimitMap.set(jid, { count: 1, windowStart: now });
-    return true;
-  }
-  
-  if (entry.count >= rateLimitMaxRequests) {
-    console.log(`[RATE LIMIT] Rejected command from ${jid} (${entry.count} requests in window)`);
-    return false;
-  }
-  
-  entry.count++;
-  return true;
 }
 
 
@@ -473,22 +460,22 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
 
        // Check content-length header before downloading
        const contentLength = response.headers.get('content-length');
-       if (contentLength) {
-         const size = parseInt(contentLength, 10);
-         const validation = validateFileSize(size);
-         if (!validation.valid) {
-           throw new Error(validation.reason);
-         }
-       }
+        if (contentLength) {
+          const size = parseInt(contentLength, 10);
+          const validation = validators.isValidFileSize(size);
+          if (!validation.valid) {
+            throw new Error(validation.error || 'Invalid file size');
+          }
+        }
 
-       const buffer = await response.arrayBuffer();
-       const bufferSize = buffer.byteLength;
+        const buffer = await response.arrayBuffer();
+        const bufferSize = buffer.byteLength;
 
-       // Validate actual downloaded size
-       const sizeValidation = validateFileSize(bufferSize);
-       if (!sizeValidation.valid) {
-         throw new Error(sizeValidation.reason);
-       }
+        // Validate actual downloaded size
+        const sizeValidation = validators.isValidFileSize(bufferSize);
+        if (!sizeValidation.valid) {
+          throw new Error(sizeValidation.error || 'Invalid file size');
+        }
 
        // Track this download
        const downloadId = `${remoteJid || 'unknown'}_${Date.now()}`;
@@ -952,20 +939,20 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
              const size = file.attrs.size ? parseInt(file.attrs.size) : 0;
              secureLog.debug(`File offer: ${filename} (${size} bytes)`);
 
-             // Validate file size
-             if (size > 0) {
-               const sizeValidation = validateFileSize(size);
-               if (!sizeValidation.valid) {
-                 console.log(`[SECURITY] Rejected file transfer: ${sizeValidation.reason}`);
-                 const errorIq = xml("iq", { to: from, type: "error", id },
-                   xml("error", { type: "cancel" },
-                     xml("file-size-too-big", { xmlns: "urn:xmpp:filesize:0" }),
-                     xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }, sizeValidation.reason)
-                   )
-                 );
-                 await xmpp.send(errorIq);
-                 return;
-               }
+              // Validate file size
+              if (size > 0) {
+                const sizeValidation = validators.isValidFileSize(size);
+                if (!sizeValidation.valid) {
+                  console.log(`[SECURITY] Rejected file transfer: ${sizeValidation.error}`);
+                  const errorIq = xml("iq", { to: from, type: "error", id },
+                    xml("error", { type: "cancel" },
+                      xml("file-size-too-big", { xmlns: "urn:xmpp:filesize:0" }),
+                      xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }, sizeValidation.error || 'File too large')
+                    )
+                  );
+                  await xmpp.send(errorIq);
+                  return;
+                }
              }
 
              // Check for supported stream methods
