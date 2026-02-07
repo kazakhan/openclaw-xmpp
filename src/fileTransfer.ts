@@ -3,6 +3,8 @@ import path from "path";
 import { xml } from "@xmpp/client";
 import { UploadSlot } from "./types.js";
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
+
 export interface FileTransferOptions {
   xmpp: any;
   domain: string;
@@ -95,6 +97,10 @@ export function createFileTransferHandlers(options: FileTransferOptions) {
       const stats = await fs.promises.stat(filePath);
       const filename = path.basename(filePath);
       const size = stats.size;
+      
+      if (size > MAX_FILE_SIZE) {
+        throw new Error(`File too large: ${size} bytes > ${MAX_FILE_SIZE} bytes limit`);
+      }
       
       const slot = await requestUploadSlot(filename, size);
       

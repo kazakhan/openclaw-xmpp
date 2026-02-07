@@ -3,6 +3,10 @@ import path from "path";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { MessageStore } from "./src/messageStore.js";
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
+const MAX_CONCURRENT_TRANSFERS = 3;
+const activeDownloads = new Map<string, { size: number; startTime: number }>();
+
 // Simple file logger for debugging
 const debugLog = (msg: string) => {
   const logFile = path.join(__dirname, 'cli-debug.log');
@@ -394,14 +398,26 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       
       const filePath = path.join(tempDir, filename);
      
-     try {
-       const response = await fetch(url);
-       if (!response.ok) {
-         throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-       }
-       
-       const buffer = await response.arrayBuffer();
-       await fs.promises.writeFile(filePath, Buffer.from(buffer));
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+        }
+        
+        const contentLength = response.headers.get("content-length");
+        if (contentLength) {
+          const fileSize = parseInt(contentLength, 10);
+          if (fileSize > MAX_FILE_SIZE) {
+            throw new Error(`File too large: ${fileSize} bytes > ${MAX_FILE_SIZE} bytes limit`);
+          }
+        }
+        
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength > MAX_FILE_SIZE) {
+          throw new Error(`File too large: ${buffer.byteLength} bytes > ${MAX_FILE_SIZE} bytes limit`);
+        }
+        
+        await fs.promises.writeFile(filePath, Buffer.from(buffer));
        
        console.log(`File downloaded to ${filePath} (${buffer.byteLength} bytes)`);
        return filePath;
@@ -743,6 +759,17 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
             
             if (supportedMethod === "http://jabber.org/protocol/ibb") {
               console.log(`Accepting SI file transfer with IBB: ${filename}`);
+              if (size > MAX_FILE_SIZE) {
+                console.log(`[SECURITY] Rejected file transfer: ${filename} (${size} bytes) exceeds ${MAX_FILE_SIZE} bytes limit`);
+                const errorIq = xml("iq", { to: from, type: "error", id },
+                  xml("error", { type: "modify" },
+                    xml("file-too-large", { xmlns: "urn:xmpp:file:too-large" }),
+                    xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp:stanzas" }, `File exceeds maximum size of ${MAX_FILE_SIZE} bytes`)
+                  )
+                );
+                await xmpp.send(errorIq);
+                return;
+              }
               // Capture session ID from SI element
               const sid = si.attrs.sid;
               if (!sid) {
