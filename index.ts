@@ -7,6 +7,7 @@ import { secureLog } from "./src/security/logging.js";
 import { AdvancedRateLimiter, createRateLimiter } from "./src/security/rateLimiter.js";
 import { decryptPasswordFromConfig } from "./src/security/encryption.js";
 import { SecureFileTransfer, createSecureFileTransfer } from "./src/security/fileTransfer.js";
+import { AuditLogger, AuditEventType, logAuditEvent, createAuditLogger } from "./src/security/audit.js";
 
 // Simple file logger for debugging with sanitization
 const debugLog = (msg: string) => {
@@ -662,19 +663,26 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       }
     };
 
-  xmpp.on("error", (err: any) => {
-    log.error("XMPP error", err);
-    console.error("XMPP error details:", err);
-  });
+   xmpp.on("error", (err: any) => {
+     log.error("XMPP error", err);
+     console.error("XMPP error details:", err);
+     logAuditEvent(AuditEventType.SUSPICIOUS_ACTIVITY, cfg?.jid || 'unknown', 'xmpp_error', 'failure', {
+       metadata: { error: String(err).substring(0, 500) }
+     });
+   });
 
-  xmpp.on("offline", () => {
-    secureLog.debug("XMPP went offline");
-    isRunning = false;
-  });
+   xmpp.on("offline", () => {
+     secureLog.debug("XMPP went offline");
+     isRunning = false;
+     logAuditEvent(AuditEventType.XMPP_DISCONNECTED, cfg?.jid || 'unknown', 'xmpp_offline', 'success');
+   });
 
-   xmpp.on("online", async (address: any) => {
-      log.info("XMPP online as", address.toString());
-      secureLog.debug("XMPP connected successfully");
+    xmpp.on("online", async (address: any) => {
+       log.info("XMPP online as", address.toString());
+       secureLog.debug("XMPP connected successfully");
+       logAuditEvent(AuditEventType.XMPP_CONNECTED, cfg?.jid || 'unknown', 'xmpp_online', 'success', {
+         metadata: { address: address.toString() }
+       });
  
       // Send initial presence to appear online
       try {

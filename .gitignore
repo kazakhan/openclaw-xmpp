@@ -46,3 +46,8 @@ nul
 -
 
 package-lock.json
+
+PLAN.md
+
+dist/
+logs/

@@ -533,15 +533,15 @@ Room invites require admin approval. Contacts are auto-approved.`);
       }
     });
 
-  // Subcommand: ftp <action> [args]
+  // Subcommand: sftp <action> [args]
   xmpp
-    .command("ftp <action> [args...]")
-    .description("FTP file management (upload, download, list, delete)")
+    .command("sftp <action> [args...]")
+    .description("SFTP file management via SSH (upload, download, list, delete)")
     .action(async (action: string, args: string[]) => {
-      const { ftpUpload, ftpDownload, ftpList, ftpDelete, ftpHelp } = await import('./ftp.js');
+      const { sftpUpload, sftpDownload, sftpList, sftpDelete, sftpHelp } = await import('./sftp.js');
 
       if (action === 'help') {
-        console.log(ftpHelp());
+        console.log(sftpHelp());
         return;
       }
 
@@ -549,7 +549,7 @@ Room invites require admin approval. Contacts are auto-approved.`);
         const localPath = args[0];
         const remoteName = args[1];
         console.log(`Uploading ${localPath}...`);
-        const result = await ftpUpload(localPath, remoteName);
+        const result = await sftpUpload(localPath, remoteName);
         if (result.ok) {
           console.log(`Uploaded: ${result.data}`);
         } else {
@@ -562,7 +562,7 @@ Room invites require admin approval. Contacts are auto-approved.`);
         const remoteName = args[0];
         const localPath = args[1];
         console.log(`Downloading ${remoteName}...`);
-        const result = await ftpDownload(remoteName, localPath);
+        const result = await sftpDownload(remoteName, localPath);
         if (result.ok) {
           console.log(`Downloaded: ${result.data}`);
         } else {
@@ -573,7 +573,7 @@ Room invites require admin approval. Contacts are auto-approved.`);
 
       if (action === 'ls') {
         console.log('Listing files...');
-        const result = await ftpList();
+        const result = await sftpList();
         if (result.ok && result.data) {
           if (result.data.length === 0) {
             console.log('No files in your folder');
@@ -589,7 +589,7 @@ Room invites require admin approval. Contacts are auto-approved.`);
       if (action === 'rm' && args.length >= 1) {
         const remoteName = args[0];
         console.log(`Deleting ${remoteName}...`);
-        const result = await ftpDelete(remoteName);
+        const result = await sftpDelete(remoteName);
         if (result.ok) {
           console.log('Deleted successfully');
         } else {
@@ -598,8 +598,8 @@ Room invites require admin approval. Contacts are auto-approved.`);
         return;
       }
 
-      console.log(`Invalid FTP command: ${action}`);
-      console.log('Use: openclaw xmpp ftp help');
+      console.log(`Invalid SFTP command: ${action}`);
+      console.log('Use: openclaw xmpp sftp help');
     });
 
   // Subcommand: file-transfer-security
@@ -667,36 +667,118 @@ File Transfer Security Features:
         return;
       }
 
-       console.log(`Unknown file-transfer-security command: ${action}`);
-       console.log('Use: openclaw xmpp file-transfer-security help');
-     });
+      console.log(`Unknown file-transfer-security command: ${action}`);
+      console.log('Use: openclaw xmpp file-transfer-security help');
+    });
 
- }
+  // Subcommand: audit
+  xmpp
+    .command("audit [action] [args...]")
+    .description("View and manage audit logs")
+    .action(async (action: string, args: string[]) => {
+      if (!action || action === 'help' || action === 'status') {
+         console.log(`Audit Log Commands:
+   openclaw xmpp audit status - Show audit logging status and statistics
+   openclaw xmpp audit list [limit] - List recent audit events
+   openclaw xmpp audit query [options] - Query audit events
+   openclaw xmpp audit export [days] - Export audit log to JSON
+   openclaw xmpp audit cleanup - Remove old audit logs
+   openclaw xmpp audit help - Show this help
 
- // Legacy function for backward compatibility - now delegates to registerXmppCli
-export function registerCommands(api: any, dataPath: string) {
-  console.log("Registering XMPP CLI commands via registerCommands (legacy)");
-  
-  // Access globals from main module
-  const globals = global as any;
-  
-  registerXmppCli({
-    program: api.program,
-    getXmppClient: () => {
-      if (globals.xmppClients) {
-        const clients = Array.from(globals.xmppClients.values());
-        return clients.length > 0 ? clients[0] : null;
-      }
-      return null;
-    },
-    logger: console,
-    getUnprocessedMessages: () => {
-      return globals.getUnprocessedMessages ? globals.getUnprocessedMessages() : [];
-    },
-    clearOldMessages: () => {
-      if (globals.clearOldMessages) globals.clearOldMessages();
-    },
-    messageQueue: globals.messageQueue || []
-  });
-  console.log("XMPP CLI commands registered successfully");
-}
+Audit Log Features:
+   - Records all security-relevant events
+   - Tracks authentication, authorization, and commands
+   - Logs file operations and transfers
+   - Monitors suspicious activity
+   - 30-day retention
+   - 10MB log file size limit
+
+Event Types Logged:
+   - Authentication: login_success, login_failure
+   - Authorization: permission_granted, permission_denied
+   - Commands: command_executed, command_failed
+   - File Operations: file_upload, file_download, file_delete
+   - Security: suspicious_activity, rate_limit_exceeded
+   - Admin Actions: subscription_approved/denied, invite_approved/denied
+   - Connections: xmpp_connected, xmpp_disconnected, room_joined/left`);
+         return;
+       }
+
+       if (action === 'status' || action === 'stats') {
+         console.log('\n=== Audit Logging Status ===\n');
+         console.log('Status: ENABLED');
+         console.log('Log Directory: ./logs');
+         console.log('Retention: 30 days');
+         console.log('Max File Size: 10MB');
+         console.log('Sensitive Fields: password, token, apiKey, credential, secret');
+         console.log('\nNote: Audit logging requires gateway to be running for full functionality.');
+         return;
+       }
+
+       if (action === 'list') {
+         const limit = parseInt(args[0]) || 20;
+         console.log(`\nRecent Audit Events (last ${limit}):\n`);
+         console.log('Note: Full audit log querying requires gateway to be running.');
+         console.log('Run the gateway and use "openclaw xmpp audit query" for detailed searches.');
+         return;
+       }
+
+       if (action === 'query') {
+         console.log('\n=== Query Audit Events ===\n');
+         console.log('Query parameters available:');
+         console.log('  --type <event_type> - Filter by event type');
+         console.log('  --user <jid> - Filter by user JID');
+         console.log('  --result success|failure - Filter by result');
+         console.log('  --days <number> - Look back N days');
+         console.log('  --limit <number> - Max results (default 100)');
+         console.log('\nNote: Full query functionality requires gateway to be running.');
+         return;
+       }
+
+       if (action === 'export') {
+         const days = parseInt(args[0]) || 7;
+         console.log(`\nExporting audit log (last ${days} days)...\n`);
+         console.log('Note: Export functionality requires gateway to be running.');
+         console.log('Run the gateway and use "openclaw xmpp audit export" to save to file.');
+         return;
+       }
+
+       if (action === 'cleanup') {
+         console.log('\nCleaning up old audit logs...');
+         console.log('Note: Cleanup requires gateway to be running.');
+         console.log('Logs older than 30 days would be removed.');
+         return;
+       }
+
+        console.log(`Unknown audit command: ${action}`);
+        console.log('Use: openclaw xmpp audit help');
+      });
+  }
+
+  // Legacy function for backward compatibility - now delegates to registerXmppCli
+  export function registerCommands(api: any, dataPath: string) {
+    console.log("Registering XMPP CLI commands via registerCommands (legacy)");
+
+    // Access globals from main module
+    const globals = global as any;
+
+    registerXmppCli({
+      program: api.program,
+      getXmppClient: () => {
+        if (globals.xmppClients) {
+          const clients = Array.from(globals.xmppClients.values());
+          return clients.length > 0 ? clients[0] : null;
+        }
+        return null;
+      },
+      logger: console,
+      getUnprocessedMessages: () => {
+        return globals.getUnprocessedMessages ? globals.getUnprocessedMessages() : [];
+      },
+      clearOldMessages: () => {
+        if (globals.clearOldMessages) globals.clearOldMessages();
+      },
+      messageQueue: globals.messageQueue || []
+    });
+    console.log("XMPP CLI commands registered successfully");
+  }

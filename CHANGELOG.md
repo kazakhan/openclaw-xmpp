@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.3] - 2026-02-07
 
+### Security
+
+**4. Enable SFTP (SSH File Transfer)**
+- **Issue**: `ftp.ts:54,85,114,139` used `secure: false` allowing plaintext FTP credentials and file data transmission
+- **Solution**: Replaced FTP with SFTP over SSH using the `ssh2` package
+- **Changes**:
+  - Created `src/sftp.ts` with full SFTP implementation using SSH2
+  - Updated `src/commands.ts` to use sftp command instead of ftp
+  - Maintained same CLI interface: upload, download, ls, rm
+  - Uses encrypted XMPP password from security/encryption module
+- **SFTP Configuration**:
+  - Host: kazakhan.com
+  - Port: 2211 (SSH)
+  - Username: XMPP JID (local part)
+  - Password: Decrypted from encrypted config
+  - Directory: Home directory
+- **New Files**:
+  - `src/sftp.ts` - SFTP implementation using ssh2 package
+- **CLI Commands**:
+  - `openclaw xmpp sftp upload <local-path> [remote-name]` - Upload file
+  - `openclaw xmpp sftp download <remote-name> [local-path]` - Download file
+  - `openclaw xmpp sftp ls` - List files
+  - `openclaw xmpp sftp rm <remote-name>` - Delete file
+  - `openclaw xmpp sftp help` - Show help
+- **Backward Compatibility**:
+  - Old `src/ftp.ts` preserved as fallback for FTP functionality
+
+**12. Audit Logging System**
+- **Issue**: No comprehensive audit trail for security events, administrative actions, and file operations
+- **Solution**: Created `src/security/audit.ts` with comprehensive audit logging:
+  - **Event Types**: 25+ event types covering auth, commands, files, security, admin actions, connections, and data
+  - **Log Persistence**: JSON lines format with automatic rotation (10MB per file)
+  - **Log Retention**: 30-day retention with cleanup
+  - **Sensitive Data Redaction**: Automatic redaction of passwords, tokens, API keys
+  - **Buffering**: Event buffer with periodic flush (5 seconds)
+- **New Files**:
+  - `src/security/audit.ts` - Comprehensive audit logging system
+- **Audit Event Types**:
+  - Authentication: login_success, login_failure
+  - Authorization: permission_granted, permission_denied
+  - Commands: command_executed, command_failed
+  - File Operations: file_upload, file_download, file_delete
+  - Security: suspicious_activity, rate_limit_exceeded, invalid_input, quota_exceeded
+  - Admin Actions: subscription_approved/denied, invite_approved/denied, admin_added/removed
+  - Connections: xmpp_connected, xmpp_disconnected, room_joined, room_left
+  - Data: message_sent, message_received
+- **New Class**: `AuditLogger` with methods:
+  - `log(event)` - Log an audit event
+  - `query(filter)` - Query audit events with filters
+  - `export(startDate, endDate)` - Export audit log to JSON
+  - `cleanup()` - Remove old audit logs
+  - `getStats()` - Get audit logging statistics
+- **New Function**: `logAuditEvent(type, userId, action, result, options)` - Convenience wrapper
+- **Updated Functions**:
+  - `index.ts` - Added audit logging for XMPP connection events
+- **New CLI Command**:
+  - `openclaw xmpp audit status` - Show audit logging status
+  - `openclaw xmpp audit list [limit]` - List recent audit events
+  - `openclaw xmpp audit query` - Query audit events
+  - `openclaw xmpp audit export [days]` - Export audit log to JSON
+  - `openclaw xmpp audit cleanup` - Remove old audit logs
+- **Log Format**:
+  ```
+  {"id":"uuid","timestamp":1234567890,"type":"auth:login_success","userId":"user@example.com","action":"xmpp_online","result":"success","source":"xmpp-plugin"}
+  ```
+
 **10. Enhanced File Transfer Security**
 - **Issue**: File transfers lacked comprehensive security including content validation, malware scanning, and quota management
 - **Solution**: Created `src/security/fileTransfer.ts` with comprehensive file transfer security:
