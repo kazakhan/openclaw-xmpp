@@ -642,29 +642,11 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       const nick = parts[1] || '';
       
        // Handle subscription requests (not MUC)
-      if (type === "subscribe") {
-        console.log(`📨 Received subscription request from ${from}`);
-        // Add to contacts if not already
-        const bareFrom = from.split('/')[0];
-        if (!contacts.exists(bareFrom)) {
-          contacts.add(bareFrom);
-          console.log(`📝 Added ${bareFrom} to contacts`);
-        }
-        // Auto-approve subscription
-        try {
-          const subscribed = xml("presence", { to: from, type: "subscribed" });
-          await xmpp.send(subscribed);
-          console.log(`✅ Auto-approved subscription for ${from}`);
-          
-          // Also request subscription from them (mutual)
-          const subscribe = xml("presence", { to: from, type: "subscribe" });
-          await xmpp.send(subscribe);
-          console.log(`📤 Sent subscription request to ${from}`);
-        } catch (err) {
-          console.error(`❌ Failed to handle subscription request from ${from}:`, err);
-        }
-        return;
-      }
+       if (type === "subscribe") {
+         const bareFrom = from.split('/')[0];
+         console.log(`📨 Subscription request from ${bareFrom} - awaiting admin approval`);
+         return;
+       }
       
        // Handle other subscription types
       if (type === "subscribed" || type === "unsubscribe" || type === "unsubscribed") {
