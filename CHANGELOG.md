@@ -5,6 +5,149 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.7] - 2026-02-07
+
+### Security
+- **Enhanced File Transfer Security**: Implemented comprehensive file transfer security layer with MIME type validation, quarantine system, malware scanning hook, secure temp files, per-user quotas, and SHA-256 integrity verification.
+
+#### New Files
+- `src/security/fileTransfer.ts` - Comprehensive file transfer security module with validation, quarantine, and malware detection
+
+#### New Interface: `FileTransferConfig`
+- `maxFileSizeMB: number` - Maximum file size for transfers (default: 10MB)
+- `maxUploadSizeMB: number` - Maximum upload size (default: 10MB)
+- `maxDownloadSizeMB: number` - Maximum download size (default: 10MB)
+- `allowedMimeTypes: string[]` - Array of permitted MIME types
+- `quarantineDir: string` - Directory for quarantined files
+- `enableVirusScan: boolean` - Enable malware scanning (default: false)
+- `userQuotaMB: number` - Per-user storage quota (default: 100MB)
+- `tempDir: string` - Directory for temporary files
+
+#### New Interface: `FileValidationResult`
+- `valid: boolean` - Whether file passed validation
+- `error?: string` - Error message if validation failed
+- `fileId?: string` - Sanitized filename
+- `hash?: string` - SHA-256 file hash
+- `size?: number` - File size in bytes
+- `mimeType?: string` - Detected MIME type
+- `quarantined?: boolean` - Whether file was quarantined
+
+#### New Interface: `QuarantineEntry`
+- `fileId: string` - Unique quarantine identifier
+- `originalPath: string` - Original file path
+- `quarantinePath: string` - Quarantined file path
+- `timestamp: number` - When file was quarantined
+- `reason: string` - Reason for quarantine
+- `hash: string` - SHA-256 hash of file
+- `size: number` - File size in bytes
+
+#### New Class: `SecureFileTransfer`
+
+**Constructor**
+- `constructor(config?: Partial<FileTransferConfig>)` - Creates instance with merged config, initializes temp/quarantine dirs
+
+**Public Methods**
+- `calculateHash(filePath: string): Promise<string>` - Calculates SHA-256 hash of file
+- `calculateHashFromBuffer(buffer: Buffer): Promise<string>` - Calculates SHA-256 hash from buffer
+- `detectMimeType(filename: string, buffer?: Buffer): string` - Detects MIME type from extension or magic bytes
+- `isAllowedMimeType(mimeType: string): boolean` - Checks if MIME type is allowed
+- `getFileExtension(filename: string): string` - Returns lowercase file extension
+- `validateFilename(filename: string): FileValidationResult` - Validates and sanitizes filename, blocks dangerous extensions (.exe, .bat, .cmd, .sh, .php, .js, .py, .pif, .msi, .dll, .scr, .jar)
+- `validateFileSize(size: number, isUpload?: boolean): FileValidationResult` - Validates file size against limits
+- `validateIncomingFile(filePath: string, metadata): Promise<FileValidationResult>` - Complete validation: size, MIME type, quota, malware scan, hash calculation
+- `quarantineFile(filePath: string, reason: string): Promise<void>` - Moves file to quarantine with metadata logging
+- `getQuarantineLog(): QuarantineEntry[]` - Returns all quarantine entries
+- `clearQuarantineLog(): void` - Clears quarantine log
+- `scanForMalware(filePath: string): Promise<{ clean: boolean; details?: string }>` - Scans for suspicious patterns (eval(base64_decode), $_GET/POST/REQUEST, shell_exec, system, etc.)
+- `createTempFile(prefix?: string): string` - Creates secure temp file with random suffix
+- `secureDeleteFile(filePath: string): Promise<boolean>` - Overwrites file with zeros before deletion
+- `getUserUsage(userId: string)` - Returns user storage usage statistics
+- `cleanupOldTempFiles(maxAgeMs?: number): number` - Deletes temp files older than maxAgeMs
+- `getStats()` - Returns security module statistics
+
+#### Allowed MIME Types
+- Images: image/jpeg, image/png, image/gif, image/webp
+- Documents: application/pdf, text/plain, text/markdown, text/html, text/csv
+- Data: application/json, application/zip
+- Audio: audio/mpeg, audio/wav
+- Video: video/mp4, video/webm
+
+#### Dangerous Extensions Blocked
+- Executables: .exe, .bat, .cmd, .sh
+- Scripts: .php, .js, .py, .pif
+- System: .msi, .dll, .scr, .jar
+
+#### Factory Function
+- `createSecureFileTransfer(config?: Partial<FileTransferConfig>): SecureFileTransfer` - Creates SecureFileTransfer instance
+
+#### Default Configuration
+```typescript
+{
+  maxFileSizeMB: 10,
+  maxUploadSizeMB: 10,
+  maxDownloadSizeMB: 10,
+  allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'text/plain', 'text/markdown', 'text/html', 'text/csv', 'application/json', 'application/zip', 'audio/mpeg', 'audio/wav', 'video/mp4', 'video/webm'],
+  quarantineDir: './quarantine',
+  enableVirusScan: false,
+  userQuotaMB: 100,
+  tempDir: './temp'
+}
+```
+
+#### Magic Byte Detection
+- JPEG: ffd8
+- PNG: 89504e47
+- GIF: 47494638
+- PDF: 25504446
+- ZIP: 504b34
+- WAV: 52494646
+- WebM: 1a45dfa3
+
+#### Malware Patterns Detected
+- PHP shells: eval(base64_decode)
+- Web shell patterns: $_GET, $_POST, $_REQUEST
+- Base64 encoded scripts in HTML
+- Privilege escalation: chmod, exec, shell_exec, system, passthru
+
+#### Usage Example
+```typescript
+import { createSecureFileTransfer } from './security/fileTransfer.js';
+
+const secureTransfer = createSecureFileTransfer({
+  maxFileSizeMB: 10,
+  quarantineDir: './quarantine',
+  tempDir: './temp',
+  enableVirusScan: true
+});
+
+// Validate incoming file
+const result = await secureTransfer.validateIncomingFile('/path/to/file.jpg', {
+  size: 1024,
+  mimeType: 'image/jpeg',
+  userId: 'user@example.com'
+});
+
+if (!result.valid) {
+  console.error('File rejected:', result.error);
+  if (result.quarantined) {
+    console.log('File was quarantined');
+  }
+  return;
+}
+
+console.log('File validated:', result.hash);
+
+// Get user quota usage
+const usage = secureTransfer.getUserUsage('user@example.com');
+console.log(`Used: ${usage.usedMB}MB / ${usage.limitMB}MB (${usage.percentage}%)`);
+```
+
+#### Backward Compatibility
+- Existing file transfers continue to work unchanged
+- Default config uses permissive settings (virus scan disabled by default)
+- Only files failing validation are affected
+- Quarantine and temp directories created automatically
+
 ## [1.6.6] - 2026-02-07
 
 ### Security
