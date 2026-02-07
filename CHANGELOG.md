@@ -5,7 +5,12 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.1] - 2026-02-06
+## [1.6.5] - 2026-02-07
+
+### Security
+- **Sanitize Debug Logs**: Created `src/security/logging.ts` with `secureLog` utility that automatically redacts sensitive data (passwords, credentials, API keys) from logs. Added sanitization to `debugLog()` function in `index.ts` to prevent sensitive information exposure.
+
+## [1.6.4] - 2026-02-07
 
 ### Fixed
 - **Whiteboard Command**: Added missing `/whiteboard` command handler for AI image generation and URL sharing
@@ -34,6 +39,22 @@ Add `ftpPort` to your XMPP account config for FTP file management:
   }
 }
 ```
+
+## [1.6.4] - 2026-02-07
+
+### Security
+- **Comprehensive Input Validation Implemented**: Created `src/security/validation.ts` with validators:
+  - `isValidJid()` - Validates JID format (RFC 7622)
+  - `sanitizeFilename()` - Sanitizes filenames, prevents path traversal
+  - `isSafePath()` - Validates paths don't escape base directory
+  - `sanitizeForHtml()` - Prevents XSS attacks
+  - `sanitizeMessage()` - Sanitizes message content
+  - `isValidUrl()` - Validates URL format
+  - `sanitizeJid()` - Normalizes JIDs
+  Applied validators in `index.ts`:
+  - `downloadFile()` - Uses URL validation and filename sanitization
+  - IBB file transfers - Uses filename sanitization and path validation
+  - All file paths validated before use
 
 ## [Unreleased]
 
