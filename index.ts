@@ -1016,6 +1016,10 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
     }
     
     if (stanza.is("message")) {
+      // DEBUG stanza for invite: Log raw debugging
+      console.log(`[RAW STANZA] from=${stanza.attrs.from}, type=${stanza.attrs.type}`);
+      console.log(`[RAW STANZA XML] ${stanza.toString()}`);
+      
       const from = stanza.attrs.from;
       const to = stanza.attrs.to;
       const messageType = stanza.attrs.type || "chat";
@@ -1043,6 +1047,49 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
             console.log(`✅ Auto-accepted invite to room ${room}`);
           } catch (err) {
             console.error(`❌ Failed to accept invite to room ${from}:`, err);
+          }
+          return;
+        }
+      }
+      
+      // DEBUG: Check all x elements in stanza
+      const allXElements = stanza.getChildren('x');
+      console.log(`[DEBUG] Message from=${from}, type=${messageType}, xElements count=${allXElements?.length || 0}`);
+      for (const xel of allXElements || []) {
+        console.log(`[DEBUG] Found x element with xmlns: ${xel.attrs.xmlns}`);
+      }
+      
+      // Check for jabber:x:conference invites
+      const conferenceElement = stanza.getChild('x', 'jabber:x:conference');
+      console.log(`[DEBUG] jabber:x:conference element found: ${!!conferenceElement}`);
+      if (conferenceElement) {
+        console.log(`[DEBUG] conferenceElement attrs:`, conferenceElement.attrs);
+        console.log(`[DEBUG] conferenceElement children:`, conferenceElement.children);
+      }
+      
+      if (conferenceElement) {
+        const room = conferenceElement.attrs.jid as string;
+        const password = conferenceElement.attrs.password as string;
+        const reason = conferenceElement.attrs.reason as string || 'No reason given';
+        console.log(`[DEBUG] Parsed invite - room=${room}, password=${password}, reason=${reason}`);
+        
+        if (room) {
+          console.log(`🤝 Received jabber:x:conference invite to room ${room}: ${reason}`);
+          
+          // Auto-accept invite by joining the room
+          try {
+            const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+              xml("x", { xmlns: "http://jabber.org/protocol/muc" },
+                password ? xml("password", {}, password) : undefined,
+                xml("history", { maxstanzas: "0" })
+              )
+            );
+            await xmpp.send(presence);
+            joinedRooms.add(room);
+            roomNicks.set(room, getDefaultNick());
+            console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
+          } catch (err) {
+            console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
           }
           return;
         }
@@ -1109,10 +1156,45 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
          }
        }
        
-       // Only process messages with body
-        const body = stanza.getChildText("body");
-        if (!body && mediaUrls.length === 0) return;
-       
+        // Only process messages with body
+         const body = stanza.getChildText("body");
+         if (!body && mediaUrls.length === 0) return;
+        
+        // Check for jabber:x:conference invites in body (may be escaped)
+        if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
+          console.log(`🤝 Checking for jabber:x:conference invite in body: ${body.substring(0, 100)}`);
+          
+          // Extract invite attributes (handle both escaped and unescaped)
+          const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
+          const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
+          const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
+          
+          const room = jidMatch?.[1];
+          const password = passwordMatch?.[1];
+          const reason = reasonMatch?.[1] || 'No reason given';
+          
+          if (room) {
+            console.log(`🤝 Detected jabber:x:conference invite to room ${room}: ${reason}`);
+            
+            // Auto-accept invite by joining the room
+            try {
+              const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+                xml("x", { xmlns: "http://jabber.org/protocol/muc" },
+                  password ? xml("password", {}, password) : undefined,
+                  xml("history", { maxstanzas: "0" })
+                )
+              );
+              await xmpp.send(presence);
+              joinedRooms.add(room);
+              roomNicks.set(room, getDefaultNick());
+              console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
+            } catch (err) {
+              console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
+            }
+            return; // Don't dispatch invite to AI
+          }
+        }
+        
         debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
         
         // Strip resource from sender JID for contact check

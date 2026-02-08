@@ -5,6 +5,52 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-02-08
+
+### Added
+- **Jabber:x:Conference Auto-Join**: Added automatic room joining for direct invitations sent via jabber:x:conference namespace.
+
+#### Feature
+The XMPP plugin now automatically detects and accepts room invitations delivered through the jabber:x:conference namespace (XEP-0248). When a message contains an invite in the body (sometimes escaped as `&lt;x xmlns='jabber:x:conference'...`), the plugin extracts the room JID, password, and reason, then sends MUC presence to join the room.
+
+#### Problem
+When other XMPP clients send room invitations using the jabber:x:conference namespace, the invite XML element may appear escaped inside the message body rather than as a proper child element. This caused:
+- Invite detection to fail (`stanza.getChild('x', 'jabber:x:conference')` returned null)
+- Invites to be dispatched to the AI agent instead of being handled locally
+- The AI would respond with a message addressed to the room, resulting in "not in room" errors
+
+#### Solution
+Added body content inspection to detect escaped jabber:x:conference invites:
+```typescript
+if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
+  const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
+  const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
+  const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
+  // Auto-join room...
+}
+```
+
+#### Changes
+- `index.ts:1163-1200` - Added jabber:x:conference invite detection and auto-join logic
+- Detects invites whether XML is escaped (`&lt;x...&gt;`) or unescaped
+- Extracts room JID, optional password, and reason from invite attributes
+- Sends MUC presence to join room with default nickname
+- Tracks joined room in `joinedRooms` Set and nickname in `roomNicks` Map
+- Returns early to prevent invite from being dispatched to AI agent
+
+#### Example Invite Format
+```xml
+<x xmlns='jabber:x:conference'
+   jid='darkcave@macbeth.shakespeare.lit'
+   password='cauldronburn'
+   reason='Hey Hecate, this is the place for all good witches!'/>
+```
+
+#### Notes
+- Follows same auto-join behavior as MUC invites (`http://jabber.org/protocol/muc#user` namespace)
+- No additional configuration required - invites are automatically detected and accepted
+- Room password is included in MUC presence if specified in invite
+
 ## [1.7.1] - 2026-02-08
 
 ### Fixed
