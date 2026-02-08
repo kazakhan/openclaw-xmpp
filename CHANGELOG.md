@@ -5,6 +5,11 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.9] - 2026-02-08
+
+### Fixed
+- **CLI xmpp join command**: Fixed the `openclaw xmpp join` command to properly connect to the running gateway instead of spawning a child process that failed to access the XMPP client. The command now uses `openclaw gateway call` to invoke RPC methods on the gateway process, which has direct access to the XMPP client. Added three new gateway RPC methods: `xmpp.joinRoom`, `xmpp.leaveRoom`, and `xmpp.getJoinedRooms`. Removed the failed `internal-join` subcommand and `joinViaGateway()` function that attempted to route through child processes.
+
 ## [1.6.8] - 2026-02-08
 
 ### Fixed

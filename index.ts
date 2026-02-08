@@ -659,10 +659,12 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
      }
    });
 
-   const joinedRooms = new Set<string>();
-   const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
-   const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
-    const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
+    const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
+     const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
+
+     // Local joined rooms tracking for MUC
+     const joinedRooms = new Set<string>();
+     const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
 
     // Initialize vCard with config defaults
     const vcard = new VCard(cfg.dataDir);
@@ -2645,14 +2647,14 @@ gateway: {
             console.log(`[${account.accountId}] To enable auto-join, set autoJoinRooms: true in config`);
           }
 
-         // Store client globally by account ID
-        xmppClients.set(account.accountId, xmpp);
-        
-        ctx.setStatus({
-          accountId: account.accountId,
-          running: true,
-          lastStartAt: Date.now(),
-        });
+          // Store client globally by account ID
+         xmppClients.set(account.accountId, xmpp);
+
+          ctx.setStatus({
+           accountId: account.accountId,
+           running: true,
+           lastStartAt: Date.now(),
+         });
         
         ctx.abortSignal.addEventListener("abort", () => {
           isRunning = false;
@@ -2696,6 +2698,60 @@ gateway: {
   console.log("About to register XMPP channel plugin");
   api.registerChannel({ plugin: xmppChannelPlugin });
   log.info("XMPP channel plugin registered");
+
+  // Register gateway RPC methods for CLI-to-gateway communication
+  api.registerGatewayMethod("xmpp.joinRoom", ({ params, respond }) => {
+    const { room, nick } = params || {};
+    if (!room) {
+      respond(false, { error: "Missing required parameter: room" });
+      return;
+    }
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { error: "XMPP client not connected. Make sure the XMPP channel is enabled and the gateway is running." });
+      return;
+    }
+    try {
+      client.joinRoom(room, nick);
+      respond(true, { ok: true, room, nick });
+    } catch (err: any) {
+      respond(false, { error: err.message || String(err) });
+    }
+  });
+
+  api.registerGatewayMethod("xmpp.leaveRoom", ({ params, respond }) => {
+    const { room, nick } = params || {};
+    if (!room) {
+      respond(false, { error: "Missing required parameter: room" });
+      return;
+    }
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { error: "XMPP client not connected" });
+      return;
+    }
+    try {
+      client.leaveRoom(room, nick);
+      respond(true, { ok: true, room });
+    } catch (err: any) {
+      respond(false, { error: err.message || String(err) });
+    }
+  });
+
+  api.registerGatewayMethod("xmpp.getJoinedRooms", ({ respond }) => {
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { error: "XMPP client not connected" });
+      return;
+    }
+    const rooms = client.getJoinedRooms() || [];
+    const roomNicks = client.roomNicks || new Map();
+    const roomsWithNicks = rooms.map(room => ({
+      room,
+      nick: roomNicks instanceof Map ? roomNicks.get(room) : undefined
+    }));
+    respond(true, { rooms: roomsWithNicks });
+  });
 
   // Register CLI commands using registerCli
   api.registerCli(

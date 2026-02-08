@@ -2,6 +2,7 @@ import { xml } from "@xmpp/client";
 import { spawn, execSync } from "child_process";
 import { fileURLToPath } from "node:url";
 import path from "path";
+import { joinRoom, leaveRoom, getJoinedRooms } from "./gateway-client.js";
 
 // Simple roster functions without fs-extra
 let roster: Record<string, { nick?: string }> = {};
@@ -168,26 +169,62 @@ export function registerXmppCli({
     .description("Join MUC room")
     .action(async (room: string, nick?: string) => {
       const client = getXmppClient();
-      if (!client) {
-        console.log("XMPP client not connected. Gateway must be running.");
-        console.log("Start gateway with: openclaw gateway");
-        return;
+      const actualNick = nick || "openclaw";
+
+      if (client) {
+        try {
+          if (client.joinRoom) {
+            await client.joinRoom(room, actualNick);
+          } else {
+            await client.send(
+              xml("presence", {
+                to: `${room}/${actualNick}`
+              })
+            );
+          }
+          console.log(`Joined room: ${room} as ${actualNick}`);
+          return;
+        } catch (err) {
+          console.log("Direct join failed, trying via gateway RPC...");
+        }
       }
 
-      const actualNick = nick || "openclaw";
-      try {
-        if (client.joinRoom) {
-          await client.joinRoom(room, actualNick);
-        } else {
-          await client.send(
-            xml("presence", {
-              to: `${room}/${actualNick}`
-            })
-          );
-        }
-        console.log(`Joined room: ${room} as ${actualNick}`);
-      } catch (err) {
-        console.error(`Failed to join room: ${err}`);
+      const success = await joinRoom(room, actualNick);
+      if (!success) {
+        console.error("Failed to join room: Gateway not running or XMPP client unavailable");
+        console.error("Make sure the OpenClaw gateway is running with: openclaw gateway");
+        process.exit(1);
+      }
+    });
+
+  // Subcommand: rooms
+  xmpp
+    .command("rooms")
+    .description("List joined MUC rooms")
+    .action(async () => {
+      const rooms = await getJoinedRooms();
+      if (rooms.length === 0) {
+        console.log("Not currently joined to any rooms.");
+        console.log("Use: openclaw xmpp join <room> [nick]");
+      } else {
+        console.log(`Currently joined to ${rooms.length} room(s):`);
+        rooms.forEach(r => {
+          console.log(`  ${r.room} as ${r.nick || '(unknown nick)'}`);
+        });
+      }
+    });
+
+  // Subcommand: leave <room>
+  xmpp
+    .command("leave <room>")
+    .description("Leave MUC room")
+    .action(async (room: string) => {
+      const success = await leaveRoom(room);
+      if (success) {
+        console.log(`Left room: ${room}`);
+      } else {
+        console.error("Failed to leave room");
+        process.exit(1);
       }
     });
 
