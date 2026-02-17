@@ -1,5 +1,7 @@
 import fs from "fs";
 import path from "path";
+import { JsonStore } from "./jsonStore.js";
+import { Contact, ContactsData } from "./types.js";
 
 interface ContactEntry {
   jid: string;
@@ -7,128 +9,108 @@ interface ContactEntry {
 }
 
 export class Contacts {
-  private contactsFile: string;
-  private adminsFile: string;
-  private contactsCache: Array<{ jid: string; name: string }>;
-  private adminsCache: Set<string>;
-
+  private contactsStore: JsonStore<ContactEntry[]>;
+  private adminsStore: JsonStore<string[]>;
+  
   constructor(dataDir: string) {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
-    this.contactsFile = path.join(dataDir, "xmpp-contacts.json");
-    this.adminsFile = path.join(dataDir, "xmpp-admins.json");
-    this.contactsCache = this.loadContacts();
-    this.adminsCache = this.loadAdmins();
+    
+    const contactsFile = path.join(dataDir, "xmpp-contacts.json");
+    const adminsFile = path.join(dataDir, "xmpp-admins.json");
+    
+    this.contactsStore = new JsonStore<ContactEntry[]>({
+      filePath: contactsFile,
+      defaults: [],
+      onLoad: (data) => Array.isArray(data) ? data : []
+    });
+    
+    this.adminsStore = new JsonStore<string[]>({
+      filePath: adminsFile,
+      defaults: [],
+      onLoad: (data) => Array.isArray(data) ? data : []
+    });
   }
-
-  private loadContacts(): Array<{ jid: string; name: string }> {
-    if (!fs.existsSync(this.contactsFile)) {
-      return [];
-    }
-    try {
-      return JSON.parse(fs.readFileSync(this.contactsFile, "utf8"));
-    } catch {
-      return [];
-    }
+  
+  list(): Contact[] {
+    return this.contactsStore.get();
   }
-
-  private loadAdmins(): Set<string> {
-    if (!fs.existsSync(this.adminsFile)) {
-      return new Set();
-    }
-    try {
-      const data = JSON.parse(fs.readFileSync(this.adminsFile, "utf8"));
-      return new Set(Array.isArray(data) ? data : []);
-    } catch {
-      return new Set();
-    }
-  }
-
-  private saveContacts(): void {
-    try {
-      fs.writeFileSync(this.contactsFile, JSON.stringify(this.contactsCache, null, 2));
-    } catch (err) {
-      console.error("Failed to save contacts:", err);
-    }
-  }
-
-  private saveAdmins(): void {
-    try {
-      fs.writeFileSync(this.adminsFile, JSON.stringify(Array.from(this.adminsCache), null, 2));
-    } catch (err) {
-      console.error("Failed to save admins:", err);
-    }
-  }
-
-  list(): Array<{ jid: string; name: string }> {
-    return this.contactsCache;
-  }
-
+  
   exists(jid: string): boolean {
     const bareJid = jid.split('/')[0];
-    return this.contactsCache.some(c => c.jid === bareJid);
+    return this.contactsStore.get().some(c => c.jid === bareJid);
   }
-
+  
   add(jid: string, name?: string): boolean {
     const bareJid = jid.split('/')[0];
-
-    const existingIndex = this.contactsCache.findIndex(c => c.jid === bareJid);
+    const contacts = this.contactsStore.get();
+    const existingIndex = contacts.findIndex(c => c.jid === bareJid);
+    
     if (existingIndex >= 0) {
-      this.contactsCache[existingIndex].name = name || this.contactsCache[existingIndex].name || bareJid.split('@')[0];
+      const updatedContacts = [...contacts];
+      updatedContacts[existingIndex].name = name || updatedContacts[existingIndex].name || bareJid.split('@')[0];
+      this.contactsStore.set(updatedContacts);
     } else {
-      this.contactsCache.push({
+      const newContact: ContactEntry = {
         jid: bareJid,
         name: name || bareJid.split('@')[0]
-      });
+      };
+      this.contactsStore.set([...contacts, newContact]);
     }
-    this.saveContacts();
     return true;
   }
-
+  
   remove(jid: string): boolean {
     const bareJid = jid.split('/')[0];
-    const initialLength = this.contactsCache.length;
-    this.contactsCache = this.contactsCache.filter(c => c.jid !== bareJid);
-    if (this.contactsCache.length < initialLength) {
-      this.saveContacts();
+    const contacts = this.contactsStore.get();
+    const initialLength = contacts.length;
+    const updatedContacts = contacts.filter(c => c.jid !== bareJid);
+    
+    if (updatedContacts.length < initialLength) {
+      this.contactsStore.set(updatedContacts);
       return true;
     }
     return false;
   }
-
+  
   getName(jid: string): string | undefined {
     const bareJid = jid.split('/')[0];
-    const contact = this.contactsCache.find(c => c.jid === bareJid);
+    const contact = this.contactsStore.get().find(c => c.jid === bareJid);
     return contact?.name;
   }
-
+  
   isAdmin(jid: string): boolean {
     const bareJid = jid.split('/')[0];
-    return this.adminsCache.has(bareJid);
+    return this.adminsStore.get().includes(bareJid);
   }
-
+  
   addAdmin(jid: string): boolean {
     const bareJid = jid.split('/')[0];
-    this.adminsCache.add(bareJid);
-    this.saveAdmins();
+    const admins = this.adminsStore.get();
+    if (!admins.includes(bareJid)) {
+      this.adminsStore.set([...admins, bareJid]);
+    }
     return true;
   }
-
+  
   removeAdmin(jid: string): boolean {
     const bareJid = jid.split('/')[0];
-    const result = this.adminsCache.delete(bareJid);
-    if (result) {
-      this.saveAdmins();
+    const admins = this.adminsStore.get();
+    const updatedAdmins = admins.filter(a => a !== bareJid);
+    
+    if (updatedAdmins.length < admins.length) {
+      this.adminsStore.set(updatedAdmins);
+      return true;
     }
-    return result;
+    return false;
   }
-
+  
   listAdmins(): string[] {
-    return Array.from(this.adminsCache);
+    return this.adminsStore.get();
   }
-
+  
   getAllJids(): string[] {
-    return this.contactsCache.map(c => c.jid);
+    return this.contactsStore.get().map(c => c.jid);
   }
 }

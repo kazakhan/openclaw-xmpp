@@ -97,6 +97,8 @@ function checkRateLimit(jid: string): boolean {
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
 
+import { Contacts } from "./src/contacts.js";
+/*
 class Contacts {
   private contactsFile: string;
   private adminsFile: string;
@@ -222,8 +224,9 @@ class Contacts {
   getAllJids(): string[] {
     return this.contactsCache.map(c => c.jid);
   }
-}
-
+}*/
+import { VCard } from "./src/vcard.js";
+/*
 class VCard {
   private vcardFile: string;
   private vcardData: {
@@ -330,7 +333,7 @@ class VCard {
     Object.assign(this.vcardData, fields);
     this.saveVCard();
   }
-}
+}*/
 
 // Message queue management
 function addToQueue(message: Omit<QueuedMessage, 'id' | 'timestamp' | 'processed'>) {
@@ -693,12 +696,19 @@ async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: st
       const room = parts[0];
       const nick = parts[1] || '';
       
-       // Handle subscription requests (not MUC)
-       if (type === "subscribe") {
-         const bareFrom = from.split('/')[0];
-         console.log(`📨 Subscription request from ${bareFrom} - awaiting admin approval`);
-         return;
-       }
+        // Handle subscription requests (not MUC)
+        if (type === "subscribe") {
+          const bareFrom = from.split('/')[0];
+          if (contacts.exists(bareFrom)) {
+            // Auto-approve whitelisted contacts
+            const subscribed = xml("presence", { to: from, type: "subscribed" });
+            await xmpp.send(subscribed);
+            console.log(`✅ Auto-approved subscription for whitelisted contact: ${bareFrom}`);
+          } else {
+            console.log(`📨 Subscription request from ${bareFrom} - not whitelisted, awaiting admin approval`);
+          }
+          return;
+        }
       
        // Handle other subscription types
       if (type === "subscribed" || type === "unsubscribe" || type === "unsubscribed") {

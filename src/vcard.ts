@@ -1,29 +1,26 @@
 import fs from "fs";
 import path from "path";
-
-export interface VCardData {
-  fn?: string;
-  nickname?: string;
-  url?: string;
-  desc?: string;
-  avatarUrl?: string;
-  avatarMimeType?: string;
-  avatarData?: string;
-}
+import { VCardData } from "./types.js";
 
 export class VCard {
   private vcardFile: string;
-  private vcardData: VCardData;
+  private vcardData: {
+    fn?: string;
+    nickname?: string;
+    url?: string;
+    desc?: string;
+    avatarUrl?: string;
+    avatarMimeType?: string;
+    avatarData?: string; // base64
+  };
 
   constructor(dataDir: string) {
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     this.vcardFile = path.join(dataDir, "xmpp-vcard.json");
     this.vcardData = this.loadVCard();
   }
 
-  private loadVCard(): VCardData {
+  private loadVCard() {
     if (!fs.existsSync(this.vcardFile)) {
       return {};
     }
@@ -34,7 +31,7 @@ export class VCard {
     }
   }
 
-  private saveVCard(): void {
+  private saveVCard() {
     try {
       fs.writeFileSync(this.vcardFile, JSON.stringify(this.vcardData, null, 2));
     } catch (err) {
@@ -46,7 +43,7 @@ export class VCard {
     return this.vcardData.fn;
   }
 
-  setFN(fn: string): void {
+  setFN(fn: string) {
     this.vcardData.fn = fn;
     this.saveVCard();
   }
@@ -55,7 +52,7 @@ export class VCard {
     return this.vcardData.nickname;
   }
 
-  setNickname(nickname: string): void {
+  setNickname(nickname: string) {
     this.vcardData.nickname = nickname;
     this.saveVCard();
   }
@@ -64,7 +61,7 @@ export class VCard {
     return this.vcardData.url;
   }
 
-  setURL(url: string): void {
+  setURL(url: string) {
     this.vcardData.url = url;
     this.saveVCard();
   }
@@ -73,7 +70,7 @@ export class VCard {
     return this.vcardData.desc;
   }
 
-  setDesc(desc: string): void {
+  setDesc(desc: string) {
     this.vcardData.desc = desc;
     this.saveVCard();
   }
@@ -82,7 +79,7 @@ export class VCard {
     return this.vcardData.avatarUrl;
   }
 
-  setAvatarUrl(avatarUrl: string): void {
+  setAvatarUrl(avatarUrl: string) {
     this.vcardData.avatarUrl = avatarUrl;
     this.saveVCard();
   }
@@ -95,17 +92,19 @@ export class VCard {
     };
   }
 
-  setAvatarData(mimeType: string, data: string): void {
+  setAvatarData(mimeType: string, data: string) {
     this.vcardData.avatarMimeType = mimeType;
     this.vcardData.avatarData = data;
     this.saveVCard();
   }
 
-  getData(): VCardData {
+  // Get all vCard data for XML generation
+  getData() {
     return { ...this.vcardData };
   }
 
-  update(fields: Partial<VCardData>): void {
+  // Set multiple fields at once
+  update(fields: Partial<typeof this.vcardData>) {
     Object.assign(this.vcardData, fields);
     this.saveVCard();
   }

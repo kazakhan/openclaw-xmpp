@@ -5,6 +5,81 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **XEP-0084 User Avatar**: Implemented full User Avatar (XEP-0084) support with PEP publishing
+- **XEP-0054 vCard Avatar**: Fixed vCard PHOTO handling to embed base64 image data (BINVAL) for client compatibility
+
+#### Problem
+The XMPP avatar functionality was not working - avatars set via the plugin were not visible in user info or roster contacts, while avatars set directly in XMPP clients worked correctly.
+
+#### Root Causes Identified
+
+1. **vCard PHOTO Format**: The plugin was using `<EXTVAL>` (external URL reference) instead of `<BINVAL>` (embedded base64 data). Most XMPP clients expect embedded base64 image data in vCard PHOTO elements.
+
+2. **XEP-0084 PEP Publishing**: The PEP (Personal Eventing Protocol) publish stanzas were missing the `to` attribute with the user's bare JID, causing the avatar not to be published to the correct PEP node.
+
+3. **vCard Query Parsing**: The vCard query was looking for `<URI>` elements instead of `<EXTVAL>` when parsing avatar URLs.
+
+4. **XEP-0363 Slot Parsing**: HTTP File Upload (XEP-0363) slot response parsing expected text content but Prosody returns URLs as XML attributes.
+
+#### Solutions Implemented
+
+1. **vCard with Embedded BINVAL** (`src/startXMPP.ts`):
+   ```xml
+   <PHOTO>
+     <TYPE>image/jpeg</TYPE>
+     <BINVAL>BASE64_IMAGE_DATA</BINVAL>
+     <EXTVAL>https://example.com/avatar.jpg</EXTVAL>
+   </PHOTO>
+   ```
+   - Now embeds base64 image data directly in vCard PHOTO/BINVAL
+   - Includes EXTVAL as fallback for clients that support URL references
+   - Includes TYPE for MIME type specification
+
+2. **XEP-0084 PEP Publishing Fix** (`src/startXMPP.ts`):
+   - Added `to` attribute with bare JID to IQ stanzas:
+     ```typescript
+     xml("iq", { type: "set", to: bareJid, id: metadataId }, ...)
+     ```
+   - Publishes to `urn:xmpp:avatar:metadata` node with hash, size, type
+   - Publishes to `urn:xmpp:avatar:data` node with actual avatar data
+   - Allows clients to subscribe to PEP for avatar updates
+
+3. **vCard Query Parsing Fix** (`src/startXMPP.ts`):
+   - Changed from `photo.getChild('URI')` to `photo.getChild('EXTVAL')`
+   - Now correctly parses avatar URL from vCard responses
+
+4. **vCard Update Response Handling** (`src/startXMPP.ts`):
+   - Added proper IQ response waiting instead of returning immediately
+   - Now waits for server confirmation before reporting success
+   - Returns actual success/failure status
+
+5. **XEP-0363 Slot Parsing** (`src/startXMPP.ts`):
+   - Changed from `slot.getChildText("put")` to `slot.getChild("put")?.attrs?.url`
+   - Prosody returns URLs as XML attributes, not text content
+
+#### Files Modified
+- `src/startXMPP.ts`
+  - Lines ~217-218: Fixed vCard parsing to use EXTVAL
+  - Lines ~272-333: Fixed vCard update to wait for server response
+  - Lines ~300-308: Added BINVAL embedding in vCard PHOTO
+  - Lines ~1393-1425: Added base64 embedding for avatar
+  - Lines ~1920-1981: Fixed XEP-0084 PEP publishing with proper JID
+  - Lines ~1540-1560: Fixed XEP-0363 slot parsing for Prosody
+
+#### Commands
+- `/vcard set avatar <url>` - Downloads image, publishes XEP-0084, embeds in vCard
+- `/vcard set avatar` - Uses attached image
+- `/vcard get` - Shows current vCard (now correctly shows avatar URL)
+
+#### Notes
+- XEP-0084 (PEP) allows clients to subscribe to avatar changes
+- Embedded BINVAL ensures maximum client compatibility
+- EXTVAL included as fallback for modern clients
+- Service discovery added for XEP-0363 upload service detection
+
 ## [1.7.2] - 2026-02-08
 
 ### Added
