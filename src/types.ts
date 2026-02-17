@@ -45,9 +45,32 @@ export interface MessageOptions {
   botNick?: string;
   mediaUrls?: string[];
   mediaPaths?: string[];
-  whiteboardPrompt?: string;
-  whiteboardRequest?: boolean;
-  whiteboardImage?: boolean;
+  whiteboardData?: WhiteboardData;
+}
+
+export interface WhiteboardPath {
+  d: string;
+  stroke?: string;
+  strokeWidth?: number;
+  id?: string;
+}
+
+export interface WhiteboardMove {
+  id: string;
+  dx: number;
+  dy: number;
+}
+
+export interface WhiteboardDelete {
+  id: string;
+}
+
+export interface WhiteboardData {
+  type: 'path' | 'move' | 'delete';
+  paths?: WhiteboardPath[];
+  moves?: WhiteboardMove[];
+  deletes?: WhiteboardDelete[];
+  rawXml?: string;
 }
 
 export interface SlashCommandContext {

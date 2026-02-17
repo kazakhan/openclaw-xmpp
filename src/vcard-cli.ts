@@ -1,6 +1,8 @@
 import { xml } from "@xmpp/client";
 import path from "path";
+import fs from "fs";
 import { decryptPasswordFromConfig } from './security/encryption.js';
+import { validators } from './security/validation.js';
 
 interface XmppConfig {
   service: string;
@@ -15,6 +17,8 @@ interface VCardData {
   url?: string;
   desc?: string;
   avatarUrl?: string;
+  avatarBinval?: string;
+  avatarType?: string;
 }
 
 function loadXmppConfig(): XmppConfig {
@@ -41,6 +45,7 @@ function loadXmppConfig(): XmppConfig {
       };
     }
   } catch (e) {
+    console.error('Failed to load config:', e);
   }
   
   throw new Error('XMPP configuration not found');
@@ -133,6 +138,207 @@ export async function setVCard(field: string, value: string): Promise<{ ok: bool
     });
     
     return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+async function requestUploadSlot(xmpp: any, filename: string, size: number): Promise<{ putUrl: string; getUrl: string; headers?: Record<string, string> }> {
+  const id = `upload-${Date.now()}`;
+  let response: any = null;
+  let error: any = null;
+
+  const handler = (stanza: any) => {
+    if (stanza.attrs.id === id && stanza.attrs.type === 'result') {
+      response = stanza;
+    }
+  };
+  xmpp.on('stanza', handler);
+
+  try {
+    await xmpp.send(xml("iq", { type: "get", id, to: "upload." + xmpp.domain },
+      xml("request", { xmlns: "urn:xmpp:http:upload", filename, size })
+    ));
+    await new Promise((_, reject) => setTimeout(() => reject(new Error('Upload slot timeout')), 10000));
+  } catch (err) {
+    // Timeout or error
+  } finally {
+    xmpp.off('stanza', handler);
+  }
+
+  if (!response) {
+    throw new Error('Failed to get upload slot');
+  }
+
+  const slot = response.getChild('slot', 'urn:xmpp:http:upload');
+  if (!slot) {
+    throw new Error('No upload slot in response');
+  }
+
+  const put = slot.getChild('put');
+  const get = slot.getChild('get');
+
+  return {
+    putUrl: put?.attrs?.url || '',
+    getUrl: get?.attrs?.url || '',
+    headers: undefined
+  };
+}
+
+async function uploadFileViaHTTP(filePath: string, putUrl: string): Promise<void> {
+  const fileBuffer = await fs.promises.readFile(filePath);
+  const ext = path.extname(filePath).toLowerCase();
+  let contentType = 'application/octet-stream';
+  if (ext === '.png') contentType = 'image/png';
+  else if (ext === '.gif') contentType = 'image/gif';
+  else if (ext === '.webp') contentType = 'image/webp';
+  else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+
+  const response = await fetch(putUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': contentType, 'Content-Length': fileBuffer.length.toString() },
+    body: fileBuffer
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  }
+}
+
+async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, sha256: string): Promise<boolean> {
+  const id = `avatar-${Date.now()}`;
+  let success = false;
+
+  const handler = (stanza: any) => {
+    if (stanza.attrs.id === id && stanza.attrs.type === 'result') {
+      success = true;
+    }
+  };
+  xmpp.on('stanza', handler);
+
+  try {
+    await xmpp.send(xml("iq", { type: "set", id },
+      xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
+        xml("publish", { node: "urn:xmpp:avatar:data" },
+          xml("item",
+            xml("data", { xmlns: "urn:xmpp:avatar:data", mimeType }, "")
+          )
+        )
+      )
+    ));
+    await new Promise(r => setTimeout(r, 500));
+  } catch (err) {
+    console.error('[Avatar] PEP publish error:', err);
+  } finally {
+    xmpp.off('stanza', handler);
+  }
+
+  return success;
+}
+
+export async function setVCardAvatar(source: string): Promise<{ ok: boolean; error?: string; url?: string }> {
+  let filePath: string;
+  let isUrl = false;
+
+  try {
+    if (validators.isValidUrl(source)) {
+      isUrl = true;
+      const tempDir = path.join(process.env.TEMP || process.env.TMP || '/tmp', 'openclaw-avatar');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+
+      const response = await fetch(source);
+      if (!response.ok) {
+        return { ok: false, error: `Download failed: ${response.status} ${response.statusText}` };
+      }
+
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) {
+        const fileSize = parseInt(contentLength, 10);
+        if (fileSize > MAX_FILE_SIZE) {
+          return { ok: false, error: `File too large: ${fileSize} bytes` };
+        }
+      }
+
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength > MAX_FILE_SIZE) {
+        return { ok: false, error: `File too large: ${buffer.byteLength} bytes` };
+      }
+
+      const urlObj = new URL(source);
+      let filename = path.basename(urlObj.pathname) || `avatar_${Date.now()}.jpg`;
+      filename = validators.sanitizeFilename(filename);
+      if (!validators.isSafePath(filename, tempDir)) {
+        filename = `avatar_${Date.now()}.jpg`;
+      }
+
+      filePath = path.join(tempDir, filename);
+      await fs.promises.writeFile(filePath, Buffer.from(buffer));
+    } else if (fs.existsSync(source)) {
+      filePath = source;
+    } else {
+      return { ok: false, error: 'File not found or invalid URL' };
+    }
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+
+  try {
+    return await withConnection(async (xmpp) => {
+      const stats = await fs.promises.stat(filePath);
+      const size = stats.size;
+      const filename = path.basename(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+
+      let mimeType = 'image/jpeg';
+      if (ext === '.png') mimeType = 'image/png';
+      else if (ext === '.gif') mimeType = 'image/gif';
+      else if (ext === '.webp') mimeType = 'image/webp';
+
+      const slot = await requestUploadSlot(xmpp, filename, size);
+      await uploadFileViaHTTP(filePath, slot.putUrl);
+      const imageUrl = slot.getUrl;
+
+      const fileBuffer = await fs.promises.readFile(filePath);
+      const base64Data = fileBuffer.toString('base64');
+
+      await publishAvatar(xmpp, imageUrl, mimeType, '');
+
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+
+      const vcard = parseVCard(response?.getChild('vCard'));
+      (vcard as any).avatarUrl = imageUrl;
+      (vcard as any).avatarBinval = base64Data;
+      (vcard as any).avatarType = mimeType;
+
+      const vcardId = `s1-${Date.now()}`;
+      await xmpp.send(xml("iq", { type: "set", id: vcardId },
+        xml("vCard", { xmlns: "vcard-temp" },
+          vcard.fn ? xml("FN", {}, vcard.fn) : null,
+          vcard.nickname ? xml("NICKNAME", {}, vcard.nickname) : null,
+          vcard.url ? xml("URL", {}, vcard.url) : null,
+          vcard.desc ? xml("DESC", {}, vcard.desc) : null,
+          xml("PHOTO", {},
+            xml("TYPE", {}, mimeType),
+            xml("BINVAL", {}, base64Data)
+          )
+        )
+      ));
+      await new Promise(r => setTimeout(r, 300));
+
+      return { ok: true, url: imageUrl };
+    });
   } catch (err: any) {
     return { ok: false, error: err.message };
   }

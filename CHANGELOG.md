@@ -5,7 +5,7 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.7.3]
 
 ### Fixed
 - **XEP-0084 User Avatar**: Implemented full User Avatar (XEP-0084) support with PEP publishing

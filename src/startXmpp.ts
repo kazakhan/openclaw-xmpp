@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
+import { parseWhiteboardMessage } from "./whiteboard.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
 
@@ -67,7 +68,7 @@ function checkRateLimit(jid: string): boolean {
   return true;
 }
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
    // Helper to get default resource/nick from JID local part
    const getDefaultResource = () => {
      const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
@@ -743,8 +744,27 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               await xmpp.send(resultIq);
               return;
             }
-         }
-        
+          }
+
+        // Handle Service Discovery (XEP-0030) - disco#info for XEP-0113 Whiteboard
+        const queryElement = stanza.getChild("query", "http://jabber.org/protocol/disco#info");
+        if (queryElement && type === "get") {
+          const node = queryElement.attrs.node || "";
+          // Respond with our features including whiteboard support
+          const discoResponse = xml("iq", { to: from, type: "result", id },
+            xml("query", { xmlns: "http://jabber.org/protocol/disco#info", node },
+              xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
+              xml("feature", { var: "http://jabber.org/protocol/swb" }), // XEP-0113 Whiteboard
+              xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
+              xml("feature", { var: "vcard-temp" }),
+              xml("feature", { var: "http://jabber.org/protocol/muc" })
+            )
+          );
+          await xmpp.send(discoResponse);
+          console.log(`[DISCO] Sent disco#info to ${from} with whiteboard feature`);
+          return;
+        }
+
         // Handle HTTP Upload slot requests (responses to our requests)
         // These are handled by the requestUploadSlot function via await xmpp.send()
         // So we don't need to process them here
@@ -971,6 +991,20 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         // Strip resource from sender JID for contact check
         const fromBareJid = from.split("/")[0];
         
+        // Check for XEP-0113 Whiteboard messages (forward to AI)
+        const whiteboardData = parseWhiteboardMessage(stanza);
+        if (whiteboardData) {
+          console.log(`🎨 Detected whiteboard message: type=${whiteboardData.type}, paths=${whiteboardData.paths?.length || 0}`);
+          onMessage(fromBareJid, body || '[Whiteboard]', { 
+            type: messageType, 
+            room: undefined, 
+            nick: undefined, 
+            botNick: undefined,
+            whiteboardData
+          });
+          return;
+        }
+         
          // Check for slash commands (in both chat and groupchat)
         // Behavior:
         // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
@@ -1019,7 +1053,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           }
         
           // Define plugin-specific commands
-          const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'whiteboard', 'vcard', 'help', 'test']);
+          const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'vcard', 'help', 'test']);
           const isPluginCommand = pluginCommands.has(command);
           
           debugLog(`[SLASH] type=${messageType}, cmd=/${command}, isPlugin=${isPluginCommand}`);
@@ -1498,47 +1532,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                     }
                     return;
 
-                case 'whiteboard':
-                  // Handle /whiteboard draw <prompt> or /whiteboard send <url>
-                  if (args.length === 0) {
-                    await sendReply(`Whiteboard commands:
-  /whiteboard draw <prompt> - Request AI image generation
-  /whiteboard send <url> - Share an image URL`);
-                    return;
-                  }
-                  
-                   const wbSubcmd = args[0].toLowerCase();
-                   if (wbSubcmd === 'draw' && args.length >= 2) {
-                     const prompt = args.slice(1).join(' ');
-                     onMessage(fromBareJid, body, { 
-                       type: messageType, 
-                       room: roomJid || undefined, 
-                       nick, 
-                       botNick: botNick || undefined,
-                       mediaUrls, 
-                       mediaPaths,
-                       whiteboardRequest: true,
-                       whiteboardPrompt: prompt
-                     });
-                     await sendReply(`🎨 Requesting image generation for: "${prompt}"`);
-                   } else if (wbSubcmd === 'send' && args.length >= 2) {
-                     const url = args[1];
-                     onMessage(fromBareJid, body, { 
-                       type: messageType, 
-                       room: roomJid || undefined, 
-                       nick, 
-                       botNick: botNick || undefined,
-                       mediaUrls: [...(mediaUrls || []), url],
-                       mediaPaths,
-                       whiteboardImage: true
-                     });
-                    await sendReply(`🖼️ Sharing image: ${url}`);
-                   } else {
-                     await sendReply(`Usage: /whiteboard draw <prompt> or /whiteboard send <url>`);
-                   }
-                   return;
-
-                 case 'test':
+                case 'test':
                    // Test commands for debugging
                    if (args.length === 0) {
                      await sendReply(`Test commands:
