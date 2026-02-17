@@ -61,8 +61,11 @@ function parseVCard(vcardEl: any): VCardData {
   if (url) data.url = url.text();
   if (desc) data.desc = desc.text();
   if (photo) {
+    // Support both URI (legacy) and EXTVAL (preferred)
+    const extval = photo.getChild('EXTVAL');
     const uri = photo.getChild('URI');
-    if (uri) data.avatarUrl = uri.text();
+    if (extval) data.avatarUrl = extval.text();
+    else if (uri) data.avatarUrl = uri.text();
   }
   
   return data;
@@ -75,7 +78,10 @@ function buildVCardStanza(data: VCardData, id: string) {
   if (data.nickname) vCardXml.append(xml("NICKNAME", {}, data.nickname));
   if (data.url) vCardXml.append(xml("URL", {}, data.url));
   if (data.desc) vCardXml.append(xml("DESC", {}, data.desc));
-  if (data.avatarUrl) vCardXml.append(xml("PHOTO", {}, xml("URI", {}, data.avatarUrl)));
+  if (data.avatarUrl) {
+    // Use EXTVAL for URL reference (more compatible than URI)
+    vCardXml.append(xml("PHOTO", {}, xml("EXTVAL", {}, data.avatarUrl)));
+  }
   
   return xml("iq", { type: "set", id }, vCardXml);
 }
