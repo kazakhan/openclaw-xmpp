@@ -5,6 +5,57 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4]
+
+### Added
+- **SXE Whiteboard Protocol Support**: Implemented full SXE (XEP-0114) whiteboard protocol support for PSI+ compatibility
+
+### Fixed
+- **Whiteboard CLI Commands**: Moved whiteboard commands from `vcard-cli.ts` to dedicated `whiteboard-cli.ts` file
+- **SXE Namespace**: Changed from XEP-0113 (swb) to proper SXE protocol (`http://jabber.org/protocol/sxe`)
+- **SXE Invitation Feature**: Added required `<feature>http://www.w3.org/2000/svg</feature>` element to invitation
+- **Message Body Requirement**: Fixed bot to process SXE messages without body (was returning early)
+- **Namespace-aware Child Element Parsing**: Added `findChild` helper function to properly handle namespaced XML elements
+- **Accept-Invitation Handling**: Bot now properly responds to client accepting whiteboard invitation
+- **Presence Self-Loop Prevention**: Added check to ignore presence from bot itself, preventing infinite loops
+
+#### Problem
+
+The whiteboard functionality was not working with PSI+ client:
+1. Bot sent whiteboard invitations but they appeared as regular chat messages
+2. PSI+ displayed "The contact does not support whiteboarding" when trying to invite the bot
+3. Accepting an invitation did nothing
+
+#### Root Causes Identified
+
+1. **Wrong Protocol**: Bot was using XEP-0113 (swb) instead of SXE (PSI+ protocol)
+2. **Missing Feature Element**: Invitation was missing required `<feature>` element inside `<invitation>`
+3. **Message Body Required**: Bot was returning early for messages without body, but SXE messages have no body
+4. **Namespace Handling**: `@xmpp/client` getChild() doesn't work properly with namespaced XML
+5. **Self-Presence Loop**: Bot was responding to its own presence, causing infinite loop
+
+#### Solutions Implemented
+
+1. **New whiteboard-cli.ts**:
+   - Created dedicated file for whiteboard CLI commands
+   - Uses proper SXE namespace (`http://jabber.org/protocol/sxe`)
+   - Includes feature element in invitation
+
+2. **startXMPP.ts SXE Handling**:
+   - Added `findChild` helper function for manual child element iteration
+   - Handles `<invitation>`, `<accept-invitation>`, `<document-begin>`, `<left-session>`
+   - Handles whiteboard data elements: `<new>`, `<set>`, `<remove>`
+   - Added check to process SXE messages without body
+   - Returns early for SXE messages to prevent appearing as chat messages
+
+3. **Presence Handling**:
+   - Added check to ignore presence from bot's own JID
+   - Prevents infinite presence loops
+
+4. **PEP Feature Publishing**:
+   - Added SXE (`http://jabber.org/protocol/sxe`) feature publishing
+   - Added SVG (`http://www.w3.org/2000/svg`) feature publishing
+
 ## [1.7.3]
 
 ### Fixed
