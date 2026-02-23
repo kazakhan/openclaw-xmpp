@@ -1,6 +1,7 @@
 import { xml } from "@xmpp/client";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { decryptPasswordFromConfig } from './security/encryption.js';
 import { validators } from './security/validation.js';
 
@@ -45,7 +46,6 @@ function loadXmppConfig(): XmppConfig {
       };
     }
   } catch (e) {
-    console.error('Failed to load config:', e);
   }
   
   throw new Error('XMPP configuration not found');
@@ -102,6 +102,8 @@ async function withConnection<T>(fn: (xmpp: any) => Promise<T>): Promise<T> {
     password: config.password
   });
   
+  (xmpp as any).domain = config.domain;
+  
   let error: Error | null = null;
   xmpp.on('error', (err: Error) => error = err);
   
@@ -147,47 +149,85 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 async function requestUploadSlot(xmpp: any, filename: string, size: number): Promise<{ putUrl: string; getUrl: string; headers?: Record<string, string> }> {
   const id = `upload-${Date.now()}`;
-  let response: any = null;
-  let error: any = null;
-
-  const handler = (stanza: any) => {
-    if (stanza.attrs.id === id && stanza.attrs.type === 'result') {
-      response = stanza;
-    }
-  };
-  xmpp.on('stanza', handler);
-
-  try {
-    await xmpp.send(xml("iq", { type: "get", id, to: "upload." + xmpp.domain },
-      xml("request", { xmlns: "urn:xmpp:http:upload", filename, size })
-    ));
-    await new Promise((_, reject) => setTimeout(() => reject(new Error('Upload slot timeout')), 10000));
-  } catch (err) {
-    // Timeout or error
-  } finally {
-    xmpp.off('stanza', handler);
-  }
-
-  if (!response) {
-    throw new Error('Failed to get upload slot');
-  }
-
-  const slot = response.getChild('slot', 'urn:xmpp:http:upload');
-  if (!slot) {
-    throw new Error('No upload slot in response');
-  }
-
-  const put = slot.getChild('put');
-  const get = slot.getChild('get');
-
-  return {
-    putUrl: put?.attrs?.url || '',
-    getUrl: get?.attrs?.url || '',
-    headers: undefined
-  };
+  const targetJid = xmpp.domain;
+  
+  return new Promise((resolve, reject) => {
+    let responseReceived = false;
+    
+    const handler = (stanza: any) => {
+      if (stanza.attrs.id === id && stanza.attrs.type === 'result') {
+        responseReceived = true;
+        xmpp.off('stanza', handler);
+        
+        try {
+          const slot = stanza.getChild('slot', 'urn:xmpp:http:upload:0');
+          if (!slot) {
+            reject(new Error('No upload slot in response'));
+            return;
+          }
+          
+          const putElement = slot.getChild('put');
+          const getElement = slot.getChild('get');
+          const putUrl = putElement?.attrs?.url;
+          const getUrl = getElement?.attrs?.url;
+          
+          if (!putUrl || !getUrl) {
+            reject(new Error('Missing put or get URL in slot'));
+            return;
+          }
+          
+          const putHeaders: Record<string, string> = {};
+          if (putElement) {
+            const headerElements = putElement.getChildren('header');
+            for (const header of headerElements) {
+              const name = header.attrs.name;
+              const value = header.getText();
+              if (name && value) {
+                putHeaders[name] = value;
+              }
+            }
+          }
+          
+          resolve({ putUrl, getUrl, headers: Object.keys(putHeaders).length > 0 ? putHeaders : undefined });
+        } catch (err) {
+          reject(err);
+        }
+      } else if (stanza.attrs.id === id && stanza.attrs.type === 'error') {
+        responseReceived = true;
+        xmpp.off('stanza', handler);
+        const errorEl = stanza.getChild('error');
+        let errorDetails = 'Unknown error';
+        if (errorEl) {
+          const errorText = errorEl.getChildText('text', 'urn:ietf:params:xml:ns:xmpp-stanzas');
+          const errorCondition = errorEl.children.find((c: any) => c.name && c.name !== 'text')?.name;
+          errorDetails = errorText || errorCondition || `Error type: ${errorEl.attrs.type}`;
+        }
+        reject(new Error(`Upload slot request failed: ${errorDetails}`));
+      }
+    };
+    
+    xmpp.on('stanza', handler);
+    
+    xmpp.send(xml("iq", { type: "get", id, to: targetJid },
+      xml("request", { xmlns: "urn:xmpp:http:upload:0", filename, size: size.toString() })
+    )).catch((err: any) => {
+      if (!responseReceived) {
+        xmpp.off('stanza', handler);
+        reject(err);
+      }
+    });
+    
+    setTimeout(() => {
+      if (!responseReceived) {
+        xmpp.off('stanza', handler);
+        reject(new Error('Upload slot request timeout'));
+      }
+    }, 30000);
+  });
 }
 
 async function uploadFileViaHTTP(filePath: string, putUrl: string): Promise<void> {
+  const httpPutUrl = putUrl.replace(/^https:\/\//, 'http://');
   const fileBuffer = await fs.promises.readFile(filePath);
   const ext = path.extname(filePath).toLowerCase();
   let contentType = 'application/octet-stream';
@@ -196,7 +236,7 @@ async function uploadFileViaHTTP(filePath: string, putUrl: string): Promise<void
   else if (ext === '.webp') contentType = 'image/webp';
   else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
 
-  const response = await fetch(putUrl, {
+  const response = await fetch(httpPutUrl, {
     method: 'PUT',
     headers: { 'Content-Type': contentType, 'Content-Length': fileBuffer.length.toString() },
     body: fileBuffer
@@ -207,32 +247,59 @@ async function uploadFileViaHTTP(filePath: string, putUrl: string): Promise<void
   }
 }
 
-async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, sha256: string): Promise<boolean> {
-  const id = `avatar-${Date.now()}`;
+async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, base64Data: string): Promise<boolean> {
+  const config = loadXmppConfig();
+  const bareJid = config.jid.split('/')[0];
+  const hash = crypto.createHash('sha1').update(Buffer.from(base64Data, 'base64')).digest('hex');
+  const size = Buffer.from(base64Data, 'base64').length;
   let success = false;
 
-  const handler = (stanza: any) => {
-    if (stanza.attrs.id === id && stanza.attrs.type === 'result') {
-      success = true;
-    }
-  };
-  xmpp.on('stanza', handler);
-
   try {
-    await xmpp.send(xml("iq", { type: "set", id },
+    // Publish metadata to urn:xmpp:avatar:metadata
+    const metadataId = `avatar-meta-${Date.now()}`;
+    const metadataHandler = (stanza: any) => {
+      if (stanza.attrs.id === metadataId && stanza.attrs.type === 'result') {
+        success = true;
+      }
+    };
+    xmpp.on('stanza', metadataHandler);
+
+    await xmpp.send(xml("iq", { type: "set", to: bareJid, id: metadataId },
       xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
-        xml("publish", { node: "urn:xmpp:avatar:data" },
-          xml("item",
-            xml("data", { xmlns: "urn:xmpp:avatar:data", mimeType }, "")
+        xml("publish", { node: "urn:xmpp:avatar:metadata" },
+          xml("item", { id: hash },
+            xml("metadata", { xmlns: "urn:xmpp:avatar:metadata" },
+              xml("info", { bytes: size.toString(), id: hash, type: mimeType })
+            )
           )
         )
       )
     ));
     await new Promise(r => setTimeout(r, 500));
+    xmpp.off('stanza', metadataHandler);
+
+    // Publish actual avatar data to urn:xmpp:avatar:data
+    const dataId = `avatar-data-${Date.now()}`;
+    const dataHandler = (stanza: any) => {
+      if (stanza.attrs.id === dataId && stanza.attrs.type === 'result') {
+        success = true;
+      }
+    };
+    xmpp.on('stanza', dataHandler);
+
+    await xmpp.send(xml("iq", { type: "set", to: bareJid, id: dataId },
+      xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
+        xml("publish", { node: "urn:xmpp:avatar:data" },
+          xml("item", { id: hash },
+            xml("data", { xmlns: "urn:xmpp:avatar:data" }, base64Data)
+          )
+        )
+      )
+    ));
+    await new Promise(r => setTimeout(r, 500));
+    xmpp.off('stanza', dataHandler);
   } catch (err) {
     console.error('[Avatar] PEP publish error:', err);
-  } finally {
-    xmpp.off('stanza', handler);
   }
 
   return success;
@@ -240,11 +307,12 @@ async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, sha2
 
 export async function setVCardAvatar(source: string): Promise<{ ok: boolean; error?: string; url?: string }> {
   let filePath: string;
-  let isUrl = false;
+  let imageUrl: string;
+  let isUrlInput = false;
 
   try {
     if (validators.isValidUrl(source)) {
-      isUrl = true;
+      isUrlInput = true;
       const tempDir = path.join(process.env.TEMP || process.env.TMP || '/tmp', 'openclaw-avatar');
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
@@ -277,6 +345,7 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
 
       filePath = path.join(tempDir, filename);
       await fs.promises.writeFile(filePath, Buffer.from(buffer));
+      imageUrl = source;
     } else if (fs.existsSync(source)) {
       filePath = source;
     } else {
@@ -298,14 +367,24 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
       else if (ext === '.gif') mimeType = 'image/gif';
       else if (ext === '.webp') mimeType = 'image/webp';
 
-      const slot = await requestUploadSlot(xmpp, filename, size);
-      await uploadFileViaHTTP(filePath, slot.putUrl);
-      const imageUrl = slot.getUrl;
-
       const fileBuffer = await fs.promises.readFile(filePath);
       const base64Data = fileBuffer.toString('base64');
 
-      await publishAvatar(xmpp, imageUrl, mimeType, '');
+      if (!isUrlInput) {
+        try {
+          const slot = await requestUploadSlot(xmpp, filename, size);
+          await uploadFileViaHTTP(filePath, slot.putUrl);
+          imageUrl = slot.getUrl;
+        } catch (uploadErr: any) {
+          console.log(`[Avatar] HTTP Upload failed (${uploadErr.message}), embedding directly`);
+        }
+      }
+
+      try {
+        await publishAvatar(xmpp, imageUrl, mimeType, base64Data);
+      } catch (pepErr: any) {
+        console.log(`[Avatar] XEP-0084 publish failed (non-critical): ${pepErr.message}`);
+      }
 
       const getId = `v1-${Date.now()}`;
       let response: any = null;
@@ -331,7 +410,8 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
           vcard.desc ? xml("DESC", {}, vcard.desc) : null,
           xml("PHOTO", {},
             xml("TYPE", {}, mimeType),
-            xml("BINVAL", {}, base64Data)
+            xml("BINVAL", {}, base64Data),
+            xml("EXTVAL", {}, imageUrl)
           )
         )
       ));

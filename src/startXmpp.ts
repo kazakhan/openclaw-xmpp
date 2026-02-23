@@ -8,51 +8,6 @@ import { parseWhiteboardMessage } from "./whiteboard.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
 
-// XEP-0115 Entity Capabilities - SINGLE SOURCE OF TRUTH for both hash and disco response
-const CAPS_NODE = "https://openclaw.ai/xmpp";
-const DISCO_FEATURES = [
-  "http://jabber.org/protocol/caps",       // REQUIRED by XEP-0115
-  "http://jabber.org/protocol/disco#info", // Service Discovery
-  "http://jabber.org/protocol/ibb",        // IBB (XEP-0047)
-  "http://jabber.org/protocol/muc",        // MUC
-  "http://jabber.org/protocol/si",         // SI File Transfer (XEP-0096)
-  "http://jabber.org/protocol/swb",        // Whiteboard (XEP-0113)
-  "http://jabber.org/protocol/sxe",        // SXE Whiteboard (PSI+)
-  "http://www.w3.org/2000/svg",            // SVG (required by PSI+)
-  "urn:xmpp:http:upload:0",                // HTTP Upload (XEP-0363)
-];
-
-function calculateCapsHash(): string {
-  // XEP-0115 Section 8.1.1 - Verification String Generation
-  // PSI+ format: category/type/lang/name (empty lang = double slash //)
-  // All parts joined with '<' and final '<' appended
-  
-  const sortedFeatures = [...DISCO_FEATURES].sort();
-  
-  // Build parts array: identity first, then sorted features
-  const parts: string[] = [];
-  
-  // Identity: category/type/lang/name (empty lang means double slash //)
-  parts.push("client/bot//OpenClaw AI Assistant");
-  
-  // Add sorted features
-  for (const feature of sortedFeatures) {
-    parts.push(feature);
-  }
-  
-  // Join all parts with '<' and add final '<'
-  const S = parts.join('<') + '<';
-  
-  console.log(`[CAPS DEBUG] String for hash: ${S}`);
-  
-  const hash = crypto.createHash("sha1").update(S, 'utf8').digest("base64");
-  console.log(`[CAPS DEBUG] Calculated hash: ${hash}`);
-  
-  return hash;
-}
-
-const CAPS_HASH = calculateCapsHash();
-
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
 let isRunning = false;
@@ -392,30 +347,20 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     isRunning = false;
   });
 
-    xmpp.on("online", async (address: any) => {
-       log.info("XMPP online as", address.toString());
-       debugLog("XMPP connected successfully");
-  
-        // Send initial presence to appear online with Entity Capabilities (XEP-0115)
-        try {
-          // Build presence with caps <c> element
-          const presence = xml("presence", {},
-            xml("c", {
-              xmlns: "http://jabber.org/protocol/caps",
-              node: CAPS_NODE,
-              ver: CAPS_HASH,
-              hash: "sha-1"
-            })
-          );
-          await xmpp.send(presence);
-          console.log(`✅ Presence sent with Entity Capabilities (hash: ${CAPS_HASH.substring(0, 8)}...)`);
-          console.log(`   Features: ${DISCO_FEATURES.join(", ")}`);
-          console.log(`[CAPS DEBUG] Full presence XML: ${presence.toString()}`);
-          log.info("Presence sent with caps");
-        } catch (err) {
-          console.error("❌ Failed to send presence:", err);
-          log.error("Failed to send presence", err);
-        }
+   xmpp.on("online", async (address: any) => {
+      log.info("XMPP online as", address.toString());
+      debugLog("XMPP connected successfully");
+ 
+      // Send initial presence to appear online
+      try {
+        const presence = xml("presence");
+        await xmpp.send(presence);
+        console.log("✅ Presence sent - should appear online now as", address.toString());
+        log.info("Presence sent");
+      } catch (err) {
+        console.error("❌ Failed to send presence:", err);
+        log.error("Failed to send presence", err);
+      }
  
       // Register vCard with the XMPP server so clients can query it
       try {
@@ -439,54 +384,11 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        await xmpp.send(vcardSet);
        console.log("✅ vCard registered with server (id=" + vcardId + ") - clients can now query it");
        log.info("vCard registered with server");
-      } catch (err) {
-        console.error("❌ Failed to register vCard with server:", err);
-        log.error("Failed to register vCard", err);
-      }
-
-      // Publish features via PEP (XEP-0163) so clients can discover capabilities
-      const publishPEPFeature = async (node: string, featureXml: any, name: string): Promise<boolean> => {
-        const pepId = `pep-${Date.now()}`;
-        try {
-          await xmpp.send(xml("iq", { type: "set", id: pepId },
-            xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
-              xml("publish", { node },
-                xml("item", {}, featureXml)
-              )
-            )
-          ));
-          console.log(`✅ PEP: ${name} feature published`);
-          return true;
-        } catch (err) {
-          console.log(`⚠️ PEP: Failed to publish ${name} feature:`, err);
-          return false;
-        }
-      };
-
-      // Publish supported features via PEP
-      try {
-        await publishPEPFeature('http://jabber.org/protocol/swb',
-          xml('whiteboard', { xmlns: 'http://jabber.org/protocol/swb' }),
-          'Whiteboard (XEP-0113)');
-        await publishPEPFeature('http://jabber.org/protocol/sxe',
-          xml('sxe', { xmlns: 'http://jabber.org/protocol/sxe' }),
-          'SXE Whiteboard (PSI+)');
-        await publishPEPFeature('http://www.w3.org/2000/svg',
-          xml('svg', { xmlns: 'http://www.w3.org/2000/svg' }),
-          'SVG Support');
-        await publishPEPFeature('http://jabber.org/protocol/si',
-          xml('si', { xmlns: 'http://jabber.org/protocol/si' }),
-          'SI File Transfer (XEP-0096)');
-        await publishPEPFeature('http://jabber.org/protocol/ibb',
-          xml('ibb', { xmlns: 'http://jabber.org/protocol/ibb' }),
-          'IBB (XEP-0047)');
-        await publishPEPFeature('urn:xmpp:http:upload:0',
-          xml('upload', { xmlns: 'urn:xmpp:http:upload:0' }),
-          'HTTP Upload (XEP-0363)');
-      } catch (err) {
-        console.log('⚠️ PEP: Error publishing features:', err);
-      }
-    });
+     } catch (err) {
+       console.error("❌ Failed to register vCard with server:", err);
+       log.error("Failed to register vCard", err);
+     }
+   });
 
     const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
      const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
@@ -515,21 +417,14 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     xmpp.on("stanza", async (stanza: any) => {
      // debugLog("XMPP stanza received: " + stanza.toString().substring(0, 200));
      
-      if (stanza.is("presence")) {
-       const from = stanza.attrs.from;
-       const type = stanza.attrs.type || "available";
-       
-       // Ignore presence from the bot itself - prevents infinite loops
-       const botBareJid = cfg.jid?.split('/')[0] || cfg.jid;
-       if (from === botBareJid || from.startsWith(botBareJid + '/')) {
-         return;
-       }
-       
-       const parts = from.split('/');
-       const room = parts[0];
-       const nick = parts[1] || '';
-       
-         // Handle subscription requests (not MUC)
+     if (stanza.is("presence")) {
+      const from = stanza.attrs.from;
+      const type = stanza.attrs.type || "available";
+      const parts = from.split('/');
+      const room = parts[0];
+      const nick = parts[1] || '';
+      
+        // Handle subscription requests (not MUC)
         if (type === "subscribe") {
           const bareFrom = from.split('/')[0];
           if (contacts.exists(bareFrom)) {
@@ -560,45 +455,15 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       // Handle presence probes
       if (type === "probe") {
         console.log(`🔍 Received presence probe from ${from}`);
-        // Respond with available presence INCLUDING CAPS (critical for whiteboard support)
+        // Respond with available presence
         try {
-          const presence = xml("presence", { to: from },
-            xml("c", {
-              xmlns: "http://jabber.org/protocol/caps",
-              node: CAPS_NODE,
-              ver: CAPS_HASH,
-              hash: "sha-1"
-            })
-          );
+          const presence = xml("presence", { to: from });
           await xmpp.send(presence);
-          console.log(`✅ Sent presence response with caps to probe from ${from}`);
+          console.log(`✅ Sent presence response to probe from ${from}`);
         } catch (err) {
           console.error(`❌ Failed to respond to presence probe from ${from}:`, err);
         }
         return;
-      }
-      
-      // Send presence with caps to any client that sends us presence
-      // This ensures PSI+ receives our capabilities for whiteboard support
-      if (type === "available" || type === "") {
-        const hasResource = from.includes('/');
-        if (hasResource) {
-          console.log(`📤 Sending presence with caps to ${from} to ensure whiteboard support`);
-          try {
-            const presenceWithCaps = xml("presence", { to: from },
-              xml("c", {
-                xmlns: "http://jabber.org/protocol/caps",
-                node: CAPS_NODE,
-                ver: CAPS_HASH,
-                hash: "sha-1"
-              })
-            );
-            await xmpp.send(presenceWithCaps);
-            console.log(`✅ Sent presence with caps to ${from}`);
-          } catch (err) {
-            console.error(`❌ Failed to send caps to ${from}:`, err);
-          }
-        }
       }
       
       // Check for MUC status codes
@@ -885,16 +750,18 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         const queryElement = stanza.getChild("query", "http://jabber.org/protocol/disco#info");
         if (queryElement && type === "get") {
           const node = queryElement.attrs.node || "";
-          console.log(`[DISCO] Received disco#info query from ${from}, node="${node}"`);
           // Respond with our features including whiteboard support
           const discoResponse = xml("iq", { to: from, type: "result", id },
             xml("query", { xmlns: "http://jabber.org/protocol/disco#info", node },
               xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
-              ...DISCO_FEATURES.map(f => xml("feature", { var: f }))
+              xml("feature", { var: "http://jabber.org/protocol/swb" }), // XEP-0113 Whiteboard
+              xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
+              xml("feature", { var: "vcard-temp" }),
+              xml("feature", { var: "http://jabber.org/protocol/muc" })
             )
           );
           await xmpp.send(discoResponse);
-          console.log(`[DISCO] Sent disco#info to ${from} with ${DISCO_FEATURES.length} features`);
+          console.log(`[DISCO] Sent disco#info to ${from} with whiteboard feature`);
           return;
         }
 
@@ -941,116 +808,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           return;
         }
       }
-      
-      // Check for SXE Whiteboard invitation (PSI+ protocol: http://jabber.org/protocol/sxe)
-      const sxeElement = stanza.getChild('sxe', 'http://jabber.org/protocol/sxe');
-      if (sxeElement) {
-        const sessionId = sxeElement.attrs.session;
-        console.log(`🎨 SXE Whiteboard: session=${sessionId}, from=${from}`);
-        
-        // Manually iterate through children to find elements (getChild doesn't work properly with namespaces)
-        const findChild = (parent: any, name: string): any => {
-          if (!parent || !parent.children) {
-            console.log(`🎨 findChild: parent is null or has no children`);
-            return null;
-          }
-          for (const child of parent.children) {
-            if (child.name === name || child.tagName === name) {
-              console.log(`🎨 findChild: found '${name}'`);
-              return child;
-            }
-          }
-          console.log(`🎨 findChild: '${name}' not found. Available children: ${parent.children.map((c: any) => c.name).join(', ')}`);
-          return null;
-        };
-        
-        // Find negotiation element
-        const negotiationElement = findChild(sxeElement, 'negotiation');
-        if (negotiationElement && sessionId) {
-          // Check for invitation (PSI+ is inviting us to a whiteboard session)
-          const invitationElement = findChild(negotiationElement, 'invitation');
-          if (invitationElement) {
-            // PSI+ is inviting us to a whiteboard session
-            console.log(`🎨 SXE Invitation detected from ${from}, accepting...`);
-            
-            // Auto-accept: send accept-invitation
-            const acceptResponse = xml("message", { to: from },
-              xml("sxe", { session: sessionId, xmlns: "http://jabber.org/protocol/sxe" },
-                xml("negotiation", { xmlns: "http://jabber.org/protocol/sxe" },
-                  xml("accept-invitation")
-                )
-              )
-            );
-            await xmpp.send(acceptResponse);
-            console.log(`🎨 SXE: Sent accept-invitation for session ${sessionId}`);
-            
-            // Then send document-begin to establish the session
-            const docBeginResponse = xml("message", { to: from },
-              xml("sxe", { session: sessionId, xmlns: "http://jabber.org/protocol/sxe" },
-                xml("negotiation", { xmlns: "http://jabber.org/protocol/sxe" },
-                  xml("document-begin")
-                )
-              )
-            );
-            await xmpp.send(docBeginResponse);
-            console.log(`🎨 SXE: Sent document-begin for session ${sessionId}`);
-            
-            return;
-          }
-          
-          // Check for accept-invitation (client accepted our invitation)
-          const acceptInvitationElement = findChild(negotiationElement, 'accept-invitation');
-          if (acceptInvitationElement && sessionId) {
-            console.log(`🎨 SXE: Client accepted invitation for session ${sessionId}, sending document-begin...`);
-            
-            // Send document-begin to establish the session
-            const docBeginResponse = xml("message", { to: from },
-              xml("sxe", { session: sessionId, xmlns: "http://jabber.org/protocol/sxe" },
-                xml("negotiation", { xmlns: "http://jabber.org/protocol/sxe" },
-                  xml("document-begin")
-                )
-              )
-            );
-            await xmpp.send(docBeginResponse);
-            console.log(`🎨 SXE: Sent document-begin to establish session ${sessionId}`);
-            return;
-          }
-          
-          // Check for document-begin (session established)
-          const docBeginElement = findChild(negotiationElement, 'document-begin');
-          if (docBeginElement) {
-            console.log(`🎨 SXE: Session ${sessionId} established by ${from}`);
-            return;
-          }
-          
-          // Check for left-session (session ended)
-          const leftSessionElement = findChild(negotiationElement, 'left-session');
-          if (leftSessionElement) {
-            console.log(`🎨 SXE: Session ${sessionId} ended by ${from}`);
-            return;
-          }
-        }
-        
-        // Check for whiteboard path data within established session
-        // PSI+ uses <new>, <set>, <remove> elements (not <path>, <move>, <delete>)
-        const newElement = findChild(sxeElement, 'new');
-        const setElement = findChild(sxeElement, 'set');
-        const removeElement = findChild(sxeElement, 'remove');
-        
-        if (newElement || setElement || removeElement) {
-          console.log(`🎨 SXE Whiteboard data in session ${sessionId}: new=${!!newElement}, set=${!!setElement}, remove=${!!removeElement}`);
-          // TODO: Process whiteboard data and optionally respond
-          return;
-        }
-        
-        // If we found an sxe element but didn't handle it above, still return to prevent it being treated as regular message
-        console.log(`🎨 SXE: Found SXE element but no recognized child elements, returning without processing`);
-        return;
-      }
-      
-      // SXE element found but no negotiation element - still return to prevent treating as regular message
-      console.log(`🎨 SXE: Found SXE element but no negotiation, returning`);
-      return;
       
       // DEBUG: Check all x elements in stanza
       const allXElements = stanza.getChildren('x');
@@ -1190,10 +947,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        
        console.log(`[DEBUG FILE] ==== END DEBUG ====`);
        
-        // Only process messages with body (or SXE whiteboard messages which may not have body)
+        // Only process messages with body
          const body = stanza.getChildText("body");
-         const hasSxe = stanza.getChild('sxe', 'http://jabber.org/protocol/sxe');
-         if (!body && mediaUrls.length === 0 && !hasSxe) return;
+         if (!body && mediaUrls.length === 0) return;
         
         // Check for jabber:x:conference invites in body (may be escaped)
         if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
@@ -1339,9 +1095,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
              }
            };
            
-            switch (command) {
-              case 'help':
-                    await sendReply(`Available commands (groupchat: only whoami, help):
+           switch (command) {
+             case 'help':
+                   await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
   /list - Show contacts (admin only - direct chat)
   /add <jid> [name] - Add contact (admin only - direct chat)
   /remove <jid> - Remove contact (admin only - direct chat)
@@ -1351,6 +1107,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   /rooms - List joined rooms (admin only - direct chat)
   /leave <room> - Leave MUC room (admin only - direct chat)
   /invite <contact> <room> - Invite contact to room (admin only - direct chat)
+  /whiteboard - Whiteboard drawing and image sharing
   /vcard - Manage vCard profile (admin only - direct chat)
   /help - Show this help`);
               

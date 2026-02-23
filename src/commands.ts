@@ -547,34 +547,29 @@ Note: Commands connect directly to XMPP server.`);
   // Subcommand: whiteboard <action> [args]
   xmpp
     .command("whiteboard <action> [args...]")
-    .description("Send whiteboard messages (SXE protocol)")
+    .description("Send whiteboard messages (XEP-0113)")
     .action(async (action: string, args: string[]) => {
       if (action === 'help') {
-        try {
-          const { getHelp } = await import('./whiteboard-cli.js');
-          console.log(getHelp());
-        } catch (err: any) {
-          console.log('Failed to load help:', err.message);
-        }
+        console.log(`Whiteboard commands (XEP-0113):
+  openclaw xmpp whiteboard send <jid> <path> [options] - Send drawing path
+  openclaw xmpp whiteboard move <jid> <id> <dx> <dy> - Move existing path
+  openclaw xmpp whiteboard delete <jid> <id> - Delete path
+
+Path format: M<x>,<y>L<x>,<y>,...
+Options: stroke#RRGGBB stroke-width<width> id<name>
+
+Examples:
+  openclaw xmpp whiteboard send user@domain.com "M100,100L300,100,200,300,100,100 stroke#ff0000 stroke-width2 idtriangle"
+  openclaw xmpp whiteboard move user@domain.com triangle 50 50
+  openclaw xmpp whiteboard delete user@domain.com triangle
+
+Note: Commands connect directly to XMPP server.`);
         return;
       }
 
-      if (action === 'invite' && args.length >= 1) {
-        const jid = args[0];
-        const isGroupChat = args.includes('groupchat');
-        
-        try {
-          const { sendWhiteboardInvitation } = await import('./whiteboard-cli.js');
-          const result = await sendWhiteboardInvitation(jid, isGroupChat);
-          if (result.ok && result.sessionId) {
-            console.log(`Whiteboard invitation sent to ${jid}`);
-            console.log(`Session ID: ${result.sessionId} (use this for subsequent commands)`);
-          } else {
-            console.log('Failed to send whiteboard invitation:', result.error);
-          }
-        } catch (err: any) {
-          console.log('Failed to send whiteboard invitation:', err.message);
-        }
+      const client = getXmppClient();
+      if (!client) {
+        console.log('XMPP client not connected. Gateway must be running.');
         return;
       }
 
@@ -585,8 +580,6 @@ Note: Commands connect directly to XMPP server.`);
         let stroke = '#000000';
         let strokeWidth = 1;
         let id = `draw${Date.now()}`;
-        let sessionId: string | undefined;
-        let isGroupChat = false;
         
         for (let i = 2; i < args.length; i++) {
           const arg = args[i];
@@ -596,43 +589,26 @@ Note: Commands connect directly to XMPP server.`);
             strokeWidth = parseInt(arg.substring(12), 10) || 1;
           } else if (arg.startsWith('id') && arg.length > 2) {
             id = arg.substring(2);
-          } else if (arg.startsWith('session') && arg.length > 7) {
-            sessionId = arg.substring(7);
-          } else if (arg === 'groupchat') {
-            isGroupChat = true;
           }
         }
         
         try {
-          const { sendWhiteboardMessage } = await import('./whiteboard-cli.js');
-          const result = await sendWhiteboardMessage(jid, pathStr, { stroke, strokeWidth, id, sessionId, isGroupChat });
-          if (result.ok) {
+          const { sendWhiteboardMessage } = await import('./whiteboard.js');
+          const path = { d: pathStr, stroke, strokeWidth, id };
+          const ok = await sendWhiteboardMessage(client, jid, path, false);
+          if (ok) {
             console.log(`Whiteboard sent to ${jid}: ${id}`);
-            if (!sessionId) {
-              console.log('Note: Include session<id> for subsequent commands');
-            }
           } else {
-            console.log('Failed to send whiteboard:', result.error);
+            console.log('Failed to send whiteboard');
           }
         } catch (err: any) {
           console.log('Failed to send whiteboard:', err.message);
         }
-        return;
-      }
-
-      if (action === 'move' && args.length >= 4) {
+      } else if (action === 'move' && args.length >= 4) {
         const jid = args[0];
         const id = args[1];
         const dx = parseInt(args[2], 10);
         const dy = parseInt(args[3], 10);
-        
-        let sessionId: string | undefined;
-        for (let i = 4; i < args.length; i++) {
-          const arg = args[i];
-          if (arg.startsWith('session') && arg.length > 7) {
-            sessionId = arg.substring(7);
-          }
-        }
         
         if (isNaN(dx) || isNaN(dy)) {
           console.log('dx and dy must be numbers');
@@ -640,72 +616,35 @@ Note: Commands connect directly to XMPP server.`);
         }
         
         try {
-          const { sendWhiteboardMove } = await import('./whiteboard-cli.js');
-          const result = await sendWhiteboardMove(jid, id, dx, dy, sessionId);
-          if (result.ok) {
+          const { sendWhiteboardMove } = await import('./whiteboard.js');
+          const ok = await sendWhiteboardMove(client, jid, id, dx, dy, false);
+          if (ok) {
             console.log(`Whiteboard move sent to ${jid}: ${id} → (${dx}, ${dy})`);
           } else {
-            console.log('Failed to send whiteboard move:', result.error);
+            console.log('Failed to send whiteboard move');
           }
         } catch (err: any) {
           console.log('Failed to send whiteboard move:', err.message);
         }
-        return;
-      }
-
-      if (action === 'delete' && args.length >= 2) {
+      } else if (action === 'delete' && args.length >= 2) {
         const jid = args[0];
         const id = args[1];
         
-        let sessionId: string | undefined;
-        for (let i = 2; i < args.length; i++) {
-          const arg = args[i];
-          if (arg.startsWith('session') && arg.length > 7) {
-            sessionId = arg.substring(7);
-          }
-        }
-        
         try {
-          const { sendWhiteboardDelete } = await import('./whiteboard-cli.js');
-          const result = await sendWhiteboardDelete(jid, id, sessionId);
-          if (result.ok) {
+          const { sendWhiteboardDelete } = await import('./whiteboard.js');
+          const ok = await sendWhiteboardDelete(client, jid, id, false);
+          if (ok) {
             console.log(`Whiteboard delete sent to ${jid}: ${id}`);
           } else {
-            console.log('Failed to send whiteboard delete:', result.error);
+            console.log('Failed to send whiteboard delete');
           }
         } catch (err: any) {
           console.log('Failed to send whiteboard delete:', err.message);
         }
-        return;
+      } else {
+        console.log('Invalid whiteboard command');
+        console.log('Use: openclaw xmpp whiteboard help');
       }
-
-      if (action === 'clear' && args.length >= 1) {
-        const jid = args[0];
-        
-        let sessionId: string | undefined;
-        for (let i = 1; i < args.length; i++) {
-          const arg = args[i];
-          if (arg.startsWith('session') && arg.length > 7) {
-            sessionId = arg.substring(7);
-          }
-        }
-        
-        try {
-          const { sendWhiteboardClear } = await import('./whiteboard-cli.js');
-          const result = await sendWhiteboardClear(jid, sessionId);
-          if (result.ok) {
-            console.log(`Whiteboard clear sent to ${jid}`);
-          } else {
-            console.log('Failed to send whiteboard clear:', result.error);
-          }
-        } catch (err: any) {
-          console.log('Failed to send whiteboard clear:', err.message);
-        }
-        return;
-      }
-
-      console.log('Invalid whiteboard command');
-      console.log('Use: openclaw xmpp whiteboard help');
     });
 
   // Subcommand: sftp <action> [args]
