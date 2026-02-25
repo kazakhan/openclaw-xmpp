@@ -204,7 +204,7 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
       aliases: ["jabber"],
     },
     capabilities: {
-      chatTypes: ["direct"],
+      chatTypes: ["direct", "channel"],
       polls: false,
       reactions: false,
       threads: false,
@@ -481,11 +481,11 @@ gateway: {
                 const senderId = senderBareJid;
                 const senderName = from.split('@')[0];
 
-                // IMPORTANT: Use "direct" chatType for BOTH direct and groupchat
-                // This prevents openclaw from creating separate "group" sessions
-                // The SessionKey determines conversation identity, not ChatType
-                const chatType = "direct" as const;
-                const conversationLabel = `XMPP: ${senderBareJid}`;
+                // Use "channel" chatType for groupchat, "direct" for direct messages
+                const chatType = (options?.type === "groupchat" ? "channel" : "direct") as "direct" | "channel";
+                const conversationLabel = options?.room 
+                  ? `XMPP Groupchat: ${options.room}` 
+                  : `XMPP: ${senderBareJid}`;
                 const botNick = options?.botNick || null;
                 debugLog(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}`);
 

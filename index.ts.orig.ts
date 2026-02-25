@@ -2031,7 +2031,7 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
       aliases: ["jabber"],
     },
     capabilities: {
-      chatTypes: ["direct"],
+      chatTypes: ["direct", "channel"],
       polls: false,
       reactions: false,
       threads: false,

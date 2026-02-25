@@ -185,7 +185,7 @@ export function register(api: any) {
       aliases: ["jabber"],
     },
     capabilities: {
-      chatTypes: ["direct"],
+      chatTypes: ["direct", "channel"],
       polls: false,
       reactions: false,
       threads: false,

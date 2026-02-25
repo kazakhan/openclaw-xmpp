@@ -2,8 +2,30 @@
 
 All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0/0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.8.2] - 2026-02-26
+
+### Fixed
+- **Groupchat Message Handling**: Agents now correctly identify groupchat messages as channel conversations instead of direct messages.
+
+#### Root Cause
+Previously, all XMPP messages were sent to Openclaw with `ChatType: "direct"`, regardless of whether they came from a direct chat or a groupchat (MUC) room. This caused agents to behave as if they were in 1-on-1 conversations when they were actually in groupchats, leading to confusion.
+
+#### Changes
+- **`index.ts`**: 
+  - Updated channel capabilities to include `"channel"` chat type alongside `"direct"`
+  - Changed message `ChatType` from hardcoded `"direct"` to dynamic: `"channel"` for groupchat messages, `"direct"` for direct messages
+  - Updated conversation label to show room name for groupchat messages (e.g., "XMPP Groupchat: room@conference.example.com")
+
+- **`src/register.ts`**:
+  - Updated channel capabilities to include `"channel"` chat type
+
+#### Technical Details
+- Groupchat messages are identified by the XMPP stanza type `"groupchat"` (per XEP-0045 MUC standard)
+- The fix passes the correct `ChatType` to Openclaw's `recordInboundSession` call, enabling proper session handling for group conversations
+- Outbound replies continue to use the correct `sendGroupchat()` method for groupchat rooms
 
 ## [1.8.1] - 2026-02-26
 
