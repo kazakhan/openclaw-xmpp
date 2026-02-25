@@ -5,38 +5,13 @@ import { MessageStore } from "./src/messageStore.js";
 import { validators } from "./src/security/validation.js";
 import { secureLog } from "./src/security/logging.js";
 import { decryptPasswordFromConfig } from "./src/security/encryption.js";
+import { debugLog, sanitize, checkRateLimit, setDebugLogDir, MAX_FILE_SIZE } from "./src/shared/index.js";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
 const MAX_CONCURRENT_TRANSFERS = 3;
 const activeDownloads = new Map<string, { size: number; startTime: number }>();
 
-// Simple file logger for debugging with sanitization
-const debugLog = (msg: string) => {
-  const sanitizedMsg = sanitize(msg);
-  const logFile = path.join(__dirname, 'cli-debug.log');
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${sanitizedMsg}\n`;
-  try {
-    fs.appendFileSync(logFile, line);
-  } catch (err) {
-    // Silently ignore logging errors
-  }
-};
-
-function sanitize(message: string): string {
-  if (!message || typeof message !== 'string') return '';
-  let sanitized = message;
-  const SENSITIVE_PATTERNS = [
-    /password["']?\s*[:=]\s*["']?[^"']+["']?/gi,
-    /password[:\s][^\s,"']+/gi,
-    /credential[s]?[:\s][^\s,"']+/gi,
-    /api[_-]?key[s]?[:\s][^\s,"']+/gi,
-  ];
-  for (const pattern of SENSITIVE_PATTERNS) {
-    sanitized = sanitized.replace(pattern, '[REDACTED]');
-  }
-  return sanitized;
-}
+// Set debug log directory to plugin directory
+setDebugLogDir(__dirname);
 
 debugLog(`XMPP plugin loading at ${new Date().toISOString()}`);
 
@@ -63,36 +38,6 @@ interface QueuedMessage {
 
 const messageQueue: QueuedMessage[] = [];
 const messageQueueMaxSize = 100;
-
-// Rate limiting for commands (per JID)
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const rateLimitMaxRequests = 10; // Max commands per window
-const rateLimitWindowMs = 60000; // 1 minute window
-
-function checkRateLimit(jid: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(jid);
-  
-  if (!entry || now - entry.windowStart > rateLimitWindowMs) {
-    // Start new window
-    rateLimitMap.set(jid, { count: 1, windowStart: now });
-    return true;
-  }
-  
-  if (entry.count >= rateLimitMaxRequests) {
-    console.log(`[RATE LIMIT] Rejected command from ${jid} (${entry.count} requests in window)`);
-    return false;
-  }
-  
-  entry.count++;
-  return true;
-}
-
-
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;

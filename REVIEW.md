@@ -328,14 +328,14 @@ isRunning = false;  // But this refers to what?
 | 1.1 | Move `path` import to top | `src/security/validation.ts` |
 | 1.2 | Generate unique salt per installation | `src/security/encryption.ts` |
 
-### Phase 2: Remove Redundancies
+### Phase 2: Remove Redundancies (✅ COMPLETED)
 | # | Action | Files |
 |---|--------|-------|
-| 2.1 | Create `src/shared/` with common utilities | `sanitize()`, `debugLog()`, `checkRateLimit()` |
-| 2.2 | Remove duplicates from `index.ts` | Import from shared module |
-| 2.3 | Remove duplicates from `startXMPP.ts` | Import from shared module |
-| 2.4 | Consolidate `downloadFile()` | Keep in utils, remove from startXMPP |
-| 2.5 | Remove unused roster from commands.ts | Delete lines 8-20 |
+| 2.1 | ✅ Create `src/shared/` with common utilities | `sanitize()`, `debugLog()`, `checkRateLimit()`, `downloadFile()`, `processInboundFiles()` |
+| 2.2 | ✅ Remove duplicates from `index.ts` | Import from shared module |
+| 2.3 | ✅ Remove duplicates from `startXMPP.ts` | Import from shared module |
+| 2.4 | ✅ Consolidate `downloadFile()` | Now in shared, removed from startXMPP |
+| 2.5 | ⏸️ Keep roster in commands.ts | Actually used for CLI commands (`openclaw xmpp roster`, `openclaw xmpp nick`) |
 
 ### Phase 3: Fix Bugs
 | # | Action | Files |

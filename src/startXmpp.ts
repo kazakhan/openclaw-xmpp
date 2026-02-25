@@ -5,68 +5,11 @@ import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
 import { parseWhiteboardMessage } from "./whiteboard.js";
-
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
+import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_SIZE } from "./shared/index.js";
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
 let isRunning = false;
-
-function sanitize(message: string): string {
-  if (!message || typeof message !== 'string') return '';
-  let sanitized = message;
-  const SENSITIVE_PATTERNS = [
-    /password["']?\s*[:=]\s*["']?[^"']+["']?/gi,
-    /password[:\s][^\s,"']+/gi,
-    /credential[s]?[:\s][^\s,"']+/gi,
-    /api[_-]?key[s]?[:\s][^\s,"']+/gi,
-  ];
-  for (const pattern of SENSITIVE_PATTERNS) {
-    sanitized = sanitized.replace(pattern, '[REDACTED]');
-  }
-  return sanitized;
-}
-
-// Simple file logger for debugging with sanitization
-const debugLog = (msg: string) => {
-  const sanitizedMsg = sanitize(msg);
-  const logFile = path.join(process.cwd(), 'cli-debug.log');
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${sanitizedMsg}\n`;
-  try {
-    fs.appendFileSync(logFile, line);
-  } catch (err) {
-    // Silently ignore logging errors
-  }
-};
-
-// Rate limiting for commands (per JID)
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const rateLimitMaxRequests = 10; // Max commands per window
-const rateLimitWindowMs = 60000; // 1 minute window
-
-function checkRateLimit(jid: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(jid);
-
-  if (!entry || now - entry.windowStart > rateLimitWindowMs) {
-    // Start new window
-    rateLimitMap.set(jid, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= rateLimitMaxRequests) {
-    console.log(`[RATE LIMIT] Rejected command from ${jid} (${entry.count} requests in window)`);
-    return false;
-  }
-
-  entry.count++;
-  return true;
-}
 
 export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
    // Helper to get default resource/nick from JID local part
@@ -75,91 +18,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      return result;
    };
    const getDefaultNick = () => {
-     const result = cfg.jid ? cfg.jid.split("@")[0] : "openclaw";
-     return result;
-    };
-    
-    // File download helper for inbound attachments (available in stanza handler)
-    const downloadFile = async (url: string, tempDir: string): Promise<string> => {
-      debugLog(`Downloading file from ${url}`);
-      
-       // Create temp directory if needed
-       if (!fs.existsSync(tempDir)) {
-         fs.mkdirSync(tempDir, { recursive: true });
-       }
-       
-       // Validate URL
-       if (!validators.isValidUrl(url)) {
-         throw new Error(`Invalid URL: ${url}`);
-       }
-       
-       // Generate filename from URL with path traversal protection
-       const urlObj = new URL(url);
-       const pathname = urlObj.pathname;
-       let filename = path.basename(pathname) || `file_${Date.now()}.bin`;
-       
-       // Sanitize filename using validator
-       const safeFilename = validators.sanitizeFilename(filename);
-       if (safeFilename !== filename) {
-         console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
-         filename = safeFilename;
-       }
-       
-       // Ensure filename doesn't escape tempDir using validator
-       if (!validators.isSafePath(filename, tempDir)) {
-         filename = `file_${Date.now()}_${safeFilename}`;
-         console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
-       }
-       
-       const filePath = path.join(tempDir, filename);
-     
-      try {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-        }
-        
-        const contentLength = response.headers.get("content-length");
-        if (contentLength) {
-          const fileSize = parseInt(contentLength, 10);
-          if (fileSize > MAX_FILE_SIZE) {
-            throw new Error(`File too large: ${fileSize} bytes > ${MAX_FILE_SIZE} bytes limit`);
-          }
-        }
-        
-        const buffer = await response.arrayBuffer();
-        if (buffer.byteLength > MAX_FILE_SIZE) {
-          throw new Error(`File too large: ${buffer.byteLength} bytes > ${MAX_FILE_SIZE} bytes limit`);
-        }
-        
-        await fs.promises.writeFile(filePath, Buffer.from(buffer));
-       
-       console.log(`File downloaded to ${filePath} (${buffer.byteLength} bytes)`);
-       return filePath;
-     } catch (err) {
-       console.error("File download failed:", err);
-       throw err;
-     }
-   };
-
-   const processInboundFiles = async (urls: string[]): Promise<string[]> => {
-     if (urls.length === 0) return [];
-     
-     // Create temp directory for downloads
-     const tempDir = path.join(cfg.dataDir, 'downloads');
-     const localPaths: string[] = [];
-     
-     for (const url of urls) {
-       try {
-         const localPath = await downloadFile(url, tempDir);
-         localPaths.push(localPath);
-       } catch (err) {
-         console.error(`Failed to download ${url}:`, err);
-         // Continue with other files
-       }
-     }
-     
-      return localPaths;
+      const result = cfg.jid ? cfg.jid.split("@")[0] : "openclaw";
+      return result;
     };
     
     debugLog(`Starting XMPP connection to ${cfg?.service}`);
@@ -920,9 +780,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
            mediaUrls.push(url);
            console.log(`[DEBUG FILE] Detected file attachment: ${url}`);
            
-           // Download file locally for agent processing
-           try {
-             const localPaths = await processInboundFiles([url]);
+            // Download file locally for agent processing
+            try {
+              const localPaths = await processInboundFiles([url], cfg.dataDir);
              mediaPaths = localPaths;
              console.log(`[DEBUG FILE] Downloaded file to local paths: ${localPaths.join(', ')}`);
            } catch (err) {
