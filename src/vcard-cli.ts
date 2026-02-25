@@ -13,14 +13,75 @@ interface XmppConfig {
   password: string;
 }
 
+interface VCardName {
+  family?: string;
+  given?: string;
+  middle?: string;
+  prefix?: string;
+  suffix?: string;
+}
+
+interface VCardPhone {
+  types: string[];
+  number: string;
+}
+
+interface VCardEmail {
+  types: string[];
+  userid: string;
+}
+
+interface VCardAddress {
+  types: string[];
+  pobox?: string;
+  extadd?: string;
+  street?: string;
+  locality?: string;
+  region?: string;
+  pcode?: string;
+  ctry?: string;
+}
+
+interface VCardOrg {
+  orgname?: string;
+  orgunit?: string[];
+}
+
+interface VCardPhoto {
+  type?: string;
+  binval?: string;
+  extval?: string;
+}
+
 interface VCardData {
+  version?: string;
   fn?: string;
+  n?: VCardName;
   nickname?: string;
+  photo?: VCardPhoto;
+  bday?: string;
+  tel?: VCardPhone[];
+  email?: VCardEmail[];
+  adr?: VCardAddress[];
+  jabberid?: string;
+  mailer?: string;
+  tz?: string;
+  geo?: { lat?: string; lon?: string };
+  title?: string;
+  role?: string;
+  org?: VCardOrg;
+  logo?: VCardPhoto;
+  categories?: string[];
+  note?: string;
+  uid?: string;
   url?: string;
   desc?: string;
+  rev?: string;
+  prodid?: string;
+  sortString?: string;
   avatarUrl?: string;
-  avatarBinval?: string;
-  avatarType?: string;
+  avatarMimeType?: string;
+  avatarData?: string;
 }
 
 function loadXmppConfig(): XmppConfig {
@@ -53,42 +114,381 @@ function loadXmppConfig(): XmppConfig {
 }
 
 function parseVCard(vcardEl: any): VCardData {
-  const data: VCardData = {};
+  const data: VCardData = { version: "3.0" };
   if (!vcardEl) return data;
-  
+
+  // VERSION
+  data.version = "3.0";
+
+  // FN - Formatted Name
   const fn = vcardEl.getChild('FN');
-  const nickname = vcardEl.getChild('NICKNAME');
-  const url = vcardEl.getChild('URL');
-  const desc = vcardEl.getChild('DESC');
-  const photo = vcardEl.getChild('PHOTO');
-  
   if (fn) data.fn = fn.text();
+
+  // N - Structured Name
+  const n = vcardEl.getChild('N');
+  if (n) {
+    data.n = {
+      family: n.getChildText('FAMILY'),
+      given: n.getChildText('GIVEN'),
+      middle: n.getChildText('MIDDLE'),
+      prefix: n.getChildText('PREFIX'),
+      suffix: n.getChildText('SUFFIX')
+    };
+  }
+
+  // NICKNAME
+  const nickname = vcardEl.getChild('NICKNAME');
   if (nickname) data.nickname = nickname.text();
-  if (url) data.url = url.text();
-  if (desc) data.desc = desc.text();
+
+  // PHOTO
+  const photo = vcardEl.getChild('PHOTO');
   if (photo) {
-    // Support both URI (legacy) and EXTVAL (preferred)
     const extval = photo.getChild('EXTVAL');
     const uri = photo.getChild('URI');
-    if (extval) data.avatarUrl = extval.text();
-    else if (uri) data.avatarUrl = uri.text();
+    const binval = photo.getChild('BINVAL');
+    const type = photo.getChild('TYPE');
+    data.photo = {};
+    if (extval) data.photo.extval = extval.text();
+    else if (uri) data.photo.extval = uri.text();
+    else if (binval) data.photo.binval = binval.text();
+    if (type) data.photo.type = type.text();
+    // Backward compatibility
+    if (data.photo.extval) data.avatarUrl = data.photo.extval;
   }
-  
+
+  // BDAY
+  const bday = vcardEl.getChild('BDAY');
+  if (bday) data.bday = bday.text();
+
+  // TEL - Phone numbers (multi-value)
+  const telElements = vcardEl.getChildren('TEL');
+  if (telElements && telElements.length > 0) {
+    data.tel = telElements.map((tel: any) => {
+      const types: string[] = [];
+      if (tel.getChild('HOME')) types.push('HOME');
+      if (tel.getChild('WORK')) types.push('WORK');
+      if (tel.getChild('VOICE')) types.push('VOICE');
+      if (tel.getChild('FAX')) types.push('FAX');
+      if (tel.getChild('CELL')) types.push('CELL');
+      if (tel.getChild('VIDEO')) types.push('VIDEO');
+      if (tel.getChild('PAGER')) types.push('PAGER');
+      if (tel.getChild('MSG')) types.push('MSG');
+      if (tel.getChild('BBS')) types.push('BBS');
+      if (tel.getChild('MODEM')) types.push('MODEM');
+      if (tel.getChild('ISDN')) types.push('ISDN');
+      if (tel.getChild('PCS')) types.push('PCS');
+      if (tel.getChild('PREF')) types.push('PREF');
+      const number = tel.getChild('NUMBER');
+      return { types, number: number ? number.text() : '' };
+    });
+  }
+
+  // EMAIL (multi-value)
+  const emailElements = vcardEl.getChildren('EMAIL');
+  if (emailElements && emailElements.length > 0) {
+    data.email = emailElements.map((email: any) => {
+      const types: string[] = [];
+      if (email.getChild('HOME')) types.push('HOME');
+      if (email.getChild('WORK')) types.push('WORK');
+      if (email.getChild('INTERNET')) types.push('INTERNET');
+      if (email.getChild('PREF')) types.push('PREF');
+      if (email.getChild('X400')) types.push('X400');
+      const userid = email.getChild('USERID');
+      return { types, userid: userid ? userid.text() : '' };
+    });
+  }
+
+  // ADR - Address (multi-value)
+  const adrElements = vcardEl.getChildren('ADR');
+  if (adrElements && adrElements.length > 0) {
+    data.adr = adrElements.map((adr: any) => {
+      const types: string[] = [];
+      if (adr.getChild('HOME')) types.push('HOME');
+      if (adr.getChild('WORK')) types.push('WORK');
+      if (adr.getChild('POSTAL')) types.push('POSTAL');
+      if (adr.getChild('PARCEL')) types.push('PARCEL');
+      if (adr.getChild('DOM')) types.push('DOM');
+      if (adr.getChild('INTL')) types.push('INTL');
+      if (adr.getChild('PREF')) types.push('PREF');
+      return {
+        types,
+        pobox: adr.getChildText('POBOX'),
+        extadd: adr.getChildText('EXTADD'),
+        street: adr.getChildText('STREET'),
+        locality: adr.getChildText('LOCALITY'),
+        region: adr.getChildText('REGION'),
+        pcode: adr.getChildText('PCODE'),
+        ctry: adr.getChildText('CTRY')
+      };
+    });
+  }
+
+  // JABBERID
+  const jabberid = vcardEl.getChild('JABBERID');
+  if (jabberid) data.jabberid = jabberid.text();
+
+  // MAILER
+  const mailer = vcardEl.getChild('MAILER');
+  if (mailer) data.mailer = mailer.text();
+
+  // TZ - Timezone
+  const tz = vcardEl.getChild('TZ');
+  if (tz) data.tz = tz.text();
+
+  // GEO
+  const geo = vcardEl.getChild('GEO');
+  if (geo) {
+    const lat = geo.getChild('LAT');
+    const lon = geo.getChild('LON');
+    if (lat && lon) data.geo = { lat: lat.text(), lon: lon.text() };
+  }
+
+  // TITLE
+  const title = vcardEl.getChild('TITLE');
+  if (title) data.title = title.text();
+
+  // ROLE
+  const role = vcardEl.getChild('ROLE');
+  if (role) data.role = role.text();
+
+  // ORG
+  const org = vcardEl.getChild('ORG');
+  if (org) {
+    const orgname = org.getChild('ORGNAME');
+    const orgunit = org.getChild('ORGUNIT');
+    data.org = {
+      orgname: orgname ? orgname.text() : undefined,
+      orgunit: orgunit ? [orgunit.text()] : undefined
+    };
+  }
+
+  // LOGO
+  const logo = vcardEl.getChild('LOGO');
+  if (logo) {
+    const extval = logo.getChild('EXTVAL');
+    const binval = logo.getChild('BINVAL');
+    const type = logo.getChild('TYPE');
+    data.logo = {};
+    if (extval) data.logo.extval = extval.text();
+    if (binval) data.logo.binval = binval.text();
+    if (type) data.logo.type = type.text();
+  }
+
+  // CATEGORIES
+  const categories = vcardEl.getChild('CATEGORIES');
+  if (categories) {
+    const keywords = categories.getChildren('KEYWORD');
+    if (keywords) data.categories = keywords.map((k: any) => k.text());
+  }
+
+  // NOTE
+  const note = vcardEl.getChild('NOTE');
+  if (note) data.note = note.text();
+
+  // UID
+  const uid = vcardEl.getChild('UID');
+  if (uid) data.uid = uid.text();
+
+  // URL
+  const url = vcardEl.getChild('URL');
+  if (url) data.url = url.text();
+
+  // DESC
+  const desc = vcardEl.getChild('DESC');
+  if (desc) data.desc = desc.text();
+
+  // REV
+  const rev = vcardEl.getChild('REV');
+  if (rev) data.rev = rev.text();
+
+  // PRODID
+  const prodid = vcardEl.getChild('PRODID');
+  if (prodid) data.prodid = prodid.text();
+
+  // SORT-STRING
+  const sortString = vcardEl.getChild('SORT-STRING');
+  if (sortString) data.sortString = sortString.text();
+
   return data;
 }
 
 function buildVCardStanza(data: VCardData, id: string) {
   const vCardXml = xml("vCard", { xmlns: "vcard-temp" }, []);
-  
+
+  // VERSION (required for vCard 3.0)
+  vCardXml.append(xml("VERSION", {}, data.version || "3.0"));
+
+  // FN - Formatted Name (required)
   if (data.fn) vCardXml.append(xml("FN", {}, data.fn));
+
+  // N - Structured Name
+  if (data.n) {
+    const nXml = xml("N", {}, []);
+    if (data.n.family) nXml.append(xml("FAMILY", {}, data.n.family));
+    if (data.n.given) nXml.append(xml("GIVEN", {}, data.n.given));
+    if (data.n.middle) nXml.append(xml("MIDDLE", {}, data.n.middle));
+    if (data.n.prefix) nXml.append(xml("PREFIX", {}, data.n.prefix));
+    if (data.n.suffix) nXml.append(xml("SUFFIX", {}, data.n.suffix));
+    vCardXml.append(nXml);
+  }
+
+  // NICKNAME
   if (data.nickname) vCardXml.append(xml("NICKNAME", {}, data.nickname));
-  if (data.url) vCardXml.append(xml("URL", {}, data.url));
-  if (data.desc) vCardXml.append(xml("DESC", {}, data.desc));
-  if (data.avatarUrl) {
-    // Use EXTVAL for URL reference (more compatible than URI)
+
+  // PHOTO
+  if (data.photo) {
+    const photoXml = xml("PHOTO", {}, []);
+    if (data.photo.type) photoXml.append(xml("TYPE", {}, data.photo.type));
+    if (data.photo.binval) photoXml.append(xml("BINVAL", {}, data.photo.binval));
+    if (data.photo.extval) photoXml.append(xml("EXTVAL", {}, data.photo.extval));
+    // Backward compatibility
+    else if (data.avatarUrl) photoXml.append(xml("EXTVAL", {}, data.avatarUrl));
+    vCardXml.append(photoXml);
+  } else if (data.avatarUrl) {
     vCardXml.append(xml("PHOTO", {}, xml("EXTVAL", {}, data.avatarUrl)));
   }
-  
+
+  // BDAY
+  if (data.bday) vCardXml.append(xml("BDAY", {}, data.bday));
+
+  // TEL - Phone numbers (multi-value)
+  if (data.tel) {
+    data.tel.forEach(phone => {
+      const telXml = xml("TEL", {}, []);
+      phone.types.forEach(t => {
+        if (t === 'HOME') telXml.append(xml("HOME", {}, []));
+        else if (t === 'WORK') telXml.append(xml("WORK", {}, []));
+        else if (t === 'VOICE') telXml.append(xml("VOICE", {}, []));
+        else if (t === 'FAX') telXml.append(xml("FAX", {}, []));
+        else if (t === 'CELL') telXml.append(xml("CELL", {}, []));
+        else if (t === 'VIDEO') telXml.append(xml("VIDEO", {}, []));
+        else if (t === 'PAGER') telXml.append(xml("PAGER", {}, []));
+        else if (t === 'MSG') telXml.append(xml("MSG", {}, []));
+        else if (t === 'BBS') telXml.append(xml("BBS", {}, []));
+        else if (t === 'MODEM') telXml.append(xml("MODEM", {}, []));
+        else if (t === 'ISDN') telXml.append(xml("ISDN", {}, []));
+        else if (t === 'PCS') telXml.append(xml("PCS", {}, []));
+        else if (t === 'PREF') telXml.append(xml("PREF", {}, []));
+      });
+      if (phone.number) telXml.append(xml("NUMBER", {}, phone.number));
+      vCardXml.append(telXml);
+    });
+  }
+
+  // EMAIL (multi-value)
+  if (data.email) {
+    data.email.forEach(email => {
+      const emailXml = xml("EMAIL", {}, []);
+      email.types.forEach(t => {
+        if (t === 'HOME') emailXml.append(xml("HOME", {}, []));
+        else if (t === 'WORK') emailXml.append(xml("WORK", {}, []));
+        else if (t === 'INTERNET') emailXml.append(xml("INTERNET", {}, []));
+        else if (t === 'PREF') emailXml.append(xml("PREF", {}, []));
+        else if (t === 'X400') emailXml.append(xml("X400", {}, []));
+      });
+      if (email.userid) emailXml.append(xml("USERID", {}, email.userid));
+      vCardXml.append(emailXml);
+    });
+  }
+
+  // ADR - Address (multi-value)
+  if (data.adr) {
+    data.adr.forEach(adr => {
+      const adrXml = xml("ADR", {}, []);
+      adr.types.forEach(t => {
+        if (t === 'HOME') adrXml.append(xml("HOME", {}, []));
+        else if (t === 'WORK') adrXml.append(xml("WORK", {}, []));
+        else if (t === 'POSTAL') adrXml.append(xml("POSTAL", {}, []));
+        else if (t === 'PARCEL') adrXml.append(xml("PARCEL", {}, []));
+        else if (t === 'DOM') adrXml.append(xml("DOM", {}, []));
+        else if (t === 'INTL') adrXml.append(xml("INTL", {}, []));
+        else if (t === 'PREF') adrXml.append(xml("PREF", {}, []));
+      });
+      if (adr.pobox) adrXml.append(xml("POBOX", {}, adr.pobox));
+      if (adr.extadd) adrXml.append(xml("EXTADD", {}, adr.extadd));
+      if (adr.street) adrXml.append(xml("STREET", {}, adr.street));
+      if (adr.locality) adrXml.append(xml("LOCALITY", {}, adr.locality));
+      if (adr.region) adrXml.append(xml("REGION", {}, adr.region));
+      if (adr.pcode) adrXml.append(xml("PCODE", {}, adr.pcode));
+      if (adr.ctry) adrXml.append(xml("CTRY", {}, adr.ctry));
+      vCardXml.append(adrXml);
+    });
+  }
+
+  // JABBERID
+  if (data.jabberid) vCardXml.append(xml("JABBERID", {}, data.jabberid));
+
+  // MAILER
+  if (data.mailer) vCardXml.append(xml("MAILER", {}, data.mailer));
+
+  // TZ - Timezone
+  if (data.tz) vCardXml.append(xml("TZ", {}, data.tz));
+
+  // GEO
+  if (data.geo) {
+    const geoXml = xml("GEO", {}, []);
+    if (data.geo.lat) geoXml.append(xml("LAT", {}, data.geo.lat));
+    if (data.geo.lon) geoXml.append(xml("LON", {}, data.geo.lon));
+    vCardXml.append(geoXml);
+  }
+
+  // TITLE
+  if (data.title) vCardXml.append(xml("TITLE", {}, data.title));
+
+  // ROLE
+  if (data.role) vCardXml.append(xml("ROLE", {}, data.role));
+
+  // ORG
+  if (data.org) {
+    const orgXml = xml("ORG", {}, []);
+    if (data.org.orgname) orgXml.append(xml("ORGNAME", {}, data.org.orgname));
+    if (data.org.orgunit) {
+      data.org.orgunit.forEach(unit => {
+        if (unit) orgXml.append(xml("ORGUNIT", {}, unit));
+      });
+    }
+    vCardXml.append(orgXml);
+  }
+
+  // LOGO
+  if (data.logo) {
+    const logoXml = xml("LOGO", {}, []);
+    if (data.logo.type) logoXml.append(xml("TYPE", {}, data.logo.type));
+    if (data.logo.binval) logoXml.append(xml("BINVAL", {}, data.logo.binval));
+    if (data.logo.extval) logoXml.append(xml("EXTVAL", {}, data.logo.extval));
+    vCardXml.append(logoXml);
+  }
+
+  // CATEGORIES
+  if (data.categories && data.categories.length > 0) {
+    const catXml = xml("CATEGORIES", {}, []);
+    data.categories.forEach(cat => {
+      if (cat) catXml.append(xml("KEYWORD", {}, cat));
+    });
+    vCardXml.append(catXml);
+  }
+
+  // NOTE
+  if (data.note) vCardXml.append(xml("NOTE", {}, data.note));
+
+  // UID
+  if (data.uid) vCardXml.append(xml("UID", {}, data.uid));
+
+  // URL
+  if (data.url) vCardXml.append(xml("URL", {}, data.url));
+
+  // DESC
+  if (data.desc) vCardXml.append(xml("DESC", {}, data.desc));
+
+  // REV (auto-set by server, but include if present)
+  if (data.rev) vCardXml.append(xml("REV", {}, data.rev));
+
+  // PRODID
+  if (data.prodid) vCardXml.append(xml("PRODID", {}, data.prodid));
+
+  // SORT-STRING
+  if (data.sortString) vCardXml.append(xml("SORT-STRING", {}, data.sortString));
+
   return xml("iq", { type: "set", id }, vCardXml);
 }
 
@@ -444,6 +844,265 @@ export async function getVCard(): Promise<{ ok: boolean; data?: VCardData; error
     });
     
     return { ok: true, data: result };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// Extended vCard set functions for complex fields
+
+export async function setVCardName(
+  family: string,
+  given: string,
+  middle?: string,
+  prefix?: string,
+  suffix?: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      vcard.n = { family, given, middle, prefix, suffix };
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function addVCardPhone(
+  types: string[],
+  number: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (!vcard.tel) vcard.tel = [];
+      vcard.tel.push({ types, number });
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function removeVCardPhone(index: number): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (vcard.tel && vcard.tel[index]) {
+        vcard.tel.splice(index, 1);
+      }
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function addVCardEmail(
+  types: string[],
+  userid: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (!vcard.email) vcard.email = [];
+      vcard.email.push({ types, userid });
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function removeVCardEmail(index: number): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (vcard.email && vcard.email[index]) {
+        vcard.email.splice(index, 1);
+      }
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function addVCardAddress(
+  types: string[],
+  street: string,
+  locality: string,
+  region: string,
+  pcode: string,
+  ctry: string,
+  pobox?: string,
+  extadd?: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (!vcard.adr) vcard.adr = [];
+      vcard.adr.push({ types, street, locality, region, pcode, ctry, pobox, extadd });
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function removeVCardAddress(index: number): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      if (vcard.adr && vcard.adr[index]) {
+        vcard.adr.splice(index, 1);
+      }
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function setVCardOrg(
+  orgname: string,
+  ...orgunits: string[]
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await withConnection(async (xmpp) => {
+      const getId = `v1-${Date.now()}`;
+      let response: any = null;
+      
+      const handler = (stanza: any) => {
+        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
+      };
+      xmpp.on('stanza', handler);
+      
+      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
+      await new Promise(r => setTimeout(r, 800));
+      xmpp.off('stanza', handler);
+      
+      const vcard = parseVCard(response?.getChild('vCard'));
+      vcard.org = { orgname, orgunit: orgunits.length > 0 ? orgunits : undefined };
+      
+      await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
+      await new Promise(r => setTimeout(r, 300));
+    });
+    
+    return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err.message };
   }

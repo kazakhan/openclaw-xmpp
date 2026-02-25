@@ -602,7 +602,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 const localPart = cfg?.jid?.split("@")[0] || "openclaw";
                 const fn = vcard.getFN() || `OpenClaw (${localPart})`;
                 const nickname = vcard.getNickname() || localPart;
-                const url = vcard.getURL() || "https://github.com/anomalyco/openclaw";
+                const url = vcard.getUrl() || "https://github.com/anomalyco/openclaw";
                 const desc = vcard.getDesc() || "OpenClaw XMPP Plugin - AI Assistant";
 
                 const vcardResponse = xml("iq", { to: from, type: "result", id },
@@ -1401,7 +1401,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                       // Also update local cache for responding to others
                       if (field === 'fn') vcard.setFN(value);
                       if (field === 'nickname') vcard.setNickname(value);
-                      if (field === 'url') vcard.setURL(value);
+                      if (field === 'url') vcard.setUrl(value);
                       if (field === 'desc') vcard.setDesc(value);
                       
                       await sendReply(`✅ vCard field '${field}' updated on server: ${value}`);

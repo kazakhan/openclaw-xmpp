@@ -85,15 +85,21 @@ restore_vcard() {
     log "INFO" "Restoring vCard..."
     if [ -f "$VCARD_BACKUP_FILE" ]; then
         # Extract values and set them back
-        local fn=$(grep "FN:" "$VCARD_BACKUP_FILE" | cut -d':' -f2- | xargs)
-        local nickname=$(grep "Nickname:" "$VCARD_BACKUP_FILE" | cut -d':' -f2- | xargs)
-        local url=$(grep "URL:" "$VCARD_BACKUP_FILE" | cut -d':' -f2- | xargs)
-        local desc=$(grep "Description:" "$VCARD_BACKUP_FILE" | cut -d':' -f2- | xargs)
+        local fn=$(grep -i "^FN:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local nickname=$(grep -i "^Nickname:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local url=$(grep -i "^URL:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local desc=$(grep -i "^Description:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local birthday=$(grep -i "^Birthday:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local title=$(grep -i "^Title:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
+        local role=$(grep -i "^Role:" "$VCARD_BACKUP_FILE" | head -1 | cut -d':' -f2- | xargs)
         
         [ -n "$fn" ] && run_command "openclaw xmpp vcard set fn '$fn'"
         [ -n "$nickname" ] && run_command "openclaw xmpp vcard set nickname '$nickname'"
         [ -n "$url" ] && run_command "openclaw xmpp vcard set url '$url'"
         [ -n "$desc" ] && run_command "openclaw xmpp vcard set desc '$desc'"
+        [ -n "$birthday" ] && run_command "openclaw xmpp vcard set birthday '$birthday'"
+        [ -n "$title" ] && run_command "openclaw xmpp vcard set title '$title'"
+        [ -n "$role" ] && run_command "openclaw xmpp vcard set role '$role'"
         
         log "INFO" "vCard restored from backup"
     else

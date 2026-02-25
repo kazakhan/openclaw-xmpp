@@ -16,13 +16,80 @@ export interface VCardConfig {
   url?: string;
   desc?: string;
   avatarUrl?: string;
+  bday?: string;
+  org?: string;
+  title?: string;
+  role?: string;
+}
+
+export interface VCardName {
+  family?: string;
+  given?: string;
+  middle?: string;
+  prefix?: string;
+  suffix?: string;
+}
+
+export interface VCardPhone {
+  types: string[];
+  number: string;
+}
+
+export interface VCardEmail {
+  types: string[];
+  userid: string;
+}
+
+export interface VCardAddress {
+  types: string[];
+  pobox?: string;
+  extadd?: string;
+  street?: string;
+  locality?: string;
+  region?: string;
+  pcode?: string;
+  ctry?: string;
+}
+
+export interface VCardOrg {
+  orgname?: string;
+  orgunit?: string[];
+}
+
+export interface VCardPhoto {
+  type?: string;
+  binval?: string;
+  extval?: string;
 }
 
 export interface VCardData {
+  version?: string;
   fn?: string;
+  n?: VCardName;
   nickname?: string;
+  photo?: VCardPhoto;
+  bday?: string;
+  tel?: VCardPhone[];
+  email?: VCardEmail[];
+  adr?: VCardAddress[];
+  jabberid?: string;
+  mailer?: string;
+  tz?: string;
+  geo?: { lat?: string; lon?: string };
+  title?: string;
+  role?: string;
+  org?: VCardOrg;
+  logo?: VCardPhoto;
+  categories?: string[];
+  note?: string;
+  uid?: string;
   url?: string;
   desc?: string;
+  rev?: string;
+  prodid?: string;
+  sortString?: string;
+
+  // Legacy/extra aliases (backward compatibility)
   avatarUrl?: string;
   avatarMimeType?: string;
   avatarData?: string;

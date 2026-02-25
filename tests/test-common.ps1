@@ -123,10 +123,13 @@ function Restore-Vcard {
         $backup = Get-Content $VCARD_BACKUP_FILE -Raw
         
         # Extract and restore values
-        $fnMatch = $backup | Select-String "FN:\s*(.+)"
-        $nickMatch = $backup | Select-String "Nickname:\s*(.+)"
-        $urlMatch = $backup | Select-String "URL:\s*(.+)"
-        $descMatch = $backup | Select-String "Description:\s*(.+)"
+        $fnMatch = $backup | Select-String -Pattern "FN:\s*(.+)" -CaseSensitive:$false
+        $nickMatch = $backup | Select-String -Pattern "Nickname:\s*(.+)" -CaseSensitive:$false
+        $urlMatch = $backup | Select-String -Pattern "URL:\s*(.+)" -CaseSensitive:$false
+        $descMatch = $backup | Select-String -Pattern "Description:\s*(.+)" -CaseSensitive:$false
+        $bdayMatch = $backup | Select-String -Pattern "Birthday:\s*(.+)" -CaseSensitive:$false
+        $titleMatch = $backup | Select-String -Pattern "Title:\s*(.+)" -CaseSensitive:$false
+        $roleMatch = $backup | Select-String -Pattern "Role:\s*(.+)" -CaseSensitive:$false
         
         if ($fnMatch) { 
             $fn = ($fnMatch.Matches.Groups[1].Value).Trim()
@@ -143,6 +146,18 @@ function Restore-Vcard {
         if ($descMatch) { 
             $desc = ($descMatch.Matches.Groups[1].Value).Trim()
             Run-Command "openclaw xmpp vcard set desc '$desc'" | Out-Null
+        }
+        if ($bdayMatch) { 
+            $bday = ($bdayMatch.Matches.Groups[1].Value).Trim()
+            Run-Command "openclaw xmpp vcard set birthday '$bday'" | Out-Null
+        }
+        if ($titleMatch) { 
+            $title = ($titleMatch.Matches.Groups[1].Value).Trim()
+            Run-Command "openclaw xmpp vcard set title '$title'" | Out-Null
+        }
+        if ($roleMatch) { 
+            $role = ($roleMatch.Matches.Groups[1].Value).Trim()
+            Run-Command "openclaw xmpp vcard set role '$role'" | Out-Null
         }
         
         Write-TestLog -Level "INFO" -Message "vCard restored from backup"

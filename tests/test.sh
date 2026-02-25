@@ -173,6 +173,72 @@ echo "$VCARD_VERIFY" | grep -qi "$TEST_FN" && assert "vCard fn updated" "true" "
 echo "$VCARD_VERIFY" | grep -qi "$TEST_NICK" && assert "vCard nickname updated" "true" "found" "found" || assert "vCard nickname updated" "false" "found" "not found"
 echo "$VCARD_VERIFY" | grep -qi "$TEST_URL" && assert "vCard url updated" "true" "found" "found" || assert "vCard url updated" "false" "found" "not found"
 
+# Test 5.4: Set birthday
+log "INFO" "Test 5.4: Setting birthday..."
+run_command "openclaw xmpp vcard set birthday '1990-05-15'" 30
+assert "vCard set birthday" "$?" "0" "$?"
+
+# Test 5.5: Set title
+log "INFO" "Test 5.5: Setting title..."
+run_command "openclaw xmpp vcard set title 'Test Engineer'" 30
+assert "vCard set title" "$?" "0" "$?"
+
+# Test 5.6: Set role
+log "INFO" "Test 5.6: Setting role..."
+run_command "openclaw xmpp vcard set role 'Developer'" 30
+assert "vCard set role" "$?" "0" "$?"
+
+# Test 5.7: Set timezone
+log "INFO" "Test 5.7: Setting timezone..."
+run_command "openclaw xmpp vcard set timezone '-05:00'" 30
+assert "vCard set timezone" "$?" "0" "$?"
+
+# Test 5.8: Set structured name
+log "INFO" "Test 5.8: Setting structured name..."
+run_command "openclaw xmpp vcard name 'Testbot' 'XMPP' 'Bot' 'Mr.'" 30
+assert "vCard name" "$?" "0" "$?"
+
+# Test 5.9: Add phone
+log "INFO" "Test 5.9: Adding phone..."
+run_command "openclaw xmpp vcard phone add +61412345678 cell" 30
+assert "vCard phone add" "$?" "0" "$?"
+
+# Test 5.10: Add work phone
+log "INFO" "Test 5.10: Adding work phone..."
+run_command "openclaw xmpp vcard phone add +60987654321 work voice" 30
+assert "vCard phone add work" "$?" "0" "$?"
+
+# Test 5.11: Add email
+log "INFO" "Test 5.11: Adding email..."
+run_command "openclaw xmpp vcard email add test@example.com home" 30
+assert "vCard email add" "$?" "0" "$?"
+
+# Test 5.12: Add work email
+log "INFO" "Test 5.12: Adding work email..."
+run_command "openclaw xmpp vcard email add work@example.com work pref" 30
+assert "vCard email add work" "$?" "0" "$?"
+
+# Test 5.13: Add address
+log "INFO" "Test 5.13: Adding address..."
+run_command "openclaw xmpp vcard address add \"123 Test St\" Boston MA 02101 USA home" 30
+assert "vCard address add" "$?" "0" "$?"
+
+# Test 5.14: Set organization
+log "INFO" "Test 5.14: Setting organization..."
+run_command "openclaw xmpp vcard org 'Test Corp' 'Engineering'" 30
+assert "vCard org" "$?" "0" "$?"
+
+# Test 5.15: Verify all new fields
+log "INFO" "Test 5.15: Verifying all new vCard fields..."
+VCARD_VERIFY2=$(run_command "openclaw xmpp vcard get" 30)
+echo "$VCARD_VERIFY2" | grep -qi "1990-05-15" && assert "vCard birthday" "true" "found" "found" || assert "vCard birthday" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "Test Engineer" && assert "vCard title" "true" "found" "found" || assert "vCard title" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "Developer" && assert "vCard role" "true" "found" "found" || assert "vCard role" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "+1234567890" && assert "vCard phone" "true" "found" "found" || assert "vCard phone" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "test@example.com" && assert "vCard email" "true" "found" "found" || assert "vCard email" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "Boston" && assert "vCard address" "true" "found" "found" || assert "vCard address" "false" "found" "not found"
+echo "$VCARD_VERIFY2" | grep -qi "Test Corp" && assert "vCard org" "true" "found" "found" || assert "vCard org" "false" "found" "not found"
+
 #========================================
 # TEST 6: SFTP
 #========================================

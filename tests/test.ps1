@@ -177,6 +177,86 @@ if ($vcardVerify -match [regex]::Escape($testUrl)) {
     Assert-Test -TestName "vCard url updated" -Condition $true -Expected "found" -Actual "found"
 }
 
+# Test 5.4: Set birthday
+Write-TestLog -Level "INFO" -Message "Test 5.4 - Setting birthday..."
+Run-Command "openclaw xmpp vcard set birthday '1990-05-15'" | Out-Null
+Assert-Test -TestName "vCard set birthday" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.5: Set title
+Write-TestLog -Level "INFO" -Message "Test 5.5 - Setting title..."
+Run-Command "openclaw xmpp vcard set title 'Test Engineer'" | Out-Null
+Assert-Test -TestName "vCard set title" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.6: Set role
+Write-TestLog -Level "INFO" -Message "Test 5.6 - Setting role..."
+Run-Command "openclaw xmpp vcard set role 'Developer'" | Out-Null
+Assert-Test -TestName "vCard set role" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.7: Set timezone
+Write-TestLog -Level "INFO" -Message "Test 5.7 - Setting timezone..."
+Run-Command "openclaw xmpp vcard set timezone '-05:00'" | Out-Null
+Assert-Test -TestName "vCard set timezone" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.8: Set structured name
+Write-TestLog -Level "INFO" -Message "Test 5.8 - Setting structured name..."
+Run-Command "openclaw xmpp vcard name 'Testbot' 'XMPP' 'Bot' 'Mr.'" | Out-Null
+Assert-Test -TestName "vCard name" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.9: Add phone
+Write-TestLog -Level "INFO" -Message "Test 5.9 - Adding phone..."
+Run-Command "openclaw xmpp vcard phone add +61412345678 cell" | Out-Null
+Assert-Test -TestName "vCard phone add" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.10: Add work phone
+Write-TestLog -Level "INFO" -Message "Test 5.10 - Adding work phone..."
+Run-Command "openclaw xmpp vcard phone add +60987654321 work voice" | Out-Null
+Assert-Test -TestName "vCard phone add work" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.11: Add email
+Write-TestLog -Level "INFO" -Message "Test 5.11 - Adding email..."
+Run-Command "openclaw xmpp vcard email add test@example.com home" | Out-Null
+Assert-Test -TestName "vCard email add" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.12: Add work email
+Write-TestLog -Level "INFO" -Message "Test 5.12 - Adding work email..."
+Run-Command "openclaw xmpp vcard email add work@example.com work pref" | Out-Null
+Assert-Test -TestName "vCard email add work" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.13: Add address
+Write-TestLog -Level "INFO" -Message "Test 5.13 - Adding address..."
+Run-Command "openclaw xmpp vcard address add `"123 Test St`" Boston MA 02101 USA home" | Out-Null
+Assert-Test -TestName "vCard address add" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.14: Set organization
+Write-TestLog -Level "INFO" -Message "Test 5.14 - Setting organization..."
+Run-Command "openclaw xmpp vcard org 'Test Corp' 'Engineering'" | Out-Null
+Assert-Test -TestName "vCard org" -Condition ($LASTEXITCODE -eq 0) -Expected "0" -Actual $LASTEXITCODE
+
+# Test 5.15: Verify all new fields
+Write-TestLog -Level "INFO" -Message "Test 5.15 - Verifying all new vCard fields..."
+$vcardVerify2 = Run-CommandOutput "openclaw xmpp vcard get"
+if ($vcardVerify2 -match "1990-05-15") {
+    Assert-Test -TestName "vCard birthday" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "Test Engineer") {
+    Assert-Test -TestName "vCard title" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "Developer") {
+    Assert-Test -TestName "vCard role" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "\+1234567890") {
+    Assert-Test -TestName "vCard phone" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "test@example.com") {
+    Assert-Test -TestName "vCard email" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "Boston") {
+    Assert-Test -TestName "vCard address" -Condition $true -Expected "found" -Actual "found"
+}
+if ($vcardVerify2 -match "Test Corp") {
+    Assert-Test -TestName "vCard org" -Condition $true -Expected "found" -Actual "found"
+}
+
 #========================================
 # TEST 6: SFTP
 #========================================

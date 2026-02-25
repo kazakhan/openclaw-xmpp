@@ -459,13 +459,33 @@ export function registerXmppCli({
   openclaw xmpp vcard set url <value> - Set URL
   openclaw xmpp vcard set desc <value> - Set Description
   openclaw xmpp vcard set avatar <url-or-path> - Upload image as avatar
+  openclaw xmpp vcard set birthday <YYYY-MM-DD> - Set Birthday
+  openclaw xmpp vcard set title <value> - Set Job Title
+  openclaw xmpp vcard set role <value> - Set Job Role
+  openclaw xmpp vcard set timezone <value> - Set Timezone
+  openclaw xmpp vcard name <family> <given> [middle] [prefix] [suffix] - Set structured name
+  openclaw xmpp vcard phone add <number> [type...] - Add phone (types: home work voice fax cell video pager msg)
+  openclaw xmpp vcard phone remove <index> - Remove phone by index
+  openclaw xmpp vcard email add <address> [type...] - Add email (types: home work internet pref)
+  openclaw xmpp vcard email remove <index> - Remove email by index
+  openclaw xmpp vcard address add <street> <city> <region> <postal> <country> [type...] - Add address (types: home work postal parcel)
+  openclaw xmpp vcard address remove <index> - Remove address by index
+  openclaw xmpp vcard org <orgname> [orgunit...] - Set organization
 
 Examples:
   openclaw xmpp vcard get
   openclaw xmpp vcard set fn "My Bot"
   openclaw xmpp vcard set nickname "bot"
+  openclaw xmpp vcard set birthday "1990-05-15"
+  openclaw xmpp vcard set title "Software Engineer"
+  openclaw xmpp vcard name "Smith" "John" "David" "Mr." "III"
+  openclaw xmpp vcard phone add "+1234567890" cell
+  openclaw xmpp vcard phone add "+0987654321" work voice
+  openclaw xmpp vcard email add "john@example.com" home
+  openclaw xmpp vcard email add "work@example.com" work pref
+  openclaw xmpp vcard address add "123 Main St" "Boston" "MA" "02101" "USA" home
+  openclaw xmpp vcard org "Acme Inc" "Engineering"
   openclaw xmpp vcard set avatar https://example.com/avatar.png
-  openclaw xmpp vcard set avatar C:\\Users\\me\\avatar.png
 
 Note: Commands connect directly to XMPP server.`);
       } else if (action === 'get') {
@@ -488,7 +508,7 @@ Note: Commands connect directly to XMPP server.`);
       } else if (action === 'set' && args.length >= 1) {
         const field = args[0];
         const value = args.slice(1).join(' ');
-        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatar'];
+        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatar', 'birthday', 'title', 'role', 'timezone'];
 
         if (!validFields.includes(field)) {
           console.log(`Invalid field: ${field}`);
@@ -537,6 +557,186 @@ Note: Commands connect directly to XMPP server.`);
           }
         } catch (err: any) {
           console.log('Failed to update vCard:', err.message);
+        }
+      } else if (action === 'name' && args.length >= 2) {
+        // openclaw xmpp vcard name <family> <given> [middle] [prefix] [suffix]
+        const family = args[0];
+        const given = args[1];
+        const middle = args[2];
+        const prefix = args[3];
+        const suffix = args[4];
+
+        try {
+          const { setVCardName } = await import('./vcard-cli.js');
+          const result = await setVCardName(family, given, middle, prefix, suffix);
+          if (result.ok) {
+            console.log(`vCard name updated: ${prefix || ''} ${given} ${middle || ''} ${family} ${suffix || ''}`.replace(/\s+/g, ' ').trim());
+          } else {
+            console.log('Failed to update vCard name:', result.error || 'Unknown error');
+          }
+        } catch (err: any) {
+          console.log('Failed to update vCard name:', err.message);
+        }
+      } else if (action === 'phone' && args.length >= 2) {
+        // openclaw xmpp vcard phone add <number> [type...]
+        // openclaw xmpp vcard phone remove <index>
+        const subaction = args[0];
+
+        if (subaction === 'add' && args.length >= 2) {
+          const number = args[1];
+          const types: string[] = [];
+          for (let i = 2; i < args.length; i++) {
+            const arg = args[i].toLowerCase();
+            if (['home', 'work', 'voice', 'fax', 'cell', 'video', 'pager', 'msg'].includes(arg)) {
+              types.push(arg.toUpperCase());
+            }
+          }
+
+          try {
+            const { addVCardPhone } = await import('./vcard-cli.js');
+            const result = await addVCardPhone(types, number);
+            if (result.ok) {
+              console.log(`vCard phone added: ${number} (${types.join(', ') || 'default'})`);
+            } else {
+              console.log('Failed to add phone:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to add phone:', err.message);
+          }
+        } else if (subaction === 'remove') {
+          const index = parseInt(args[1], 10);
+          if (isNaN(index)) {
+            console.log('Invalid index. Usage: openclaw xmpp vcard phone remove <index>');
+            return;
+          }
+
+          try {
+            const { removeVCardPhone } = await import('./vcard-cli.js');
+            const result = await removeVCardPhone(index);
+            if (result.ok) {
+              console.log(`vCard phone removed at index ${index}`);
+            } else {
+              console.log('Failed to remove phone:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to remove phone:', err.message);
+          }
+        } else {
+          console.log('Invalid phone command. Use: openclaw xmpp vcard phone add <number> [--type] or phone remove <index>');
+        }
+      } else if (action === 'email' && args.length >= 2) {
+        // openclaw xmpp vcard email add <address> [type...]
+        // openclaw xmpp vcard email remove <index>
+        const subaction = args[0];
+
+        if (subaction === 'add' && args.length >= 2) {
+          const address = args[1];
+          const types: string[] = [];
+          for (let i = 2; i < args.length; i++) {
+            const arg = args[i].toLowerCase();
+            if (['home', 'work', 'internet', 'pref'].includes(arg)) {
+              types.push(arg.toUpperCase());
+            }
+          }
+
+          try {
+            const { addVCardEmail } = await import('./vcard-cli.js');
+            const result = await addVCardEmail(types, address);
+            if (result.ok) {
+              console.log(`vCard email added: ${address} (${types.join(', ') || 'default'})`);
+            } else {
+              console.log('Failed to add email:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to add email:', err.message);
+          }
+        } else if (subaction === 'remove') {
+          const index = parseInt(args[1], 10);
+          if (isNaN(index)) {
+            console.log('Invalid index. Usage: openclaw xmpp vcard email remove <index>');
+            return;
+          }
+
+          try {
+            const { removeVCardEmail } = await import('./vcard-cli.js');
+            const result = await removeVCardEmail(index);
+            if (result.ok) {
+              console.log(`vCard email removed at index ${index}`);
+            } else {
+              console.log('Failed to remove email:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to remove email:', err.message);
+          }
+        } else {
+          console.log('Invalid email command. Use: openclaw xmpp vcard email add <address> [--type] or email remove <index>');
+        }
+      } else if (action === 'address' && args.length >= 2) {
+        // openclaw xmpp vcard address add <street> <city> <region> <postal> <country> [--home|--work]
+        // openclaw xmpp vcard address remove <index>
+        const subaction = args[0];
+
+        if (subaction === 'add' && args.length >= 6) {
+          const street = args[1];
+          const locality = args[2];
+          const region = args[3];
+          const pcode = args[4];
+          const ctry = args[5];
+          const types: string[] = [];
+          for (let i = 6; i < args.length; i++) {
+            const arg = args[i].toLowerCase();
+            if (['home', 'work', 'postal', 'parcel'].includes(arg)) {
+              types.push(arg.toUpperCase());
+            }
+          }
+
+          try {
+            const { addVCardAddress } = await import('./vcard-cli.js');
+            const result = await addVCardAddress(types, street, locality, region, pcode, ctry);
+            if (result.ok) {
+              console.log(`vCard address added: ${street}, ${locality}, ${region} ${pcode}, ${ctry} (${types.join(', ') || 'default'})`);
+            } else {
+              console.log('Failed to add address:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to add address:', err.message);
+          }
+        } else if (subaction === 'remove') {
+          const index = parseInt(args[1], 10);
+          if (isNaN(index)) {
+            console.log('Invalid index. Usage: openclaw xmpp vcard address remove <index>');
+            return;
+          }
+
+          try {
+            const { removeVCardAddress } = await import('./vcard-cli.js');
+            const result = await removeVCardAddress(index);
+            if (result.ok) {
+              console.log(`vCard address removed at index ${index}`);
+            } else {
+              console.log('Failed to remove address:', result.error || 'Unknown error');
+            }
+          } catch (err: any) {
+            console.log('Failed to remove address:', err.message);
+          }
+        } else {
+          console.log('Invalid address command. Use: openclaw xmpp vcard address add <street> <city> <region> <postal> <country> [--type] or address remove <index>');
+        }
+      } else if (action === 'org' && args.length >= 1) {
+        // openclaw xmpp vcard org <orgname> [orgunit...]
+        const orgname = args[0];
+        const orgunits = args.slice(1);
+
+        try {
+          const { setVCardOrg } = await import('./vcard-cli.js');
+          const result = await setVCardOrg(orgname, ...orgunits);
+          if (result.ok) {
+            console.log(`vCard org updated: ${orgname}${orgunits.length > 0 ? ' (' + orgunits.join(', ') + ')' : ''}`);
+          } else {
+            console.log('Failed to update org:', result.error || 'Unknown error');
+          }
+        } catch (err: any) {
+          console.log('Failed to update org:', err.message);
         }
       } else {
         console.log('Invalid vCard command');

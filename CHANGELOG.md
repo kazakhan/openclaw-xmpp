@@ -2,8 +2,95 @@
 
 All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0/0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.8.0] - 2026-02-25
+
+### Added
+- **vCard CLI Commands**: Extended vCard management commands following XEP-0054 standard.
+
+#### New CLI Commands
+```
+openclaw xmpp vcard set birthday <YYYY-MM-DD>  - Set Birthday
+openclaw xmpp vcard set title <value>           - Set Job Title
+openclaw xmpp vcard set role <value>            - Set Job Role
+openclaw xmpp vcard set timezone <offset>       - Set Timezone (e.g., -05:00)
+openclaw xmpp vcard name <family> <given> [middle] [prefix] [suffix]  - Set structured name
+openclaw xmpp vcard phone add <number> [type...]  - Add phone (types: home work voice fax cell video pager msg)
+openclaw xmpp vcard phone remove <index>         - Remove phone by index
+openclaw xmpp vcard email add <address> [type...] - Add email (types: home work internet pref)
+openclaw xmpp vcard email remove <index>        - Remove email by index
+openclaw xmpp vcard address add <street> <city> <region> <postal> <country> [type...] - Add address
+openclaw xmpp vcard address remove <index>      - Remove address by index
+openclaw xmpp vcard org <orgname> [orgunit...]  - Set organization
+```
+
+#### CLI Syntax Change
+- Changed from flag-based to positional arguments to avoid Commander.js option parsing issues
+- Old (broken): `openclaw xmpp vcard phone add +61412345678 --cell`
+- New (working): `openclaw xmpp vcard phone add +61412345678 cell`
+
+#### Changes
+- `src/commands.ts` - Added command handlers for name, phone, email, address, org subcommands
+- `src/vcard-cli.ts` - Added export functions: setVCardName, addVCardPhone, removeVCardPhone, addVCardEmail, removeVCardEmail, addVCardAddress, removeVCardAddress, setVCardOrg
+- `tests/test.sh` - Added tests 5.4-5.15 for all new vCard fields
+- `tests/test.ps1` - Added tests 5.4-5.15 for all new vCard fields
+- `tests/test-common.sh` - Updated restore_vcard for new fields (birthday, title, role)
+- `tests/test-common.ps1` - Updated restore_vcard for new fields (birthday, title, role)
+
+#### Test Coverage
+- Birthday, title, role, timezone fields
+- Structured name (family, given, middle, prefix, suffix)
+- Phone numbers (multiple, with types)
+- Email addresses (multiple, with types)
+- Addresses (multiple, with types)
+- Organization (orgname, orgunit)
+
+## [1.7.9] - 2026-02-25
+
+### Changed
+- **vCard Implementation (XEP-0054)**: Comprehensive vCard implementation following the vcard-temp standard.
+
+#### New Fields Implemented
+All XEP-0054 fields now supported:
+
+| Category | Fields |
+|----------|--------|
+| Required | VERSION (3.0), FN |
+| Name | N (family, given, middle, prefix, suffix) |
+| Basic | NICKNAME, PHOTO, BDAY |
+| Contact | TEL (multi), EMAIL (multi), ADR (multi), JABBERID, MAILER, TZ, GEO |
+| Professional | TITLE, ROLE, ORG (orgname, orgunit), LOGO |
+| Other | CATEGORIES, NOTE, UID, URL, DESC, REV, PRODID, SORT-STRING |
+
+#### Changes
+- `src/types.ts` - Added comprehensive VCardData interface with VCardName, VCardPhone, VCardEmail, VCardAddress, VCardOrg, VCardPhoto
+- `src/vcard.ts` - Complete rewrite with getters/setters for all fields, multi-value support for TEL/EMAIL/ADR
+- `src/vcard-cli.ts` - Updated parseVCard() and buildVCardStanza() to handle all XEP-0054 fields
+
+#### New Methods in VCard Class
+- getN()/setN()/setNameComponents() - Structured name
+- getTel()/setTel()/addPhone()/removePhone() - Phone numbers (multi-value)
+- getEmail()/setEmail()/addEmail()/removeEmail() - Emails (multi-value)
+- getAdr()/setAdr()/addAddress()/removeAddress() - Addresses (multi-value)
+- getBday()/setBday() - Birthday
+- getJabberid()/setJabberid() - XMPP ID (auto-populated from config)
+- getTitle()/setTitle() - Job title
+- getRole()/setRole() - Job role
+- getOrg()/setOrg()/setOrgComponents() - Organization
+- getTz()/setTz() - Timezone
+- getGeo()/setGeo() - Geographic position
+- getLogo()/setLogoUrl()/setLogoData() - Organization logo
+- getCategories()/setCategories() - Keywords
+- getNote()/setNote() - Note
+- getUid()/setUid() - Unique identifier
+- getProdid()/setProdid() - Product ID
+- getSortString()/setSortString() - Sort string
+
+#### Backward Compatibility
+- avatarUrl/avatarData still work as aliases for photo
+- getURL()/setURL() aliased to getUrl()/setUrl()
 
 ## [1.7.8] - 2026-02-25
 
