@@ -1,11 +1,36 @@
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
 const IV_LENGTH = 16;
 const TAG_LENGTH = 16;
-const SALT = 'xmpp-plugin-salt-v1';
+const DEFAULT_SALT = 'xmpp-plugin-salt-v1';
 const KEY_DERIVATION_ITERATIONS = 100000;
+const SALT_FILE_NAME = '.xmpp-plugin-salt';
+
+function getInstallationSalt(dataDir?: string): string {
+  if (dataDir) {
+    const saltFilePath = path.join(dataDir, SALT_FILE_NAME);
+    if (fs.existsSync(saltFilePath)) {
+      try {
+        return fs.readFileSync(saltFilePath, 'utf8').trim();
+      } catch {
+        // Fall through to generate new salt
+      }
+    }
+    const newSalt = crypto.randomBytes(32).toString('hex');
+    try {
+      fs.writeFileSync(saltFilePath, newSalt, { mode: 0o600 });
+    } catch {
+      // If we can't write the file, fall back to default
+      return DEFAULT_SALT;
+    }
+    return newSalt;
+  }
+  return DEFAULT_SALT;
+}
 
 export interface EncryptionResult {
   success: boolean;
@@ -26,6 +51,7 @@ export interface XmppAccountConfig {
   password?: string;
   resource?: string;
   encryptionKey?: string;
+  encryptionSalt?: string;
   dataDir?: string;
   ftpPort?: number;
 }
@@ -33,8 +59,9 @@ export interface XmppAccountConfig {
 export class PasswordEncryption {
   private key: Buffer;
 
-  constructor(key: string) {
-    this.key = crypto.pbkdf2Sync(key, SALT, KEY_DERIVATION_ITERATIONS, KEY_LENGTH, 'sha512');
+  constructor(key: string, salt?: string) {
+    const usedSalt = salt || DEFAULT_SALT;
+    this.key = crypto.pbkdf2Sync(key, usedSalt, KEY_DERIVATION_ITERATIONS, KEY_LENGTH, 'sha512');
   }
 
   encrypt(plaintext: string): EncryptionResult {
@@ -93,8 +120,8 @@ export function generateEncryptionKey(): string {
   return crypto.randomBytes(KEY_LENGTH).toString('base64');
 }
 
-export function createEncryptor(key: string): PasswordEncryption {
-  return new PasswordEncryption(key);
+export function createEncryptor(key: string, salt?: string): PasswordEncryption {
+  return new PasswordEncryption(key, salt);
 }
 
 export function getOrCreateEncryptionKey(config: XmppAccountConfig): string {
@@ -105,8 +132,28 @@ export function getOrCreateEncryptionKey(config: XmppAccountConfig): string {
   return newKey;
 }
 
-export function encryptPasswordWithKey(password: string, key: string): string {
-  const encryptor = createEncryptor(key);
+export function getOrCreateEncryptionSalt(config: XmppAccountConfig): string {
+  // 1. If salt explicitly set in config, use it
+  if (config.encryptionSalt && typeof config.encryptionSalt === 'string' && config.encryptionSalt.length > 0) {
+    return config.encryptionSalt;
+  }
+
+  // 2. If there's an existing encrypted password but no salt in config,
+  // use default salt for backward compatibility
+  if (config.password && config.password.startsWith('ENC:') && config.encryptionKey) {
+    return DEFAULT_SALT;
+  }
+
+  // 3. For new encryptions, get or create installation salt
+  if (config.dataDir) {
+    return getInstallationSalt(config.dataDir);
+  }
+
+  return DEFAULT_SALT;
+}
+
+export function encryptPasswordWithKey(password: string, key: string, salt?: string): string {
+  const encryptor = createEncryptor(key, salt);
   const result = encryptor.encrypt(password);
   if (!result.success) {
     throw new Error(`Failed to encrypt password: ${result.error}`);
@@ -114,12 +161,12 @@ export function encryptPasswordWithKey(password: string, key: string): string {
   return 'ENC:' + result.encrypted;
 }
 
-export function decryptPasswordWithKey(encryptedPassword: string, key: string): string {
+export function decryptPasswordWithKey(encryptedPassword: string, key: string, salt?: string): string {
   if (!encryptedPassword.startsWith('ENC:')) {
     return encryptedPassword;
   }
 
-  const encryptor = createEncryptor(key);
+  const encryptor = createEncryptor(key, salt);
   const encryptedData = encryptedPassword.substring(4);
   const result = encryptor.decrypt(encryptedData);
 
@@ -142,17 +189,20 @@ export function decryptPasswordFromConfig(config: XmppAccountConfig): string {
     throw new Error('Password is encrypted but no encryptionKey found in config');
   }
 
-  return decryptPasswordWithKey(password, key);
+  const salt = getOrCreateEncryptionSalt(config);
+  return decryptPasswordWithKey(password, key, salt);
 }
 
 export function encryptPasswordInConfig(config: XmppAccountConfig, plaintextPassword: string): XmppAccountConfig {
   const key = getOrCreateEncryptionKey(config);
-  const encrypted = encryptPasswordWithKey(plaintextPassword, key);
+  const salt = getOrCreateEncryptionSalt(config);
+  const encrypted = encryptPasswordWithKey(plaintextPassword, key, salt);
 
   return {
     ...config,
     password: encrypted,
-    encryptionKey: key
+    encryptionKey: key,
+    encryptionSalt: salt
   };
 }
 

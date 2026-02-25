@@ -1,3 +1,5 @@
+import path from "path";
+
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 const URL_REGEX = /^https?:\/\/[^\s<>"]+$/;
 const SAFE_FILENAME_REGEX = /^[a-zA-Z0-9._-]+$/;
@@ -57,5 +59,3 @@ export const validators = {
     return jid.split('/')[0].trim().toLowerCase();
   }
 };
-
-import path from "path";
