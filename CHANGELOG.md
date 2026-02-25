@@ -5,6 +5,126 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.7] - 2026-02-25
+
+### Fixed
+- **Non-Atomic Message Counter**: Replaced non-atomic counter-based message IDs with cryptographically secure UUIDs.
+
+#### Changes
+- `index.ts` - Added `import crypto from "crypto"`
+- `index.ts:493` - Changed from `const uniqueMessageId = \`xmpp-${Date.now()}-${++messageCounter}\`` to `const uniqueMessageId = \`xmpp-${crypto.randomUUID()}\``
+- Removed local `messageCounter` variable
+
+#### Issue
+The previous implementation used a simple counter incremented with `++messageCounter` which is not thread-safe and could produce duplicate IDs under concurrent message processing.
+
+#### Solution
+Now uses `crypto.randomUUID()` which generates cryptographically secure, unique UUIDs guaranteed to be unique across all messages.
+
+### Fixed
+- **IBB Session Memory Leak**: Added automatic cleanup for stale In-Band Bytestream (IBB) file transfer sessions.
+
+#### Changes
+- `src/startXMPP.ts:255-260` - Added `IBB_SESSION_TIMEOUT_MS` constant (5 minutes)
+- `src/startXMPP.ts:262-270` - Added `cleanupIbbSessions()` function to remove sessions older than timeout
+- `src/startXMPP.ts:272-273` - Added interval to run cleanup every 60 seconds
+- `src/startXMPP.ts:444` - Added `createdAt: Date.now()` to session objects
+- `src/startXMPP.ts:208-211` - Added cleanup on XMPP offline event
+
+#### Issue
+The `ibbSessions` Map was never cleaned up, causing unbounded memory growth as sessions accumulated over time.
+
+#### Solution
+- Sessions now track their creation time via `createdAt` timestamp
+- A periodic cleanup runs every 60 seconds, removing sessions older than 5 minutes
+- Cleanup is triggered when XMPP goes offline
+
+### Fixed
+- **Joined Rooms Memory Leak**: Added automatic cleanup for rooms when bot is kicked or leaves.
+
+#### Changes
+- `src/startXMPP.ts:374-380` - Added detection and cleanup when bot is removed from room
+
+#### Issue
+When the bot was kicked or left a room, the `joinedRooms` Set and `roomNicks` Map were not updated, causing stale entries.
+
+#### Solution
+The presence handler now checks if the unavailable presence is for the bot's nick in a room, and if so, removes that room from both tracking collections.
+
+## [1.7.6] - 2026-02-25
+
+### Changed
+- **Code Deduplication**: Consolidated duplicate functions into shared module.
+
+#### New Files
+- `src/shared/index.ts` - New shared utilities module containing:
+
+#### Consolidated Functions
+- `sanitize(message: string)` - Redacts sensitive data (passwords, credentials, API keys) from logs
+- `debugLog(msg: string)` - File logger with configurable directory via `setDebugLogDir()`
+- `checkRateLimit(jid: string)` - Rate limiting (10 requests per minute per JID)
+- `downloadFile(url, tempDir, options)` - File download with security features
+- `processInboundFiles(urls, dataDir, options)` - Batch file processing
+
+#### Consolidated Constants
+- `MAX_FILE_SIZE` - 10MB file size limit
+- `RATE_LIMIT_MAX_REQUESTS` - 10 requests per window
+- `RATE_LIMIT_WINDOW_MS` - 60 second window
+
+#### Changes
+- `index.ts` - Removed local implementations of sanitize(), debugLog(), checkRateLimit()
+- `index.ts` - Added import from `./src/shared/index.js`
+- `index.ts` - Added `setDebugLogDir(__dirname)` to configure log location
+- `src/startXMPP.ts` - Removed local implementations of sanitize(), debugLog(), checkRateLimit(), downloadFile(), processInboundFiles()
+- `src/startXMPP.ts` - Added import from `./shared/index.js`
+- `src/startXMPP.ts:785` - Fixed call to `processInboundFiles([url], cfg.dataDir)` to include required dataDir parameter
+
+#### Notes
+- The shared `downloadFile()` includes security features: URL validation, filename sanitization, path traversal protection, and file size limits
+- Debug log directory can be configured via `setDebugLogDir()` for different contexts (plugin dir vs cwd)
+
+## [1.7.5] - 2026-02-25
+
+### Security
+- **Missing Import at File Top**: Fixed critical import order bug in validation module.
+
+#### Changes
+- `src/security/validation.ts:1` - Moved `import path from "path"` from end of file to top
+
+#### Issue
+The `path` module was imported at the end of the file (line 61) but used at line 25 in the `isSafePath()` function. This could cause runtime errors depending on import order.
+
+#### Solution
+Moved the import to the top of the file with other imports.
+
+### Security
+- **Unique Installation Salt**: Implemented unique salt per installation for password encryption.
+
+#### Changes
+- `src/security/encryption.ts:11-30` - Added `getInstallationSalt(dataDir)` function
+- `src/security/encryption.ts:9` - Changed `SALT` constant to `DEFAULT_SALT` for fallback
+- `src/security/encryption.ts:11` - Added `SALT_FILE_NAME` constant (`.xmpp-plugin-salt`)
+- `src/security/encryption.ts:135-153` - Added `getOrCreateEncryptionSalt()` function with backward compatibility
+- `src/security/encryption.ts:30` - Added `encryptionSalt` field to `XmppAccountConfig` interface
+
+#### Algorithm
+- On first encryption with a new dataDir, generates a random 32-byte salt
+- Stores salt in `{dataDir}/.xmpp-plugin-salt` with secure file permissions (0o600)
+- For existing encrypted passwords without salt in config, uses `DEFAULT_SALT` for backward compatibility
+
+#### Backward Compatibility
+- Existing encrypted passwords continue to work (fall back to default salt)
+- New encryptions use the unique installation salt
+- Salt can be explicitly set in config via `encryptionSalt` field
+
+#### Example Config with Salt
+```json
+{
+  "encryptionKey": "DpldYiYd/JrF5zw6L5H3Fj5dm8dKuHrkm6gb2s4pHuo=",
+  "encryptionSalt": "186f00791f0c95fd6e66936885f540c569a4d8bde775a7fa7877133275081a0c"
+}
+```
+
 ## [1.7.2] - 2026-02-08
 
 ### Added

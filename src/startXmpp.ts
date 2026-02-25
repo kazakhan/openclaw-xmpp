@@ -205,6 +205,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   xmpp.on("offline", () => {
     debugLog("XMPP went offline");
     isRunning = false;
+    // Cleanup intervals
+    if (ibbCleanupInterval) {
+      clearInterval(ibbCleanupInterval);
+    }
   });
 
    xmpp.on("online", async (address: any) => {
@@ -250,8 +254,23 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      }
    });
 
-    const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
-     const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number }>(); // IBB session tracking
+     const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
+     const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number, createdAt: number }>(); // IBB session tracking
+     const IBB_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes timeout for IBB sessions
+
+     // Cleanup function for stale IBB sessions
+     const cleanupIbbSessions = () => {
+       const now = Date.now();
+       for (const [sid, session] of ibbSessions.entries()) {
+         if (now - session.createdAt > IBB_SESSION_TIMEOUT_MS) {
+           console.log(`[IBB] Cleaning up stale session: ${sid}`);
+           ibbSessions.delete(sid);
+         }
+       }
+     };
+
+     // Run cleanup every minute
+     const ibbCleanupInterval = setInterval(cleanupIbbSessions, 60 * 1000);
 
      // Local joined rooms tracking for MUC
      const joinedRooms = new Set<string>();
@@ -353,6 +372,13 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       
       if (type === "unavailable") {
         console.log(`👋 User left room ${room}: ${nick} (${from})`);
+        // Check if bot was removed from room (kicked or left)
+        const botNick = roomNicks.get(room);
+        if (nick && nick === botNick) {
+          console.log(`🤖 Bot was removed from room ${room}, cleaning up...`);
+          joinedRooms.delete(room);
+          roomNicks.delete(room);
+        }
       } else {
         console.log(`👋 User joined room ${room}: ${nick} (${from})`);
       }
@@ -418,15 +444,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 return;
               }
               
-              // Store IBB session
-              ibbSessions.set(sid, {
-                sid,
-                from,
-                filename,
-                size,
-                data: Buffer.alloc(0),
-                received: 0
-              });
+               // Store IBB session
+               ibbSessions.set(sid, {
+                 sid,
+                 from,
+                 filename,
+                 size,
+                 data: Buffer.alloc(0),
+                 received: 0,
+                 createdAt: Date.now()
+               });
               
               // Accept the SI request
               const acceptIq = xml("iq", { to: from, type: "result", id });

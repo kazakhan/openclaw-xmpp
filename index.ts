@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { MessageStore } from "./src/messageStore.js";
 import { validators } from "./src/security/validation.js";
@@ -452,14 +453,11 @@ gateway: {
         
          let isRunning = true;
  
-         // Use pluginRuntime (from api.runtime) instead of ctx.runtime
-         const runtime = pluginRuntime;
-         debugLog("Using pluginRuntime in startAccount");
-         
-          // Counter for unique message IDs
-          let messageCounter = 0;
-          
-           const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
+          // Use pluginRuntime (from api.runtime) instead of ctx.runtime
+          const runtime = pluginRuntime;
+          debugLog("Using pluginRuntime in startAccount");
+           
+            const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
              if (!isRunning) {
                debugLog("XMPP message ignored - plugin not running");
                return;
@@ -490,8 +488,8 @@ gateway: {
                 const botNick = options?.botNick || null;
                 debugLog(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}`);
 
-                // Generate unique message ID using counter + timestamp
-                const uniqueMessageId = `xmpp-${Date.now()}-${++messageCounter}`;
+                // Generate unique message ID using crypto.randomUUID()
+                const uniqueMessageId = `xmpp-${crypto.randomUUID()}`;
 
                return {
                  Body: body,

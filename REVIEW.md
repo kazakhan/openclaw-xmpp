@@ -337,12 +337,12 @@ isRunning = false;  // But this refers to what?
 | 2.4 | ✅ Consolidate `downloadFile()` | Now in shared, removed from startXMPP |
 | 2.5 | ⏸️ Keep roster in commands.ts | Actually used for CLI commands (`openclaw xmpp roster`, `openclaw xmpp nick`) |
 
-### Phase 3: Fix Bugs
+### Phase 3: Fix Bugs (✅ COMPLETED)
 | # | Action | Files |
 |---|--------|-------|
-| 3.1 | Use `crypto.randomUUID()` for message IDs | `index.ts` |
-| 3.2 | Add cleanup for IBB sessions | `startXMPP.ts` |
-| 3.3 | Add cleanup for joined rooms on leave | `startXMPP.ts` |
+| 3.1 | ✅ Use `crypto.randomUUID()` for message IDs | `index.ts` - Replaced non-atomic counter with UUID |
+| 3.2 | ✅ Add cleanup for IBB sessions | `startXMPP.ts` - Added timeout cleanup (5 min) and interval |
+| 3.3 | ✅ Add cleanup for joined rooms on leave | `startXMPP.ts` - Added cleanup when bot is kicked/removed |
 
 ### Phase 4: Code Quality
 | # | Action | Files |
