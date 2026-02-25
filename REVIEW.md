@@ -344,13 +344,33 @@ isRunning = false;  // But this refers to what?
 | 3.2 | ✅ Add cleanup for IBB sessions | `startXMPP.ts` - Added timeout cleanup (5 min) and interval |
 | 3.3 | ✅ Add cleanup for joined rooms on leave | `startXMPP.ts` - Added cleanup when bot is kicked/removed |
 
-### Phase 4: Code Quality
-| # | Action | Files |
-|---|--------|-------|
-| 4.1 | Create central config file | `src/config.ts` |
-| 4.2 | Add proper TypeScript interfaces | Throughout |
-| 4.3 | Split monolithic files | `index.ts`, `startXMPP.ts` |
-| 4.4 | Replace console.log with logger | Throughout |
+### Phase 4: Code Quality (⚠️ PARTIALLY COMPLETE)
+| # | Action | Files | Status |
+|---|--------|-------|--------|
+| 4.1 | ✅ Create central config file | `src/config.ts` | DONE |
+| 4.2 | ⏸️ Add proper TypeScript interfaces | Throughout | SKIPPED (large task) |
+| 4.3 | ⏸️ Split monolithic files | `index.ts`, `startXMPP.ts` | SKIPPED (large task) |
+| 4.4 | ⏸️ Replace console.log with logger | Throughout | SKIPPED (requires API change) |
+
+#### 4.1 Completed: Central Config
+Created `src/config.ts` with centralized configuration:
+- `MAX_FILE_SIZE` - 10MB file transfer limit
+- `MAX_CONCURRENT_TRANSFERS` - 3 concurrent transfers
+- `MAX_MESSAGES_PER_FILE` - 256 messages per file
+- `MESSAGE_QUEUE_MAX_SIZE` - 100 queue size
+- `MESSAGE_CLEANUP_MAX_AGE_MS` - 24 hours
+- `RATE_LIMIT_MAX_REQUESTS` - 10 requests
+- `RATE_LIMIT_WINDOW_MS` - 60 seconds
+- `IBB_SESSION_TIMEOUT_MS` - 5 minutes
+- `IBB_CLEANUP_INTERVAL_MS` - 60 seconds
+
+Updated files to use Config:
+- `index.ts` - MAX_CONCURRENT_TRANSFERS, MESSAGE_QUEUE_MAX_SIZE
+- `src/shared/index.ts` - RATE_LIMIT constants, MAX_FILE_SIZE
+- `src/startXMPP.ts` - IBB_SESSION_TIMEOUT_MS, IBB_CLEANUP_INTERVAL_MS
+- `src/fileTransfer.ts` - MAX_FILE_SIZE
+- `src/vcard-cli.ts` - MAX_FILE_SIZE
+- `src/messageStore.ts` - MAX_MESSAGES_PER_FILE
 
 ### Phase 5: Testing
 | # | Action |

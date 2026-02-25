@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { validators } from "../security/validation.js";
+import { Config } from "../config.js";
 
 const SENSITIVE_PATTERNS = [
   /password["']?\s*[:=]\s*["']?[^"']+["']?/gi,
@@ -47,8 +48,8 @@ export interface RateLimitEntry {
   windowStart: number;
 }
 
-export const RATE_LIMIT_MAX_REQUESTS = 10;
-export const RATE_LIMIT_WINDOW_MS = 60000;
+export const RATE_LIMIT_MAX_REQUESTS = Config.RATE_LIMIT_MAX_REQUESTS;
+export const RATE_LIMIT_WINDOW_MS = Config.RATE_LIMIT_WINDOW_MS;
 
 const rateLimitMap = new Map<string, RateLimitEntry>();
 
@@ -74,7 +75,7 @@ export function clearRateLimitMap(): void {
   rateLimitMap.clear();
 }
 
-export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+export const MAX_FILE_SIZE = Config.MAX_FILE_SIZE;
 
 export interface DownloadFileOptions {
   maxSize?: number;

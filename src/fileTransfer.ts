@@ -2,8 +2,9 @@ import fs from "fs";
 import path from "path";
 import { xml } from "@xmpp/client";
 import { UploadSlot } from "./types.js";
+import { Config } from "./config.js";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB default limit
+const MAX_FILE_SIZE = Config.MAX_FILE_SIZE;
 
 export interface FileTransferOptions {
   xmpp: any;

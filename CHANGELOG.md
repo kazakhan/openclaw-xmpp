@@ -5,6 +5,34 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.8] - 2026-02-25
+
+### Changed
+- **Central Configuration**: Created centralized config file with all hardcoded values.
+
+#### New Files
+- `src/config.ts` - Central configuration module with all application constants
+
+#### Configuration Values
+- File Transfer: `MAX_FILE_SIZE` (10MB), `MAX_CONCURRENT_TRANSFERS` (3)
+- Message Store: `MAX_MESSAGES_PER_FILE` (256), `MESSAGE_QUEUE_MAX_SIZE` (100), `MESSAGE_CLEANUP_MAX_AGE_MS` (24h)
+- Rate Limiting: `RATE_LIMIT_MAX_REQUESTS` (10), `RATE_LIMIT_WINDOW_MS` (60s)
+- Session Timeouts: `IBB_SESSION_TIMEOUT_MS` (5min), `IBB_CLEANUP_INTERVAL_MS` (60s)
+- Logging: `DEBUG_LOG_FILE` ('cli-debug.log')
+
+#### Changes
+- `index.ts` - Now imports from Config: MAX_CONCURRENT_TRANSFERS, MESSAGE_QUEUE_MAX_SIZE
+- `src/shared/index.ts` - Now imports from Config: RATE_LIMIT constants, MAX_FILE_SIZE
+- `src/startXMPP.ts` - Now imports from Config: IBB_SESSION_TIMEOUT_MS, IBB_CLEANUP_INTERVAL_MS
+- `src/fileTransfer.ts` - Now imports from Config: MAX_FILE_SIZE
+- `src/vcard-cli.ts` - Now imports from Config: MAX_FILE_SIZE
+- `src/messageStore.ts` - Now imports from Config: MAX_MESSAGES_PER_FILE
+
+#### Benefits
+- Single source of truth for all configuration values
+- Easy to modify settings without searching through multiple files
+- Consistent values across all modules
+
 ## [1.7.7] - 2026-02-25
 
 ### Fixed

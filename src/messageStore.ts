@@ -1,5 +1,8 @@
 import fs from "fs";
 import path from "path";
+import { Config } from "./config.js";
+
+const MAX_MESSAGES_PER_FILE = Config.MAX_MESSAGES_PER_FILE;
 
 export interface MessageEntry {
   id: string;
@@ -38,8 +41,6 @@ export interface SaveMessageOptions {
   timestamp?: number;
   accountId: string;
 }
-
-const MAX_MESSAGES_PER_FILE = 256;
 
 export class MessageStore {
   private messagesDir: string;

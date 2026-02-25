@@ -7,8 +7,9 @@ import { validators } from "./src/security/validation.js";
 import { secureLog } from "./src/security/logging.js";
 import { decryptPasswordFromConfig } from "./src/security/encryption.js";
 import { debugLog, sanitize, checkRateLimit, setDebugLogDir, MAX_FILE_SIZE } from "./src/shared/index.js";
+import { Config } from "./src/config.js";
 
-const MAX_CONCURRENT_TRANSFERS = 3;
+const MAX_CONCURRENT_TRANSFERS = Config.MAX_CONCURRENT_TRANSFERS;
 const activeDownloads = new Map<string, { size: number; startTime: number }>();
 
 // Set debug log directory to plugin directory
@@ -38,7 +39,7 @@ interface QueuedMessage {
 }
 
 const messageQueue: QueuedMessage[] = [];
-const messageQueueMaxSize = 100;
+const messageQueueMaxSize = Config.MESSAGE_QUEUE_MAX_SIZE;
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;

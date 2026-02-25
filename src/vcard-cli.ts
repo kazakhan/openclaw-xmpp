@@ -4,6 +4,7 @@ import fs from "fs";
 import crypto from "crypto";
 import { decryptPasswordFromConfig } from './security/encryption.js';
 import { validators } from './security/validation.js';
+import { Config } from './config.js';
 
 interface XmppConfig {
   service: string;
@@ -145,7 +146,7 @@ export async function setVCard(field: string, value: string): Promise<{ ok: bool
   }
 }
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = Config.MAX_FILE_SIZE;
 
 async function requestUploadSlot(xmpp: any, filename: string, size: number): Promise<{ putUrl: string; getUrl: string; headers?: Record<string, string> }> {
   const id = `upload-${Date.now()}`;

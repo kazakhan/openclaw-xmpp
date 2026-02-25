@@ -6,6 +6,7 @@ import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
 import { parseWhiteboardMessage } from "./whiteboard.js";
 import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_SIZE } from "./shared/index.js";
+import { Config } from "./config.js";
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
@@ -256,13 +257,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
 
      const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
      const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number, createdAt: number }>(); // IBB session tracking
-     const IBB_SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes timeout for IBB sessions
 
      // Cleanup function for stale IBB sessions
      const cleanupIbbSessions = () => {
        const now = Date.now();
        for (const [sid, session] of ibbSessions.entries()) {
-         if (now - session.createdAt > IBB_SESSION_TIMEOUT_MS) {
+         if (now - session.createdAt > Config.IBB_SESSION_TIMEOUT_MS) {
            console.log(`[IBB] Cleaning up stale session: ${sid}`);
            ibbSessions.delete(sid);
          }
@@ -270,7 +270,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      };
 
      // Run cleanup every minute
-     const ibbCleanupInterval = setInterval(cleanupIbbSessions, 60 * 1000);
+     const ibbCleanupInterval = setInterval(cleanupIbbSessions, Config.IBB_CLEANUP_INTERVAL_MS);
 
      // Local joined rooms tracking for MUC
      const joinedRooms = new Set<string>();
