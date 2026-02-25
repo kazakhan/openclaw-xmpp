@@ -5,6 +5,42 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0/0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-02-26
+
+### Fixed
+- **vCard Get Command**: Updated `openclaw xmpp vcard get` to display all vCard fields.
+
+#### Changed
+- `src/commands.ts` - Expanded vCard display output to show all fields:
+  - FN, Name (structured), Nickname
+  - Birthday, Title, Role, Timezone
+  - URL, Description, Avatar URL
+  - Phone numbers (multi-value with types)
+  - Emails (multi-value with types)
+  - Addresses (multi-value with types)
+  - Organization
+
+#### Output Example
+```
+Current vCard:
+  FN: Clawd
+  Name: Mr. John David Smith III
+  Nickname: Clawd
+  Birthday: 1990-05-15
+  Title: Software Engineer
+  Role: Developer
+  Timezone: -05:00
+  URL: https://example.com
+  Desc: Test description
+  Avatar URL: https://example.com/avatar.jpg
+  Phone 1: +61412345678 (CELL)
+  Phone 2: +60987654321 (WORK, VOICE)
+  Email 1: home@example.com (HOME)
+  Email 2: work@example.com (WORK, PREF)
+  Address 1: 123 Main St, Boston, MA, 02101, USA (HOME)
+  Organization: Acme Inc (Engineering)
+```
+
 ## [1.8.0] - 2026-02-25
 
 ### Added

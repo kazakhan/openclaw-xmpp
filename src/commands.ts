@@ -495,10 +495,50 @@ Note: Commands connect directly to XMPP server.`);
           if (result.ok && result.data) {
             console.log('Current vCard:');
             console.log(`  FN: ${result.data.fn || '(not set)'}`);
+
+            // Structured Name (N)
+            if (result.data.n) {
+              const n = result.data.n;
+              const nameParts = [n.prefix, n.given, n.middle, n.family, n.suffix].filter(Boolean);
+              console.log(`  Name: ${nameParts.join(' ') || '(not set)'}`);
+            }
+
             console.log(`  Nickname: ${result.data.nickname || '(not set)'}`);
+            console.log(`  Birthday: ${result.data.bday || '(not set)'}`);
+            console.log(`  Title: ${result.data.title || '(not set)'}`);
+            console.log(`  Role: ${result.data.role || '(not set)'}`);
+            console.log(`  Timezone: ${result.data.tz || '(not set)'}`);
             console.log(`  URL: ${result.data.url || '(not set)'}`);
             console.log(`  Desc: ${result.data.desc || '(not set)'}`);
             console.log(`  Avatar URL: ${result.data.avatarUrl || '(not set)'}`);
+
+            // Phone numbers (multi-value)
+            if (result.data.tel && result.data.tel.length > 0) {
+              result.data.tel.forEach((phone, idx) => {
+                console.log(`  Phone ${idx + 1}: ${phone.number} (${phone.types.join(', ') || 'default'})`);
+              });
+            }
+
+            // Emails (multi-value)
+            if (result.data.email && result.data.email.length > 0) {
+              result.data.email.forEach((email, idx) => {
+                console.log(`  Email ${idx + 1}: ${email.userid} (${email.types.join(', ') || 'default'})`);
+              });
+            }
+
+            // Addresses (multi-value)
+            if (result.data.adr && result.data.adr.length > 0) {
+              result.data.adr.forEach((adr, idx) => {
+                const parts = [adr.street, adr.locality, adr.region, adr.pcode, adr.ctry].filter(Boolean);
+                console.log(`  Address ${idx + 1}: ${parts.join(', ')} (${adr.types.join(', ') || 'default'})`);
+              });
+            }
+
+            // Organization
+            if (result.data.org) {
+              const orgStr = result.data.org.orgname + (result.data.org.orgunit ? ' (' + result.data.org.orgunit.join(', ') + ')' : '');
+              console.log(`  Organization: ${orgStr || '(not set)'}`);
+            }
           } else {
             console.log('Failed to get vCard:', result.error || 'Unknown error');
           }
