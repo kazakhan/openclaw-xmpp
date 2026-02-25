@@ -488,7 +488,7 @@ Note: Commands connect directly to XMPP server.`);
       } else if (action === 'set' && args.length >= 1) {
         const field = args[0];
         const value = args.slice(1).join(' ');
-        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatarUrl', 'avatar'];
+        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatar'];
 
         if (!validFields.includes(field)) {
           console.log(`Invalid field: ${field}`);
@@ -541,109 +541,6 @@ Note: Commands connect directly to XMPP server.`);
       } else {
         console.log('Invalid vCard command');
         console.log('Use: openclaw xmpp vcard help');
-      }
-    });
-
-  // Subcommand: whiteboard <action> [args]
-  xmpp
-    .command("whiteboard <action> [args...]")
-    .description("Send whiteboard messages (XEP-0113)")
-    .action(async (action: string, args: string[]) => {
-      if (action === 'help') {
-        console.log(`Whiteboard commands (XEP-0113):
-  openclaw xmpp whiteboard send <jid> <path> [options] - Send drawing path
-  openclaw xmpp whiteboard move <jid> <id> <dx> <dy> - Move existing path
-  openclaw xmpp whiteboard delete <jid> <id> - Delete path
-
-Path format: M<x>,<y>L<x>,<y>,...
-Options: stroke#RRGGBB stroke-width<width> id<name>
-
-Examples:
-  openclaw xmpp whiteboard send user@domain.com "M100,100L300,100,200,300,100,100 stroke#ff0000 stroke-width2 idtriangle"
-  openclaw xmpp whiteboard move user@domain.com triangle 50 50
-  openclaw xmpp whiteboard delete user@domain.com triangle
-
-Note: Commands connect directly to XMPP server.`);
-        return;
-      }
-
-      const client = getXmppClient();
-      if (!client) {
-        console.log('XMPP client not connected. Gateway must be running.');
-        return;
-      }
-
-      if (action === 'send' && args.length >= 2) {
-        const jid = args[0];
-        const pathStr = args[1];
-        
-        let stroke = '#000000';
-        let strokeWidth = 1;
-        let id = `draw${Date.now()}`;
-        
-        for (let i = 2; i < args.length; i++) {
-          const arg = args[i];
-          if (arg.startsWith('stroke#') && arg.length > 7) {
-            stroke = '#' + arg.substring(7);
-          } else if (arg.startsWith('stroke-width') && arg.length > 12) {
-            strokeWidth = parseInt(arg.substring(12), 10) || 1;
-          } else if (arg.startsWith('id') && arg.length > 2) {
-            id = arg.substring(2);
-          }
-        }
-        
-        try {
-          const { sendWhiteboardMessage } = await import('./whiteboard.js');
-          const path = { d: pathStr, stroke, strokeWidth, id };
-          const ok = await sendWhiteboardMessage(client, jid, path, false);
-          if (ok) {
-            console.log(`Whiteboard sent to ${jid}: ${id}`);
-          } else {
-            console.log('Failed to send whiteboard');
-          }
-        } catch (err: any) {
-          console.log('Failed to send whiteboard:', err.message);
-        }
-      } else if (action === 'move' && args.length >= 4) {
-        const jid = args[0];
-        const id = args[1];
-        const dx = parseInt(args[2], 10);
-        const dy = parseInt(args[3], 10);
-        
-        if (isNaN(dx) || isNaN(dy)) {
-          console.log('dx and dy must be numbers');
-          return;
-        }
-        
-        try {
-          const { sendWhiteboardMove } = await import('./whiteboard.js');
-          const ok = await sendWhiteboardMove(client, jid, id, dx, dy, false);
-          if (ok) {
-            console.log(`Whiteboard move sent to ${jid}: ${id} → (${dx}, ${dy})`);
-          } else {
-            console.log('Failed to send whiteboard move');
-          }
-        } catch (err: any) {
-          console.log('Failed to send whiteboard move:', err.message);
-        }
-      } else if (action === 'delete' && args.length >= 2) {
-        const jid = args[0];
-        const id = args[1];
-        
-        try {
-          const { sendWhiteboardDelete } = await import('./whiteboard.js');
-          const ok = await sendWhiteboardDelete(client, jid, id, false);
-          if (ok) {
-            console.log(`Whiteboard delete sent to ${jid}: ${id}`);
-          } else {
-            console.log('Failed to send whiteboard delete');
-          }
-        } catch (err: any) {
-          console.log('Failed to send whiteboard delete:', err.message);
-        }
-      } else {
-        console.log('Invalid whiteboard command');
-        console.log('Use: openclaw xmpp whiteboard help');
       }
     });
 

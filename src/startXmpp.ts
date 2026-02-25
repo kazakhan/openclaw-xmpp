@@ -746,22 +746,21 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             }
           }
 
-        // Handle Service Discovery (XEP-0030) - disco#info for XEP-0113 Whiteboard
+        // Handle Service Discovery (XEP-0030) - disco#info
         const queryElement = stanza.getChild("query", "http://jabber.org/protocol/disco#info");
         if (queryElement && type === "get") {
           const node = queryElement.attrs.node || "";
-          // Respond with our features including whiteboard support
+          // Respond with our features
           const discoResponse = xml("iq", { to: from, type: "result", id },
             xml("query", { xmlns: "http://jabber.org/protocol/disco#info", node },
               xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
-              xml("feature", { var: "http://jabber.org/protocol/swb" }), // XEP-0113 Whiteboard
               xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
               xml("feature", { var: "vcard-temp" }),
               xml("feature", { var: "http://jabber.org/protocol/muc" })
             )
           );
           await xmpp.send(discoResponse);
-          console.log(`[DISCO] Sent disco#info to ${from} with whiteboard feature`);
+          console.log(`[DISCO] Sent disco#info to ${from}`);
           return;
         }
 
@@ -1010,7 +1009,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
         // - Chat: Plugin commands handled locally, /help also forwarded to agent
         // - Chat non-plugin commands: Forwarded to agent only if sender is contact
-        // Plugin commands: list, add, remove, admins, whoami, join, rooms, leave, invite, whiteboard, help
+        // Plugin commands: list, add, remove, admins, whoami, join, rooms, leave, invite, vcard, help
         if (body && body.startsWith('/')) {
            debugLog(`[SLASH] Command: ${body.substring(0, 100)}`);
           
@@ -1097,7 +1096,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
            
            switch (command) {
              case 'help':
-                   await sendReply(`Available commands (groupchat: only whoami, whiteboard, help):
+await sendReply(`Available commands (groupchat: only whoami, help):
   /list - Show contacts (admin only - direct chat)
   /add <jid> [name] - Add contact (admin only - direct chat)
   /remove <jid> - Remove contact (admin only - direct chat)
@@ -1107,7 +1106,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   /rooms - List joined rooms (admin only - direct chat)
   /leave <room> - Leave MUC room (admin only - direct chat)
   /invite <contact> <room> - Invite contact to room (admin only - direct chat)
-  /whiteboard - Whiteboard drawing and image sharing
   /vcard - Manage vCard profile (admin only - direct chat)
   /help - Show this help`);
               
@@ -1317,9 +1315,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
    /vcard set fn <value> - Set Full Name
    /vcard set nickname <value> - Set Nickname
    /vcard set url <value> - Set URL
-   /vcard set desc <value> - Set Description
-   /vcard set avatarUrl <value> - Set Avatar URL (external URL)
-   /vcard set avatar <url> - Upload image from URL as avatar
+    /vcard set desc <value> - Set Description
+    /vcard set avatar <url> - Upload image from URL as avatar
    /vcard set avatar - Upload attached image as avatar`);
                      return;
                    }
@@ -1499,8 +1496,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                     const value = args.slice(2).join(' ');
                     
                     // Validate field
-                    if (!['fn', 'nickname', 'url', 'desc', 'avatarurl'].includes(field)) {
-                      await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, avatarUrl, avatar (with attached image)`);
+                    if (!['fn', 'nickname', 'url', 'desc'].includes(field)) {
+                      await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, avatar (with attached image)`);
                       return;
                     }
                     
@@ -1510,7 +1507,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                     if (field === 'nickname') updates.nickname = value;
                     if (field === 'url') updates.url = value;
                     if (field === 'desc') updates.desc = value;
-                    if (field === 'avatarurl') updates.avatarUrl = value;
                     
                     const success = await updateVCardOnServer(updates);
                     
@@ -1520,7 +1516,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                       if (field === 'nickname') vcard.setNickname(value);
                       if (field === 'url') vcard.setURL(value);
                       if (field === 'desc') vcard.setDesc(value);
-                      if (field === 'avatarurl') vcard.setAvatarUrl(value);
                       
                       await sendReply(`✅ vCard field '${field}' updated on server: ${value}`);
                      } else {
