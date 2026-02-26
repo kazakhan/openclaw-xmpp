@@ -13,23 +13,20 @@ let xmppClientModule: any = null;
 let isRunning = false;
 
 export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
-   // Helper to get default resource/nick from JID local part
-   const getDefaultResource = () => {
-     const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
-     return result;
-   };
-   const getDefaultNick = () => {
-      // Priority: 
-      // 1. cfg.nick (from config)
-      // 2. vCard.nickname (from vCard)
-      // 3. JID local part (fallback)
-      // 4. "openclaw" (final fallback)
-      const vcardNickname = vcard?.getNickname?.();
-      const result = cfg.nick || vcardNickname || (cfg.jid ? cfg.jid.split("@")[0] : "openclaw");
-      console.log(`[DEBUG] getDefaultNick: cfg.nick=${cfg.nick}, vcard.nickname=${vcardNickname}, result=${result}`);
+    // Helper to get default resource/nick from JID local part
+    const getDefaultResource = () => {
+      const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
       return result;
-   };
+    };
     
+    const getDefaultNick = () => {
+       // Use local vCard value directly (set by CLI command)
+       const localNick = vcard?.getNickname?.();
+       const result = localNick || cfg.jid.split("@")[0] || "openclaw";
+       console.log(`[DEBUG] getDefaultNick: vcard=${localNick}, result=${result}`);
+       return result;
+    };
+     
     debugLog(`Starting XMPP connection to ${cfg?.service}`);
     debugLog(`XMPP config: jid=${cfg?.jid}, domain=${cfg?.domain}`);
    
@@ -254,9 +251,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        );
 
        await xmpp.send(vcardSet);
-       console.log("✅ vCard registered with server (id=" + vcardId + ") - clients can now query it");
-       log.info("vCard registered with server");
-     } catch (err) {
+        console.log("✅ vCard registered with server (id=" + vcardId + ") - clients can now query it");
+        log.info("vCard registered with server");
+      } catch (err) {
        console.error("❌ Failed to register vCard with server:", err);
        log.error("Failed to register vCard", err);
      }
@@ -1550,8 +1547,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
             log.debug(`Ignoring message from non-contact: ${fromBareJid}`);
           }
         }
-      }
-   });
+       }
+    });
 
   xmpp.start().catch((err: any) => {
     log.error("XMPP start failed", err);

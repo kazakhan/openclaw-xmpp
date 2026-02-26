@@ -5,6 +5,25 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.7] - 2026-02-26
+
+### Fixed
+- **Groupchat Nickname**: Bot now uses the correct nickname when joining groupchat rooms.
+
+#### Root Cause
+The bot was attempting to query the XMPP server for its own vCard nickname at startup, but this query was failing or returning null due to timing issues. The server query was unnecessary since the nickname is already known locally from the CLI command `openclaw xmpp vcard set nickname <nick>`.
+
+#### Changes
+- **`src/startXMPP.ts`**:
+  - Simplified `getDefaultNick()` to use the local vCard value directly instead of querying the server
+  - Removed broken server vCard query code
+  - The bot now uses the nickname set via CLI command (`vcard set nickname X`) which is stored locally and registered to the server
+
+#### Technical Details
+- The CLI command `openclaw xmpp vcard set nickname X` saves the nickname to a local vCard file and registers it with the XMPP server
+- The bot now reads this local value directly instead of attempting to query the server for its own vCard
+- This fixes the issue where bots on different machines would join with incorrect/old nicknames
+
 ## [1.8.6] - 2026-02-26
 
 ### Added
