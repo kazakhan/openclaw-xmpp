@@ -469,7 +469,7 @@ gateway: {
           const runtime = pluginRuntime;
           debugLog("Using pluginRuntime in startAccount");
            
-            const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
+            const xmpp = await startXmpp(config, contacts, log, async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
              if (!isRunning) {
                debugLog("XMPP message ignored - plugin not running");
                return;
@@ -529,8 +529,8 @@ gateway: {
                  SessionKey: sessionKey,
                  AccountId: account.accountId,
                  ChatType: chatType,
-                 ConversationLabel: conversationLabel,
-                 SenderName: senderName,
+                  ConversationLabel: conversationLabel,
+                  SenderName: senderName,
                  SenderId: senderId,
                   Provider: "xmpp" as const,
                   Surface: "xmpp" as const,

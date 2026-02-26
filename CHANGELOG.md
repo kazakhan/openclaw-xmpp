@@ -5,6 +5,30 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] - 2026-02-26
+
+### Added
+- **Room Topic/Subject Notifications**: Bot now receives room topic notifications when joining a groupchat and when the room subject changes.
+
+#### How It Works
+- When the bot joins a groupchat room, it receives the current room subject (if set)
+- When the room subject is changed by someone, the bot receives a notification
+- The topic is delivered as a special message: `[Room Subject: My Topic]`
+
+#### Technical Details
+- In XMPP MUC (groupchat), room subjects are sent as `<subject>` elements in message stanzas (not in the body)
+- The bot now extracts the subject element and forwards it to the agent when:
+  - Joining a room (subject-only message with no body)
+  - Subject change event (subject present, no body)
+- Regular groupchat messages do NOT include the subject to avoid noise
+
+#### Changes
+- **`src/startXMPP.ts`**:
+  - Added extraction of subject from message stanza: `stanza.getChildText("subject")`
+  - Added handling for subject-only messages (room subject events)
+  - Logs: `📝 Room Subject changed to: ${subject}`
+  - Forwards subject as `[Room Subject: ${subject}]` to agent
+
 ## [1.8.5] - 2026-02-26
 
 ### Fixed

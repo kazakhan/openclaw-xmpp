@@ -12,7 +12,7 @@ import { Config } from "./config.js";
 let xmppClientModule: any = null;
 let isRunning = false;
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
    // Helper to get default resource/nick from JID local part
    const getDefaultResource = () => {
      const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
@@ -839,47 +839,60 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        console.log(`[DEBUG FILE] XEP-0231 (BoB) found: ${bobElement ? 'YES' : 'NO'}`);
        
        console.log(`[DEBUG FILE] ==== END DEBUG ====`);
-       
-        // Only process messages with body
+         
+         // Extract body and subject from message
          const body = stanza.getChildText("body");
-         if (!body && mediaUrls.length === 0) return;
+         const subject = stanza.getChildText("subject");
+         
+         // Check for room subject change (MUC subject message)
+         const isGroupChat = messageType === "groupchat";
+         if (isGroupChat && subject && !body) {
+           console.log(`📝 Room subject changed to: ${subject}`);
+           // Forward subject as a special message to the agent
+           const botNick = roomNicks.get(from.split('/')[0]);
+           onMessage(from.split('/')[0], `[Room Subject: ${subject}]`, { type: messageType, room: from.split('/')[0], nick: '', botNick, roomSubject: subject, mediaUrls: [], mediaPaths: [] });
+           return;
+         }
+         
+          // Only process messages with body (invites are in body)
+          if (!body && mediaUrls.length === 0) return;
         
-        // Check for jabber:x:conference invites in body (may be escaped)
-        if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
-          console.log(`🤝 Checking for jabber:x:conference invite in body: ${body.substring(0, 100)}`);
-          
-          // Extract invite attributes (handle both escaped and unescaped)
-          const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
-          const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
-          const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
-          
-          const room = jidMatch?.[1];
-          const password = passwordMatch?.[1];
-          const reason = reasonMatch?.[1] || 'No reason given';
-          
-          if (room) {
-            console.log(`🤝 Detected jabber:x:conference invite to room ${room}: ${reason}`);
+          // Check for jabber:x:conference invites in body (may be escaped)
+          if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
+            console.log(`🤝 Checking for jabber:x:conference invite in body: ${body.substring(0, 100)}`);
             
-            // Auto-accept invite by joining the room
-            try {
-              const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
-                xml("x", { xmlns: "http://jabber.org/protocol/muc" },
-                  password ? xml("password", {}, password) : undefined,
-                  xml("history", { maxstanzas: "0" })
-                )
-              );
-              await xmpp.send(presence);
-              joinedRooms.add(room);
-              roomNicks.set(room, getDefaultNick());
-              console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
-            } catch (err) {
-              console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
+            // Extract invite attributes (handle both escaped and unescaped)
+            const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
+            const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
+            const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
+            
+            const room = jidMatch?.[1];
+            const password = passwordMatch?.[1];
+            const reason = reasonMatch?.[1] || 'No reason given';
+            
+            if (room) {
+              console.log(`🤝 Detected jabber:x:conference invite to room ${room}: ${reason}`);
+              
+              // Auto-accept invite by joining the room
+              try {
+                const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+                  xml("x", { xmlns: "http://jabber.org/protocol/muc" },
+                    password ? xml("password", {}, password) : undefined,
+                    xml("history", { maxstanzas: "0" })
+                  )
+                );
+                await xmpp.send(presence);
+                joinedRooms.add(room);
+                roomNicks.set(room, getDefaultNick());
+                console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
+              } catch (err) {
+                console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
+              }
+              return; // Don't dispatch invite to AI
             }
-            return; // Don't dispatch invite to AI
           }
-        }
-        
-        debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
+          
+          debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
         
         // Strip resource from sender JID for contact check
         const fromBareJid = from.split("/")[0];
@@ -1524,7 +1537,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           }
           debugLog(`[NORMAL] Forwarding groupchat message from ${nick} to agent`);
           // Use actual messageType from stanza - "groupchat" for public, "chat" for private
-          onMessage(roomJid, body, { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths });
+          onMessage(roomJid, body || '', { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths });
         } else {
           // Direct message
           if (contacts.exists(fromBareJid)) {
