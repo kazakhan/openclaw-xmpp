@@ -209,6 +209,7 @@ export function register(api: any) {
         dataDir: { type: "string" },
         resource: { type: "string" },
         adminJid: { type: "string" },
+        nick: { type: "string" },
         rooms: { type: "array", items: { type: "string" } },
         vcard: {
           type: "object",
@@ -283,10 +284,14 @@ export function register(api: any) {
           console.log(`Attempting to send message to ${cleanTo}: ${cleanText.substring(0, 100)}...`);
 
           const isGroupChat = cleanTo.includes('@conference.');
+          const isGroupchatPrivateMessage = isGroupChat && cleanTo.includes('/');
 
-          if (isGroupChat) {
+          if (isGroupChat && !isGroupchatPrivateMessage) {
             await xmpp.sendGroupchat(cleanTo.split('/')[0], cleanText);
             console.log("Groupchat message sent successfully");
+          } else if (isGroupchatPrivateMessage) {
+            await xmpp.send(cleanTo, cleanText);
+            console.log("Groupchat private message sent successfully");
           } else {
             await xmpp.send(cleanTo, cleanText);
             console.log("Direct message sent successfully");
@@ -309,7 +314,8 @@ export function register(api: any) {
         }
 
         try {
-          const isGroupChat = to.includes('@conference.') || to.includes('/');
+          const isGroupChat = to.includes('@conference.');
+          const isGroupchatPrivateMessage = isGroupChat && to.includes('/');
 
           let localFilePath: string | null = null;
 
@@ -339,7 +345,9 @@ export function register(api: any) {
 
             console.log(`Sending local file: ${localFilePath}`);
 
-            await xmpp.sendFile(to, localFilePath, text, isGroupChat);
+            // For private messages in groupchat, pass false so it's sent as chat (not groupchat)
+            const isFileGroupChat = isGroupChat && !isGroupchatPrivateMessage;
+            await xmpp.sendFile(to, localFilePath, text, isFileGroupChat);
 
             console.log("File sent successfully via XMPP file transfer");
             return { ok: true, channel: "xmpp" };
@@ -347,8 +355,8 @@ export function register(api: any) {
             console.log(`No local file, sending as URL: ${mediaUrl}`);
             const message = text ? `${text}\n${mediaUrl}` : mediaUrl;
 
-            if (isGroupChat) {
-              await xmpp.sendGroupchat(to, message);
+            if (isGroupChat && !isGroupchatPrivateMessage) {
+              await xmpp.sendGroupchat(to.split('/')[0], message);
             } else {
               await xmpp.send(to, message);
             }
@@ -433,15 +441,35 @@ export function register(api: any) {
 
           const buildContextPayload = (sessionKey: string, senderBareJid: string) => {
             const room = options?.room || from;
-            const nick = options?.nick || from.split('@')[0];
+            const nick = options?.nick || from.split('/')[1] || from.split('@')[0];
 
             const senderId = senderBareJid;
             const senderName = from.split('@')[0];
 
-            const chatType = "direct" as const;
-            const conversationLabel = `XMPP: ${senderBareJid}`;
+            // Use "channel" chatType for groupchat (both public and private), "direct" for direct messages
+            const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
+            const chatType = (isGroupChatMessage ? "channel" : "direct") as "direct" | "channel";
+            const conversationLabel = options?.room 
+              ? `XMPP Groupchat: ${options.room}` 
+              : `XMPP: ${senderBareJid}`;
             const botNick = options?.botNick || null;
             debugLog(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}`);
+
+            // Determine reply destination - where should responses go?
+            // - Public groupchat (type="groupchat"): reply to room
+            // - Private message in groupchat (type="chat" + room): reply to room/nick
+            // - Direct message: reply to sender
+            let replyDestination: string;
+            if (options?.type === "chat" && room) {
+              // Private message in groupchat - reply to room/nick
+              replyDestination = `${room}/${nick}`;
+            } else if (room) {
+              // Public groupchat message - reply to room
+              replyDestination = room;
+            } else {
+              // Direct message - reply to sender
+              replyDestination = senderBareJid;
+            }
 
             const uniqueMessageId = `xmpp-${Date.now()}-${++messageCounter}`;
 
@@ -450,7 +478,7 @@ export function register(api: any) {
               RawBody: body,
               CommandBody: body,
               From: `xmpp:${senderBareJid}`,
-              To: `xmpp:${config.jid}`,
+              To: `xmpp:${replyDestination}`,  // Where replies should go
               SessionKey: sessionKey,
               AccountId: account.accountId,
               ChatType: chatType,
@@ -465,7 +493,7 @@ export function register(api: any) {
               CommandAuthorized: true,
               CommandSource: "text" as const,
               OriginatingChannel: "xmpp" as const,
-              OriginatingTo: `xmpp:${config.jid}`,
+              OriginatingTo: `xmpp:${replyDestination}`,  // Where replies should go
               MediaUrls: options?.mediaUrls || [],
               MediaPaths: options?.mediaPaths || [],
               MediaUrl: options?.mediaUrls?.[0] || null,
@@ -526,15 +554,23 @@ export function register(api: any) {
                 console.log("ctx.cfg.session?.store:", ctx.cfg.session?.store);
 
                 const senderBareJidSession = from.split('/')[0];
-                const isRoomJid = !!options?.room;
+                const room = options?.room;
+                const nick = options?.nick;
 
                 let sessionKey: string;
                 let replyTo: string;
 
-                if (isRoomJid) {
+                if (room) {
                   sessionKey = `xmpp:${senderBareJidSession}`;
-                  replyTo = options!.room || senderBareJidSession;
-                  console.log("sessionKey (groupchat):", sessionKey, "replyTo:", replyTo);
+                  // For private messages in groupchat (has nick), reply to room/nick
+                  // For public groupchat messages (no nick), reply to room
+                  if (nick) {
+                    replyTo = `${room}/${nick}`;
+                    console.log("sessionKey (groupchat private):", sessionKey, "replyTo:", replyTo);
+                  } else {
+                    replyTo = room;
+                    console.log("sessionKey (groupchat):", sessionKey, "replyTo:", replyTo);
+                  }
                 } else {
                   sessionKey = `xmpp:${senderBareJidSession}`;
                   replyTo = senderBareJidSession;
@@ -543,7 +579,7 @@ export function register(api: any) {
 
                 console.log(`replyTo set to: ${replyTo}`);
 
-                const nick = options?.nick || from.split('/')[1] || 'unknown';
+                const payloadNick = nick || from.split('/')[1] || 'unknown';
                 const payloadJid = senderBareJidSession;
                 const ctxPayload = buildContextPayload(sessionKey, payloadJid);
 
@@ -577,13 +613,21 @@ export function register(api: any) {
                       let replyTarget = _replyTo || replyTo || from;
                       console.log(`[REPLY] Original from: ${from}, resolved replyTo: ${replyTo}, using replyTarget: ${replyTarget}`);
 
-                      const isGroupChatReply = (options?.type === "groupchat");
-                      console.log(`[REPLY] isGroupChatReply: ${isGroupChatReply}`);
+                      // Check if this is a private message in groupchat
+                      // type="chat" (from groupchat) = private message, type="groupchat" = public
+                      const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
+                      const isPrivateMessage = options?.type === "chat";
+                      console.log(`[REPLY] isGroupChatMessage: ${isGroupChatMessage}, isPrivateMessage: ${isPrivateMessage}`);
 
-                      if (isGroupChatReply) {
+                      if (isGroupChatMessage && !isPrivateMessage) {
+                        // Public groupchat message - use sendGroupchat
                         const roomForReply = options?.room || from.split('/')[0];
-                        replyTarget = roomForReply;
+                        await xmpp.sendGroupchat(roomForReply, replyText);
                         console.log(`[REPLY] Groupchat reply - sending to room: ${roomForReply}`);
+                      } else {
+                        // Direct message OR private message in groupchat - use send()
+                        await xmpp.send(replyTarget, replyText);
+                        console.log(`[REPLY] Direct/Private reply - sending to: ${replyTarget}`);
                       }
 
                       if (!replyTarget) {
@@ -591,7 +635,6 @@ export function register(api: any) {
                         return;
                       }
 
-                      await xmpp.send(replyTarget, replyText);
                       console.log(`✅ Reply sent via XMPP: ${replyText?.substring(0, 50)}...`);
                     } catch (err) {
                       console.error(`❌ Error sending reply:`, err);

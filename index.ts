@@ -228,6 +228,7 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
          dataDir: { type: "string" },
          resource: { type: "string" },
          adminJid: { type: "string" },
+         nick: { type: "string" },
          rooms: { type: "array", items: { type: "string" } },
          vcard: {
            type: "object",
@@ -306,11 +307,17 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
 
           // Check if this is a groupchat (has conference in domain)
           const isGroupChat = cleanTo.includes('@conference.');
+          // Check if this is a private message within groupchat (has conference AND a slash with nick)
+          const isGroupchatPrivateMessage = isGroupChat && cleanTo.includes('/');
 
-           if (isGroupChat) {
-            // For groupchat, use sendGroupchat
+           if (isGroupChat && !isGroupchatPrivateMessage) {
+            // For groupchat (room only, no nick), use sendGroupchat
             await xmpp.sendGroupchat(cleanTo.split('/')[0], cleanText);
             console.log("Groupchat message sent successfully");
+          } else if (isGroupchatPrivateMessage) {
+            // For private message within groupchat (room/nick), use send() to send privately
+            await xmpp.send(cleanTo, cleanText);
+            console.log("Groupchat private message sent successfully");
           } else {
             // For direct messages, use regular send
             await xmpp.send(cleanTo, cleanText);
@@ -336,7 +343,9 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
         
         try {
           // Check if this is a groupchat (room) or direct message
-          const isGroupChat = to.includes('@conference.') || to.includes('/');
+          const isGroupChat = to.includes('@conference.');
+          // Check if this is a private message within groupchat (has conference AND a slash with nick)
+          const isGroupchatPrivateMessage = isGroupChat && to.includes('/');
           
           // Try to use loadWebMedia if available in deps
           let localFilePath: string | null = null;
@@ -373,7 +382,9 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
             console.log(`Sending local file: ${localFilePath}`);
             
             // Use XMPP file transfer
-            await xmpp.sendFile(to, localFilePath, text, isGroupChat);
+            // For private messages in groupchat, pass false so it's sent as chat (not groupchat)
+            const isFileGroupChat = isGroupChat && !isGroupchatPrivateMessage;
+            await xmpp.sendFile(to, localFilePath, text, isFileGroupChat);
             
             console.log("File sent successfully via XMPP file transfer");
             return { ok: true, channel: "xmpp" };
@@ -382,8 +393,8 @@ debugLog(`Registration context: ${isCliRegistration ? 'CLI' : 'Gateway'}`);
             console.log(`No local file, sending as URL: ${mediaUrl}`);
             const message = text ? `${text}\n${mediaUrl}` : mediaUrl;
             
-            if (isGroupChat) {
-              await xmpp.sendGroupchat(to, message);
+            if (isGroupChat && !isGroupchatPrivateMessage) {
+              await xmpp.sendGroupchat(to.split('/')[0], message);
             } else {
               await xmpp.send(to, message);
             }
@@ -472,22 +483,39 @@ gateway: {
               
                // Helper to build context payload based on message type
              // Uses shared session key (bare JID) for both direct and groupchat
-              const buildContextPayload = (sessionKey: string, senderBareJid: string) => {
+               const buildContextPayload = (sessionKey: string, senderBareJid: string) => {
                 const room = options?.room || from;
-                const nick = options?.nick || from.split('@')[0];
+                const nick = options?.nick || from.split('/')[1] || from.split('@')[0];
 
                 // Use consistent senderId based on session (not room/nick)
                 // This enables shared memory between direct chat and groupchat
                 const senderId = senderBareJid;
                 const senderName = from.split('@')[0];
 
-                // Use "channel" chatType for groupchat, "direct" for direct messages
-                const chatType = (options?.type === "groupchat" ? "channel" : "direct") as "direct" | "channel";
+                // Use "channel" chatType for groupchat (both public and private), "direct" for direct messages
+                const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
+                const chatType = (isGroupChatMessage ? "channel" : "direct") as "direct" | "channel";
                 const conversationLabel = options?.room 
                   ? `XMPP Groupchat: ${options.room}` 
                   : `XMPP: ${senderBareJid}`;
                 const botNick = options?.botNick || null;
                 debugLog(`buildContextPayload: senderId=${senderId}, sessionKey=${sessionKey}`);
+
+                // Determine reply destination - where should responses go?
+                // - Public groupchat (type="groupchat"): reply to room
+                // - Private message in groupchat (type="chat" + room): reply to room/nick
+                // - Direct message: reply to sender
+                let replyDestination: string;
+                if (options?.type === "chat" && room) {
+                  // Private message in groupchat - reply to room/nick
+                  replyDestination = `${room}/${nick}`;
+                } else if (room) {
+                  // Public groupchat message - reply to room
+                  replyDestination = room;
+                } else {
+                  // Direct message - reply to sender
+                  replyDestination = senderBareJid;
+                }
 
                 // Generate unique message ID using crypto.randomUUID()
                 const uniqueMessageId = `xmpp-${crypto.randomUUID()}`;
@@ -497,7 +525,7 @@ gateway: {
                  RawBody: body,
                  CommandBody: body,
                  From: `xmpp:${senderBareJid}`,  // Use bare JID for shared session
-                 To: `xmpp:${config.jid}`,
+                 To: `xmpp:${replyDestination}`,  // Where replies should go
                  SessionKey: sessionKey,
                  AccountId: account.accountId,
                  ChatType: chatType,
@@ -512,7 +540,7 @@ gateway: {
                  CommandAuthorized: true,
                  CommandSource: "text" as const,
                  OriginatingChannel: "xmpp" as const,
-                 OriginatingTo: `xmpp:${config.jid}`,
+                 OriginatingTo: `xmpp:${replyDestination}`,  // Where replies should go
                   MediaUrls: options?.mediaUrls || [],
                   MediaPaths: options?.mediaPaths || [],
                   MediaUrl: options?.mediaUrls?.[0] || null,
@@ -587,28 +615,39 @@ gateway: {
                    const senderBareJid = from.split('/')[0];
                    const isRoomJid = !!options?.room;
                    
-                   let sessionKey: string;
-                   let replyTo: string;
-                   
-                    if (isRoomJid) {
-                      // Groupchat: session uses sender bare JID, reply to room
+                    let sessionKey: string;
+                    let replyTo: string;
+                    
+                    const nick = options?.nick;
+                    const room = options?.room;
+                    
+                    if (room) {
+                      // Groupchat: session uses room JID
                       sessionKey = `xmpp:${senderBareJid}`;
-                      replyTo = options!.room || senderBareJid;
-                      console.log("sessionKey (groupchat):", sessionKey, "replyTo:", replyTo);
-                   } else {
-                     // Direct message
-                     sessionKey = `xmpp:${senderBareJid}`;
-                     replyTo = senderBareJid;
-                     console.log("sessionKey (direct chat):", sessionKey);
-                   }
-                   
-                   console.log(`replyTo set to: ${replyTo}`);
+                      // Use message type to determine reply destination
+                      // type="groupchat" = public message, reply to room
+                      // type="chat" (from groupchat) = private message, reply to room/nick
+                      if (options?.type === "chat") {
+                        replyTo = `${room}/${nick}`;
+                        console.log("sessionKey (groupchat private):", sessionKey, "replyTo:", replyTo);
+                      } else {
+                        replyTo = room;
+                        console.log("sessionKey (groupchat):", sessionKey, "replyTo:", replyTo);
+                      }
+                    } else {
+                      // Direct message
+                      sessionKey = `xmpp:${senderBareJid}`;
+                      replyTo = senderBareJid;
+                      console.log("sessionKey (direct chat):", sessionKey);
+                    }
+                    
+                    console.log(`replyTo set to: ${replyTo}`);
 
-                      // Determine the JID to use in context payload
-                      const nick = options?.nick || from.split('/')[1] || 'unknown';
-                      // Use bare JID directly (no nickToJidMap)
-                      const payloadJid = senderBareJid;
-                      const ctxPayload = buildContextPayload(sessionKey, payloadJid);
+                       // Determine the JID to use in context payload
+                       const payloadNick = nick || from.split('/')[1] || 'unknown';
+                       // Use bare JID directly (no nickToJidMap)
+                       const payloadJid = senderBareJid;
+                       const ctxPayload = buildContextPayload(sessionKey, payloadJid);
 
                     await runtime.channel.session.recordInboundSession({
                       storePath,
@@ -648,33 +687,40 @@ gateway: {
                       if (runtime.channel.reply?.dispatchReplyFromConfig && !dispatchSuccess) {
                          console.log("🎯 METHOD 1: dispatchReplyFromConfig (fast path)");
                          
-                         const immediateSendText = async (to: string, text: string) => {
-                           console.log("🚀 IMMEDIATE sendText CALLED! Time:", new Date().toISOString());
-                           console.log("  To:", to);
-                           console.log("  Text:", text);
-                           
-                           let jid = to;
-                            if (to.startsWith('xmpp:')) {
-                              jid = to.substring(5);
-                            }
+                          const immediateSendText = async (to: string, text: string) => {
+                            console.log("🚀 IMMEDIATE sendText CALLED! Time:", new Date().toISOString());
+                            console.log("  To:", to);
+                            console.log("  Text:", text);
+                            
+                            let jid = to;
+                             if (to.startsWith('xmpp:')) {
+                               jid = to.substring(5);
+                             }
 
-                            // Filter out "Thinking..." prefixes from agent responses
-                            let cleanText = text;
-                            const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;
-                            const match = text.match(thinkingRegex);
-                            if (match) {
-                              console.log(`[FILTER] Removing "Thinking..." prefix`);
-                              cleanText = text.slice(match[0].length).trim();
-                            }
+                             // Filter out "Thinking..." prefixes from agent responses
+                             let cleanText = text;
+                             const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;
+                             const match = text.match(thinkingRegex);
+                             if (match) {
+                               console.log(`[FILTER] Removing "Thinking..." prefix`);
+                               cleanText = text.slice(match[0].length).trim();
+                             }
 
-                             try {
-                               if (options?.type === "groupchat") {
-                                 await xmpp.sendGroupchat(jid, cleanText);
-                                 console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
-                               } else {
-                                 await xmpp.send(jid, cleanText);
-                                 console.log("✅✅✅ DIRECT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
-                               }
+                            // Check if this is a private message in groupchat
+                            // type="chat" (from groupchat) = private message, type="groupchat" = public
+                            const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
+                            const isPrivateMessage = options?.type === "chat";
+
+                              try {
+                                if (isGroupChatMessage && !isPrivateMessage) {
+                                  // Public groupchat message - send to room
+                                  await xmpp.sendGroupchat(jid.split('/')[0], cleanText);
+                                  console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP! Time:", new Date().toISOString());
+                                } else {
+                                  // Direct message OR private message in groupchat - use send()
+                                  await xmpp.send(jid, cleanText);
+                                  console.log("✅✅✅ DIRECT/PRIVATE REPLY SENT VIA XMPP! Time:", new Date().toISOString());
+                                }
                                
                                 // Save outbound message to persistence
                                 // For direct messages, save to the RECIPIENT's file (jid), not sender's (config.jid)
@@ -760,30 +806,37 @@ gateway: {
                        if (runtime.channel.reply?.dispatchReplyWithBufferedBlockDispatcher && !dispatchSuccess) {
                          console.log("🎯 METHOD 2: dispatchReplyWithBufferedBlockDispatcher (backup)");
                          
-                         const sendText = async (to: string, text: string) => {
-                           console.log("📤 METHOD 2 sendText CALLED!");
-                           console.log("  To:", to);
-                           console.log("  Text:", text);
-                           
-                           let jid = to;
-                           if (to.startsWith('xmpp:')) {
-                             jid = to.substring(5);
-                           }
-                           
-                            try {
-                              if (options?.type === "groupchat") {
-                                await xmpp.sendGroupchat(jid, text);
-                                console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP (Method 2)!");
-                              } else {
-                                await xmpp.send(jid, text);
-                                console.log("✅✅✅ DIRECT REPLY SENT VIA XMPP (Method 2)!");
-                              }
-                              return { ok: true, channel: "xmpp" };
-                            } catch (err) {
-                              console.error("❌ XMPP SEND ERROR (Method 2):", err);
-                              return { ok: false, error: String(err) };
+                          const sendText = async (to: string, text: string) => {
+                            console.log("📤 METHOD 2 sendText CALLED!");
+                            console.log("  To:", to);
+                            console.log("  Text:", text);
+                            
+                            let jid = to;
+                            if (to.startsWith('xmpp:')) {
+                              jid = to.substring(5);
                             }
-                         };
+
+                            // Check if this is a private message in groupchat
+                            // type="chat" (from groupchat) = private message, type="groupchat" = public
+                            const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
+                            const isPrivateMessage = options?.type === "chat";
+                            
+                             try {
+                               if (isGroupChatMessage && !isPrivateMessage) {
+                                 // Public groupchat message - send to room
+                                 await xmpp.sendGroupchat(jid.split('/')[0], text);
+                                 console.log("✅✅✅ GROUPCHAT REPLY SENT VIA XMPP (Method 2)!");
+                               } else {
+                                 // Direct message OR private message in groupchat - use send()
+                                 await xmpp.send(jid, text);
+                                 console.log("✅✅✅ DIRECT/PRIVATE REPLY SENT VIA XMPP (Method 2)!");
+                               }
+                               return { ok: true, channel: "xmpp" };
+                             } catch (err) {
+                               console.error("❌ XMPP SEND ERROR (Method 2):", err);
+                               return { ok: false, error: String(err) };
+                             }
+                          };
                          
                           const dispatchStart = Date.now();
                           

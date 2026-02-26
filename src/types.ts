@@ -7,6 +7,7 @@ export interface XmppConfig {
   dataDir: string;
   adminJid?: string;
   rooms?: string[];
+  nick?: string;
   vcard?: VCardConfig;
 }
 

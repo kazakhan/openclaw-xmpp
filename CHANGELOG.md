@@ -5,27 +5,72 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-02-26
+
+### Fixed
+- **Private Message Replies in Groupchat**: Fixed issue where replies to private messages in groupchat were being sent to the entire room instead of to the specific user.
+
+#### Root Cause
+When an agent received a private message in a groupchat (from `room@conference.domain/nick`), the reply was being sent using `sendGroupchat()` which broadcasts to everyone in the room. This caused:
+1. The private reply to be visible to all room members
+2. XMPP server returning `bad-request` error because sending to `room/nick` via groupchat is invalid
+
+#### Changes
+- **`index.ts`**:
+  - Updated both dispatch methods (`dispatchReplyFromConfig` and `dispatchReplyWithBufferedBlockDispatcher`) to detect private messages in groupchat
+  - Logic change: Check if target JID contains both `@conference.` AND `/nick` to identify private messages
+  - Private messages now use `send(room/nick, text)` instead of `sendGroupchat(room, text)`
+
+- **`src/register.ts`**:
+  - Updated `sendReply` function to properly route private messages in groupchat
+  - Uses `sendGroupchat()` for public groupchat messages
+  - Uses `send()` for private messages (room/nick format)
+
+#### Technical Details
+- Detection: `isPrivateInGroupchat = isGroupChatRoom && hasNick`
+- `isGroupChatRoom`: target JID contains `@conference.`
+- `hasNick`: target JID contains `/` (and doesn't end with `/`)
+- Public groupchat reply: `xmpp.sendGroupchat(roomJid, text)` - sends as `type="groupchat"`
+- Private groupchat reply: `xmpp.send(roomJid/nick, text)` - sends as `type="chat"` (private)
+
 ## [1.8.2] - 2026-02-26
 
 ### Fixed
 - **Groupchat Message Handling**: Agents now correctly identify groupchat messages as channel conversations instead of direct messages.
+- **Private Messages in Groupchat**: Agents can now send and receive private messages within groupchat rooms.
 
 #### Root Cause
 Previously, all XMPP messages were sent to Openclaw with `ChatType: "direct"`, regardless of whether they came from a direct chat or a groupchat (MUC) room. This caused agents to behave as if they were in 1-on-1 conversations when they were actually in groupchats, leading to confusion.
+
+Additionally, when sending messages to `room@conference.domain/nick` (a private message to a specific occupant), the code was incorrectly stripping the nick and sending to the entire room.
 
 #### Changes
 - **`index.ts`**: 
   - Updated channel capabilities to include `"channel"` chat type alongside `"direct"`
   - Changed message `ChatType` from hardcoded `"direct"` to dynamic: `"channel"` for groupchat messages, `"direct"` for direct messages
   - Updated conversation label to show room name for groupchat messages (e.g., "XMPP Groupchat: room@conference.example.com")
+  - Fixed outbound messaging to properly handle private messages in groupchat:
+    - `room@conference.domain` (room only) → uses `sendGroupchat()` (everyone sees it)
+    - `room@conference.domain/nick` (private) → uses `send()` (only nick sees it)
+  - Fixed reply routing: replies to private messages in groupchat now go to `room/nick` instead of just `room`
 
 - **`src/register.ts`**:
   - Updated channel capabilities to include `"channel"` chat type
+  - Fixed outbound messaging to handle private messages in groupchat correctly
+  - Fixed reply routing for private messages
+
+- **`src/startXMPP.ts`**:
+  - Improved inbound message detection to identify groupchat messages even when XMPP stanza type is "chat" (private messages within MUC use type="chat")
+  - Now detects messages from groupchat by checking if `from` contains `@conference.` in addition to checking stanza type
 
 #### Technical Details
-- Groupchat messages are identified by the XMPP stanza type `"groupchat"` (per XEP-0045 MUC standard)
+- Groupchat messages are identified by the XMPP stanza type `"groupchat"` (per XEP-0045 MUC standard) OR by detecting `@conference.` in the sender JID
+- Private messages within groupchat (MUC) are sent as `type="chat"` with `from="room/nick"`, which is now properly detected
 - The fix passes the correct `ChatType` to Openclaw's `recordInboundSession` call, enabling proper session handling for group conversations
-- Outbound replies continue to use the correct `sendGroupchat()` method for groupchat rooms
+- Outbound replies use the appropriate method based on message context:
+  - Public groupchat messages: `sendGroupchat(room, text)`
+  - Private messages in groupchat: `send(room/nick, text)` (sends privately to specific user)
+  - Direct messages: `send(jid, text)`
 
 ## [1.8.1] - 2026-02-26
 

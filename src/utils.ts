@@ -7,7 +7,7 @@ export function getDefaultResource(cfg: XmppConfig): string {
 }
 
 export function getDefaultNick(cfg: XmppConfig): string {
-  return cfg.jid ? cfg.jid.split("@")[0] : "openclaw";
+  return cfg.nick || (cfg.jid ? cfg.jid.split("@")[0] : "openclaw");
 }
 
 export function resolveRoomJid(room: string, domain: string): string {

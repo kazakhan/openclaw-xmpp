@@ -19,9 +19,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      return result;
    };
    const getDefaultNick = () => {
-      const result = cfg.jid ? cfg.jid.split("@")[0] : "openclaw";
+      // Use custom nick from config if provided, otherwise fallback to JID local part
+      const result = cfg.nick || (cfg.jid ? cfg.jid.split("@")[0] : "openclaw");
       return result;
-    };
+   };
     
     debugLog(`Starting XMPP connection to ${cfg?.service}`);
     debugLog(`XMPP config: jid=${cfg?.jid}, domain=${cfg?.domain}`);
@@ -1491,42 +1492,46 @@ await sendReply(`Available commands (groupchat: only whoami, help):
       }
       
        // Normal message processing
-       debugLog(`[NORMAL] Processing message (type=${messageType})`);
-       // Safety check: slash commands should never reach here
-       if (body.startsWith('/')) {
-         debugLog(`[ERROR] Slash command reached normal processing! This should not happen.`);
-         return;
-       }
-       if (messageType === "groupchat") {
-         // MUC message
-         const roomJid = from.split("/")[0];
-         const nick = from.split("/")[1] || "";
-         if (!nick) {
-           debugLog(`Ignoring room message without nick (likely room subject)`);
-           return;
-         }
-         const botNick = roomNicks.get(roomJid);
-         // Ignore messages from ourselves
-         if (botNick && nick === botNick) {
-           debugLog(`Ignoring self-message from bot`);
-           return;
-         }
-         debugLog(`[NORMAL] Forwarding groupchat message from ${nick} to agent`);
-         // For groupchat, use room JID for session
-         onMessage(roomJid, body, { type: "groupchat", room: roomJid, nick, botNick, mediaUrls, mediaPaths });
-       } else {
-         // Direct message
-         if (contacts.exists(fromBareJid)) {
-           debugLog(`[NORMAL] Forwarding chat message from ${fromBareJid} to agent`);
+        debugLog(`[NORMAL] Processing message (type=${messageType})`);
+        // Safety check: slash commands should never reach here
+        if (body.startsWith('/')) {
+          debugLog(`[ERROR] Slash command reached normal processing! This should not happen.`);
+          return;
+        }
+        
+        // Check if message is from a groupchat (MUC) - either type="groupchat" OR from contains @conference.
+        const isFromGroupChat = messageType === "groupchat" || from.includes('@conference.');
+        
+        if (isFromGroupChat) {
+          // MUC message (including private messages within groupchat)
+          const roomJid = from.split("/")[0];
+          const nick = from.split("/")[1] || "";
+          if (!nick) {
+            debugLog(`Ignoring room message without nick (likely room subject)`);
+            return;
+          }
+          const botNick = roomNicks.get(roomJid);
+          // Ignore messages from ourselves
+          if (botNick && nick === botNick) {
+            debugLog(`Ignoring self-message from bot`);
+            return;
+          }
+          debugLog(`[NORMAL] Forwarding groupchat message from ${nick} to agent`);
+          // Use actual messageType from stanza - "groupchat" for public, "chat" for private
+          onMessage(roomJid, body, { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths });
+        } else {
+          // Direct message
+          if (contacts.exists(fromBareJid)) {
+            debugLog(`[NORMAL] Forwarding chat message from ${fromBareJid} to agent`);
 
-           // Use bare JID for session
-           onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
-         } else {
-           debugLog(`Ignoring message from non-contact: ${fromBareJid}`);
-           log.debug(`Ignoring message from non-contact: ${fromBareJid}`);
-         }
-       }
-     }
+            // Use bare JID for session
+            onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
+          } else {
+            debugLog(`Ignoring message from non-contact: ${fromBareJid}`);
+            log.debug(`Ignoring message from non-contact: ${fromBareJid}`);
+          }
+        }
+      }
    });
 
   xmpp.start().catch((err: any) => {
