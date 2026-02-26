@@ -5,6 +5,30 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-02-26
+
+### Fixed
+- **Groupchat Nickname**: Bot now uses nickname from vCard when joining groupchat rooms via invite.
+
+#### Root Cause
+When the bot was invited to a groupchat room, it would join using its JID local part (e.g., "clawdbothome") instead of a friendly nickname. The `getDefaultNick()` function was only checking `cfg.nick` config and falling back to JID, ignoring the vCard nickname.
+
+#### Changes
+- **`src/startXMPP.ts`**:
+  - Modified `getDefaultNick()` function to check vCard nickname with the following priority:
+    1. `cfg.nick` (from config)
+    2. `vCard.nickname` (from vCard - set via `openclaw xmpp vcard set nickname <nick>`)
+    3. JID local part (fallback)
+    4. `"openclaw"` (final fallback)
+  - Added debug logging to track which nickname source is being used
+
+#### Usage
+Users can now set the bot's groupchat nickname using:
+```
+openclaw xmpp vcard set nickname MyBot
+```
+This nickname will be used when the bot joins rooms via invite. The config `nick` option still takes precedence if set.
+
 ## [1.8.4] - 2026-02-26
 
 ### Fixed

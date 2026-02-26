@@ -19,8 +19,14 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      return result;
    };
    const getDefaultNick = () => {
-      // Use custom nick from config if provided, otherwise fallback to JID local part
-      const result = cfg.nick || (cfg.jid ? cfg.jid.split("@")[0] : "openclaw");
+      // Priority: 
+      // 1. cfg.nick (from config)
+      // 2. vCard.nickname (from vCard)
+      // 3. JID local part (fallback)
+      // 4. "openclaw" (final fallback)
+      const vcardNickname = vcard?.getNickname?.();
+      const result = cfg.nick || vcardNickname || (cfg.jid ? cfg.jid.split("@")[0] : "openclaw");
+      console.log(`[DEBUG] getDefaultNick: cfg.nick=${cfg.nick}, vcard.nickname=${vcardNickname}, result=${result}`);
       return result;
    };
     
