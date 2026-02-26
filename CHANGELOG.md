@@ -5,6 +5,38 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] - 2026-02-26
+
+### Fixed
+- **Reply Routing Between Public and Private Groupchat Messages**: Fixed issue where after exchanging private messages in a groupchat, subsequent public groupchat messages would receive replies in the private chat instead of the main room.
+
+#### Root Cause
+The XMPP plugin was setting incorrect values for `To` and `OriginatingTo` in the message context. Both were set to the bot's JID (`xmpp:bot@domain.com`) instead of the appropriate reply destination. Openclaw uses these fields to determine where to send replies:
+
+```javascript
+const lastToRaw = ctx.OriginatingTo || ctx.To || baseEntry?.lastTo;
+```
+
+Since both fields pointed to the bot's JID, Openclaw would use the session's cached `lastTo` value (which was set to the private message recipient during the private message exchange), causing all subsequent replies to go to the private chat.
+
+#### Changes
+- **`index.ts`**:
+  - Updated `buildContextPayload` function to set correct `To` and `OriginatingTo` values:
+    - Public groupchat messages (`type="groupchat"`): `To: xmpp:room@conference.domain`
+    - Private messages in groupchat (`type="chat"`): `To: xmpp:room@conference.domain/nick`
+    - Direct messages: `To: xmpp:sender@domain.com`
+  - Added proper nick extraction from the message `from` field
+
+- **`src/register.ts`**:
+  - Applied same fix to `buildContextPayload` function for consistency
+
+#### Technical Details
+- The fix ensures each message type correctly tells Openclaw where replies should go
+- Public groupchat messages now have `OriginatingTo: xmpp:room@conference.domain` so replies go to the room
+- Private messages in groupchat have `OriginatingTo: xmpp:room@conference.domain/nick` so replies go to the specific user
+- Session key remains the same for both message types to maintain shared memory context
+- Openclaw now properly updates `lastTo` via `updateLastRoute` for each message type
+
 ## [1.8.3] - 2026-02-26
 
 ### Fixed
