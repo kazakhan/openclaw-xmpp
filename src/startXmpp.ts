@@ -12,7 +12,7 @@ import { Config } from "./config.js";
 let xmppClientModule: any = null;
 let isRunning = false;
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void, onOnline?: (xmppClient: any) => void) {
     // Helper to get default resource/nick from JID local part
     const getDefaultResource = () => {
       const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
@@ -69,19 +69,107 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       const data: any = {};
       if (!vcardEl) return data;
       
+      // Simple fields
       const fn = vcardEl.getChild('FN');
       const nickname = vcardEl.getChild('NICKNAME');
       const url = vcardEl.getChild('URL');
       const desc = vcardEl.getChild('DESC');
+      const bday = vcardEl.getChild('BDAY');
+      const title = vcardEl.getChild('TITLE');
+      const role = vcardEl.getChild('ROLE');
+      const tz = vcardEl.getChild('TZ');
       const photo = vcardEl.getChild('PHOTO');
       
       if (fn) data.fn = fn.text();
       if (nickname) data.nickname = nickname.text();
       if (url) data.url = url.text();
       if (desc) data.desc = desc.text();
+      if (bday) data.bday = bday.text();
+      if (title) data.title = title.text();
+      if (role) data.role = role.text();
+      if (tz) data.tz = tz.text();
       if (photo) {
         const extval = photo.getChild('EXTVAL');
         if (extval) data.avatarUrl = extval.text();
+      }
+      
+      // Structured name (N)
+      const n = vcardEl.getChild('N');
+      if (n) {
+        data.n = {
+          family: n.getChildText('FAMILY'),
+          given: n.getChildText('GIVEN'),
+          middle: n.getChildText('MIDDLE'),
+          prefix: n.getChildText('PREFIX'),
+          suffix: n.getChildText('SUFFIX')
+        };
+      }
+      
+      // Phone numbers (TEL) - multi-value
+      const telElements = vcardEl.getChildren('TEL');
+      if (telElements && telElements.length > 0) {
+        data.tel = telElements.map((tel: any) => {
+          const types: string[] = [];
+          if (tel.getChild('HOME')) types.push('HOME');
+          if (tel.getChild('WORK')) types.push('WORK');
+          if (tel.getChild('VOICE')) types.push('VOICE');
+          if (tel.getChild('FAX')) types.push('FAX');
+          if (tel.getChild('CELL')) types.push('CELL');
+          if (tel.getChild('VIDEO')) types.push('VIDEO');
+          if (tel.getChild('PAGER')) types.push('PAGER');
+          if (tel.getChild('MSG')) types.push('MSG');
+          if (tel.getChild('PREF')) types.push('PREF');
+          const number = tel.getChild('NUMBER');
+          return { types, number: number ? number.text() : '' };
+        });
+      }
+      
+      // Emails (EMAIL) - multi-value
+      const emailElements = vcardEl.getChildren('EMAIL');
+      if (emailElements && emailElements.length > 0) {
+        data.email = emailElements.map((email: any) => {
+          const types: string[] = [];
+          if (email.getChild('HOME')) types.push('HOME');
+          if (email.getChild('WORK')) types.push('WORK');
+          if (email.getChild('INTERNET')) types.push('INTERNET');
+          if (email.getChild('PREF')) types.push('PREF');
+          const userid = email.getChild('USERID');
+          return { types, userid: userid ? userid.text() : '' };
+        });
+      }
+      
+      // Addresses (ADR) - multi-value
+      const adrElements = vcardEl.getChildren('ADR');
+      if (adrElements && adrElements.length > 0) {
+        data.adr = adrElements.map((adr: any) => {
+          const types: string[] = [];
+          if (adr.getChild('HOME')) types.push('HOME');
+          if (adr.getChild('WORK')) types.push('WORK');
+          if (adr.getChild('POSTAL')) types.push('POSTAL');
+          if (adr.getChild('PARCEL')) types.push('PARCEL');
+          if (adr.getChild('PREF')) types.push('PREF');
+          return {
+            types,
+            pobox: adr.getChildText('POBOX'),
+            extadd: adr.getChildText('EXTADD'),
+            street: adr.getChildText('STREET'),
+            locality: adr.getChildText('LOCALITY'),
+            region: adr.getChildText('REGION'),
+            pcode: adr.getChildText('PCODE'),
+            ctry: adr.getChildText('CTRY')
+          };
+        });
+      }
+      
+      // Organization (ORG)
+      const org = vcardEl.getChild('ORG');
+      if (org) {
+        const orgname = org.getChild('ORGNAME');
+        const orgunit = org.getChild('ORGUNIT');
+        data.org = {
+          orgname: orgname ? orgname.text() : undefined,
+          orgunit: orgunit ? [orgunit.text()] : undefined
+        };
       }
       
       return data;
@@ -256,7 +344,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       } catch (err) {
        console.error("❌ Failed to register vCard with server:", err);
        log.error("Failed to register vCard", err);
-     }
+      }
+
+      if (onOnline) {
+        try {
+          onOnline(xmppClient);
+        } catch (err) {
+          console.error("❌ Error in onOnline callback:", err);
+          log.error("Error in onOnline callback", err);
+        }
+      }
    });
 
      const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
@@ -1211,51 +1308,113 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                      : '❌ Permission denied. Admin access required.');
                    return;
                   }
-                   if (args.length === 0 || args[0] === 'help') {
-                     await sendReply(`vCard commands:
-   /vcard help - Show this help
-   /vcard get - Show current vCard (from server)
-   /vcard get <jid> - Show vCard for any user
-   /vcard set fn <value> - Set Full Name
-   /vcard set nickname <value> - Set Nickname
-   /vcard set url <value> - Set URL
+                  if (args.length === 0 || args[0] === 'help') {
+                      await sendReply(`vCard commands:
+    /vcard help - Show this help
+    /vcard get - Show current vCard (from server)
+    /vcard get <jid> - Show vCard for any user
+    /vcard set fn <value> - Set Full Name
+    /vcard set nickname <value> - Set Nickname
+    /vcard set url <value> - Set URL
     /vcard set desc <value> - Set Description
+    /vcard set birthday <YYYY-MM-DD> - Set Birthday
+    /vcard set title <value> - Set Job Title
+    /vcard set role <value> - Set Job Role
+    /vcard set timezone <value> - Set Timezone
     /vcard set avatar <url> - Upload image from URL as avatar
-   /vcard set avatar - Upload attached image as avatar`);
-                     return;
-                   }
+    /vcard set avatar - Upload attached image as avatar
+    /vcard name <family> <given> [middle] [prefix] [suffix] - Set structured name
+    /vcard phone add <number> [type...] - Add phone (home work voice fax cell)
+    /vcard phone remove <index> - Remove phone by index
+    /vcard email add <address> [type...] - Add email (home work internet pref)
+    /vcard email remove <index> - Remove email by index
+    /vcard address add <street> <city> <region> <postal> <country> [type] - Add address
+    /vcard address remove <index> - Remove address by index
+    /vcard org <orgname> [orgunit...] - Set organization`);
+                      return;
+                    }
                  const subcmd = args[0].toLowerCase();
                  
-                 if (subcmd === 'get') {
-                   if (args.length >= 2) {
-                     // Query another user's vCard
-                     const targetJid = args[1];
-                     const userVCard = await queryVCardFromServer(targetJid);
-                     if (userVCard) {
-                       await sendReply(`vCard for ${targetJid}:
- FN: ${userVCard.fn || '(not set)'}
- Nickname: ${userVCard.nickname || '(not set)'}
- URL: ${userVCard.url || '(not set)'}
- Description: ${userVCard.desc || '(not set)'}
- Avatar URL: ${userVCard.avatarUrl || '(not set)'}`);
-                     } else {
-                       await sendReply(`❌ No vCard found for ${targetJid}`);
-                     }
-                   } else {
-                     // Query bot's vCard from server
-                     const botVCard = await queryVCardFromServer('');
-                     if (botVCard) {
-                       await sendReply(`vCard (from server):
- FN: ${botVCard.fn || '(not set)'}
- Nickname: ${botVCard.nickname || '(not set)'}
- URL: ${botVCard.url || '(not set)'}
- Description: ${botVCard.desc || '(not set)'}
- Avatar URL: ${botVCard.avatarUrl || '(not set)'}`);
-                     } else {
-                       await sendReply(`❌ Failed to retrieve vCard from server`);
-                     }
-                   }
-                   return;
+                  if (subcmd === 'get') {
+                    if (args.length >= 2) {
+                      const targetJid = args[1];
+                      const userVCard = await queryVCardFromServer(targetJid);
+                      if (userVCard) {
+                        let info = `vCard for ${targetJid}:
+  FN: ${userVCard.fn || '(not set)'}`;
+                        if (userVCard.n) {
+                          info += `\n  Name: ${[userVCard.n.prefix, userVCard.n.given, userVCard.n.middle, userVCard.n.family, userVCard.n.suffix].filter(Boolean).join(' ') || '(not set)'}`;
+                        }
+                        info += `\n  Nickname: ${userVCard.nickname || '(not set)'}`;
+                        info += `\n  Birthday: ${userVCard.bday || '(not set)'}`;
+                        info += `\n  Title: ${userVCard.title || '(not set)'}`;
+                        info += `\n  Role: ${userVCard.role || '(not set)'}`;
+                        info += `\n  Timezone: ${userVCard.tz || '(not set)'}`;
+                        info += `\n  URL: ${userVCard.url || '(not set)'}`;
+                        info += `\n  Desc: ${userVCard.desc || '(not set)'}`;
+                        info += `\n  Avatar URL: ${userVCard.avatarUrl || '(not set)'}`;
+                        if (userVCard.tel && userVCard.tel.length > 0) {
+                          info += `\n  Phone Numbers:`;
+                          userVCard.tel.forEach((p, i) => info += `\n    ${i + 1}. ${p.number} (${p.types.join(', ') || 'default'})`);
+                        }
+                        if (userVCard.email && userVCard.email.length > 0) {
+                          info += `\n  Emails:`;
+                          userVCard.email.forEach((e, i) => info += `\n    ${i + 1}. ${e.userid} (${e.types.join(', ') || 'default'})`);
+                        }
+                        if (userVCard.adr && userVCard.adr.length > 0) {
+                          info += `\n  Addresses:`;
+                          userVCard.adr.forEach((a, i) => {
+                            const parts = [a.street, a.locality, a.region, a.pcode, a.ctry].filter(Boolean);
+                            info += `\n    ${i + 1}. ${parts.join(', ')} (${a.types.join(', ') || 'default'})`;
+                          });
+                        }
+                        if (userVCard.org) {
+                          info += `\n  Organization: ${userVCard.org.orgname || '(not set)'}${userVCard.org.orgunit ? ' (' + userVCard.org.orgunit.join(', ') + ')' : ''}`;
+                        }
+                        await sendReply(info);
+                      } else {
+                        await sendReply(`❌ No vCard found for ${targetJid}`);
+                      }
+                    } else {
+                      const botVCard = await queryVCardFromServer('');
+                      if (botVCard) {
+                        let info = `vCard (from server):
+  FN: ${botVCard.fn || '(not set)'}`;
+                        if (botVCard.n) {
+                          info += `\n  Name: ${[botVCard.n.prefix, botVCard.n.given, botVCard.n.middle, botVCard.n.family, botVCard.n.suffix].filter(Boolean).join(' ') || '(not set)'}`;
+                        }
+                        info += `\n  Nickname: ${botVCard.nickname || '(not set)'}`;
+                        info += `\n  Birthday: ${botVCard.bday || '(not set)'}`;
+                        info += `\n  Title: ${botVCard.title || '(not set)'}`;
+                        info += `\n  Role: ${botVCard.role || '(not set)'}`;
+                        info += `\n  Timezone: ${botVCard.tz || '(not set)'}`;
+                        info += `\n  URL: ${botVCard.url || '(not set)'}`;
+                        info += `\n  Desc: ${botVCard.desc || '(not set)'}`;
+                        info += `\n  Avatar URL: ${botVCard.avatarUrl || '(not set)'}`;
+                        if (botVCard.tel && botVCard.tel.length > 0) {
+                          info += `\n  Phone Numbers:`;
+                          botVCard.tel.forEach((p, i) => info += `\n    ${i + 1}. ${p.number} (${p.types.join(', ') || 'default'})`);
+                        }
+                        if (botVCard.email && botVCard.email.length > 0) {
+                          info += `\n  Emails:`;
+                          botVCard.email.forEach((e, i) => info += `\n    ${i + 1}. ${e.userid} (${e.types.join(', ') || 'default'})`);
+                        }
+                        if (botVCard.adr && botVCard.adr.length > 0) {
+                          info += `\n  Addresses:`;
+                          botVCard.adr.forEach((a, i) => {
+                            const parts = [a.street, a.locality, a.region, a.pcode, a.ctry].filter(Boolean);
+                            info += `\n    ${i + 1}. ${parts.join(', ')} (${a.types.join(', ') || 'default'})`;
+                          });
+                        }
+                        if (botVCard.org) {
+                          info += `\n  Organization: ${botVCard.org.orgname || '(not set)'}${botVCard.org.orgunit ? ' (' + botVCard.org.orgunit.join(', ') + ')' : ''}`;
+                        }
+                        await sendReply(info);
+                      } else {
+                        await sendReply(`❌ Failed to retrieve vCard from server`);
+                      }
+                    }
+                    return;
                    } else if (subcmd === 'set') {
                      if (args.length < 2) {
                        await sendReply('Usage: /vcard set <field> <value>\nFor avatar: /vcard set avatar <url> or attach an image and use /vcard set avatar');
@@ -1393,15 +1552,15 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                     
                     // For other fields, require a value
                     if (args.length < 3) {
-                      await sendReply('Usage: /vcard set <field> <value>');
+                      await sendReply('Usage: /vcard set <field> <value>\nSimple fields: fn, nickname, url, desc, birthday, title, role, timezone');
                       return;
                     }
                     
                     const value = args.slice(2).join(' ');
                     
                     // Validate field
-                    if (!['fn', 'nickname', 'url', 'desc'].includes(field)) {
-                      await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, avatar (with attached image)`);
+                    if (!['fn', 'nickname', 'url', 'desc', 'birthday', 'title', 'role', 'timezone'].includes(field)) {
+                      await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, birthday, title, role, timezone, avatar`);
                       return;
                     }
                     
@@ -1411,25 +1570,331 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                     if (field === 'nickname') updates.nickname = value;
                     if (field === 'url') updates.url = value;
                     if (field === 'desc') updates.desc = value;
+                    if (field === 'birthday') updates.bday = value;
+                    if (field === 'title') updates.title = value;
+                    if (field === 'role') updates.role = value;
+                    if (field === 'timezone') updates.tz = value;
                     
                     const success = await updateVCardOnServer(updates);
                     
                     if (success) {
-                      // Also update local cache for responding to others
                       if (field === 'fn') vcard.setFN(value);
                       if (field === 'nickname') vcard.setNickname(value);
                       if (field === 'url') vcard.setUrl(value);
                       if (field === 'desc') vcard.setDesc(value);
+                      if (field === 'birthday') vcard.setBday(value);
+                      if (field === 'title') vcard.setTitle(value);
+                      if (field === 'role') vcard.setRole(value);
+                      if (field === 'timezone') vcard.setTz(value);
                       
                       await sendReply(`✅ vCard field '${field}' updated on server: ${value}`);
-                     } else {
-                       await sendReply(`❌ Failed to update vCard on server`);
-                     }
-                     return;
                     } else {
-                      await sendReply(`Unknown vCard subcommand: ${subcmd}. Use /vcard help for available commands.`);
+                       await sendReply(`❌ Failed to update vCard on server`);
                     }
                     return;
+                  } else if (subcmd === 'name') {
+                    // /vcard name <family> <given> [middle] [prefix] [suffix]
+                    if (args.length < 3) {
+                      await sendReply('Usage: /vcard name <family> <given> [middle] [prefix] [suffix]\nExample: /vcard name Smith John David Mr.');
+                      return;
+                    }
+                    const family = args[1];
+                    const given = args[2];
+                    const middle = args[3];
+                    const prefix = args[4];
+                    const suffix = args[5];
+                    
+                    try {
+                      const current = await queryVCardFromServer('');
+                      const merged = current || {};
+                      merged.n = { family, given, middle, prefix, suffix };
+                      
+                      const vcardId = `vc-name-${Date.now()}`;
+                      let responseReceived = false;
+                      let updateSuccess = false;
+                      
+                      const handler = (stanza: any) => {
+                        if (stanza.attrs.id === vcardId && stanza.attrs.type === 'result') {
+                          updateSuccess = true;
+                        }
+                        if (stanza.attrs.id === vcardId) {
+                          responseReceived = true;
+                        }
+                      };
+                      xmpp.on('stanza', handler);
+                      
+                      const vcardSet = xml("iq", { type: "set", id: vcardId },
+                        xml("vCard", { xmlns: "vcard-temp" },
+                          merged.fn ? xml("FN", {}, merged.fn) : null,
+                          xml("N", {},
+                            merged.n.family ? xml("FAMILY", {}, merged.n.family) : null,
+                            merged.n.given ? xml("GIVEN", {}, merged.n.given) : null,
+                            merged.n.middle ? xml("MIDDLE", {}, merged.n.middle) : null,
+                            merged.n.prefix ? xml("PREFIX", {}, merged.n.prefix) : null,
+                            merged.n.suffix ? xml("SUFFIX", {}, merged.n.suffix) : null
+                          ),
+                          merged.nickname ? xml("NICKNAME", {}, merged.nickname) : null
+                        )
+                      );
+                      
+                      await xmpp.send(vcardSet);
+                      let waited = 0;
+                      while (!responseReceived && waited < 5000) {
+                        await new Promise(r => setTimeout(r, 100));
+                        waited += 100;
+                      }
+                      xmpp.off('stanza', handler);
+                      
+                      if (updateSuccess) {
+                        vcard.setNameComponents(family, given, middle, prefix, suffix);
+                        const nameStr = [prefix, given, middle, family, suffix].filter(Boolean).join(' ').trim();
+                        await sendReply(`✅ vCard name updated: ${nameStr}`);
+                      } else {
+                        await sendReply(`❌ Failed to update vCard name on server`);
+                      }
+                    } catch (err) {
+                      await sendReply(`❌ Error updating vCard name: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                    }
+                    return;
+                  } else if (subcmd === 'phone') {
+                    // /vcard phone add <number> [type...]
+                    // /vcard phone remove <index>
+                    if (args.length < 2) {
+                      await sendReply('Usage:\n  /vcard phone add <number> [type...]\n  /vcard phone remove <index>\nTypes: home work voice fax cell video pager msg');
+                      return;
+                    }
+                    const phoneCmd = args[1].toLowerCase();
+                    
+                    if (phoneCmd === 'add') {
+                      if (args.length < 3) {
+                        await sendReply('Usage: /vcard phone add <number> [type...]\nExample: /vcard phone add +1234567890 cell work');
+                        return;
+                      }
+                      const number = args[2];
+                      const types: string[] = [];
+                      for (let i = 3; i < args.length; i++) {
+                        const t = args[i].toUpperCase();
+                        if (['HOME', 'WORK', 'VOICE', 'FAX', 'CELL', 'VIDEO', 'PAGER', 'MSG'].includes(t)) {
+                          types.push(t);
+                        }
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        const merged = current || {};
+                        if (!merged.tel) merged.tel = [];
+                        merged.tel.push({ types: types.length > 0 ? types : ['HOME'], number });
+                        
+                        const success = await updateVCardOnServer({ tel: merged.tel });
+                        if (success) {
+                          vcard.setTel(merged.tel);
+                          await sendReply(`✅ Phone added: ${number} (${types.join(', ') || 'default'})`);
+                        } else {
+                          await sendReply(`❌ Failed to add phone on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error adding phone: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else if (phoneCmd === 'remove') {
+                      const idx = parseInt(args[2]) - 1;
+                      if (isNaN(idx)) {
+                        await sendReply('Usage: /vcard phone remove <index>\nUse /vcard get to see phone indices');
+                        return;
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        if (!current || !current.tel || !current.tel[idx]) {
+                          await sendReply(`❌ No phone at index ${idx + 1}`);
+                          return;
+                        }
+                        const removed = current.tel.splice(idx, 1)[0];
+                        
+                        const success = await updateVCardOnServer({ tel: current.tel });
+                        if (success) {
+                          vcard.setTel(current.tel);
+                          await sendReply(`✅ Phone removed: ${removed.number}`);
+                        } else {
+                          await sendReply(`❌ Failed to remove phone on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error removing phone: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else {
+                      await sendReply('Usage:\n  /vcard phone add <number> [type...]\n  /vcard phone remove <index>');
+                    }
+                    return;
+                  } else if (subcmd === 'email') {
+                    // /vcard email add <address> [type...]
+                    // /vcard email remove <index]
+                    if (args.length < 2) {
+                      await sendReply('Usage:\n  /vcard email add <address> [type...]\n  /vcard email remove <index>\nTypes: home work internet pref');
+                      return;
+                    }
+                    const emailCmd = args[1].toLowerCase();
+                    
+                    if (emailCmd === 'add') {
+                      if (args.length < 3) {
+                        await sendReply('Usage: /vcard email add <address> [type...]\nExample: /vcard email add john@example.com work');
+                        return;
+                      }
+                      const userid = args[2];
+                      const types: string[] = [];
+                      for (let i = 3; i < args.length; i++) {
+                        const t = args[i].toUpperCase();
+                        if (['HOME', 'WORK', 'INTERNET', 'PREF'].includes(t)) {
+                          types.push(t);
+                        }
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        const merged = current || {};
+                        if (!merged.email) merged.email = [];
+                        merged.email.push({ types: types.length > 0 ? types : ['INTERNET'], userid });
+                        
+                        const success = await updateVCardOnServer({ email: merged.email });
+                        if (success) {
+                          vcard.setEmail(merged.email);
+                          await sendReply(`✅ Email added: ${userid} (${types.join(', ') || 'default'})`);
+                        } else {
+                          await sendReply(`❌ Failed to add email on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error adding email: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else if (emailCmd === 'remove') {
+                      const idx = parseInt(args[2]) - 1;
+                      if (isNaN(idx)) {
+                        await sendReply('Usage: /vcard email remove <index>\nUse /vcard get to see email indices');
+                        return;
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        if (!current || !current.email || !current.email[idx]) {
+                          await sendReply(`❌ No email at index ${idx + 1}`);
+                          return;
+                        }
+                        const removed = current.email.splice(idx, 1)[0];
+                        
+                        const success = await updateVCardOnServer({ email: current.email });
+                        if (success) {
+                          vcard.setEmail(current.email);
+                          await sendReply(`✅ Email removed: ${removed.userid}`);
+                        } else {
+                          await sendReply(`❌ Failed to remove email on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error removing email: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else {
+                      await sendReply('Usage:\n  /vcard email add <address> [type...]\n  /vcard email remove <index>');
+                    }
+                    return;
+                  } else if (subcmd === 'address') {
+                    // /vcard address add <street> <city> <region> <postal> <country> [type]
+                    // /vcard address remove <index>
+                    if (args.length < 2) {
+                      await sendReply('Usage:\n  /vcard address add <street> <city> <region> <postal> <country> [type]\n  /vcard address remove <index>\nTypes: home work postal parcel');
+                      return;
+                    }
+                    const addrCmd = args[1].toLowerCase();
+                    
+                    if (addrCmd === 'add') {
+                      if (args.length < 7) {
+                        await sendReply('Usage: /vcard address add <street> <city> <region> <postal> <country> [type]\nExample: /vcard address add "123 Main St" Boston MA 02101 USA home');
+                        return;
+                      }
+                      const street = args[2];
+                      const locality = args[3];
+                      const region = args[4];
+                      const pcode = args[5];
+                      const ctry = args[6];
+                      const types: string[] = [];
+                      if (args[7]) {
+                        const t = args[7].toUpperCase();
+                        if (['HOME', 'WORK', 'POSTAL', 'PARCEL'].includes(t)) {
+                          types.push(t);
+                        }
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        const merged = current || {};
+                        if (!merged.adr) merged.adr = [];
+                        merged.adr.push({ types: types.length > 0 ? types : ['HOME'], street, locality, region, pcode, ctry });
+                        
+                        const success = await updateVCardOnServer({ adr: merged.adr });
+                        if (success) {
+                          vcard.setAdr(merged.adr);
+                          await sendReply(`✅ Address added: ${street}, ${locality}, ${region} ${pcode}, ${ctry} (${types.join(', ') || 'default'})`);
+                        } else {
+                          await sendReply(`❌ Failed to add address on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error adding address: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else if (addrCmd === 'remove') {
+                      const idx = parseInt(args[2]) - 1;
+                      if (isNaN(idx)) {
+                        await sendReply('Usage: /vcard address remove <index>\nUse /vcard get to see address indices');
+                        return;
+                      }
+                      
+                      try {
+                        const current = await queryVCardFromServer('');
+                        if (!current || !current.adr || !current.adr[idx]) {
+                          await sendReply(`❌ No address at index ${idx + 1}`);
+                          return;
+                        }
+                        const removed = current.adr.splice(idx, 1)[0];
+                        const parts = [removed.street, removed.locality, removed.region, removed.pcode, removed.ctry].filter(Boolean);
+                        
+                        const success = await updateVCardOnServer({ adr: current.adr });
+                        if (success) {
+                          vcard.setAdr(current.adr);
+                          await sendReply(`✅ Address removed: ${parts.join(', ')}`);
+                        } else {
+                          await sendReply(`❌ Failed to remove address on server`);
+                        }
+                      } catch (err) {
+                        await sendReply(`❌ Error removing address: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    } else {
+                      await sendReply('Usage:\n  /vcard address add <street> <city> <region> <postal> <country> [type]\n  /vcard address remove <index>');
+                    }
+                    return;
+                  } else if (subcmd === 'org') {
+                    // /vcard org <orgname> [orgunit...]
+                    if (args.length < 2) {
+                      await sendReply('Usage: /vcard org <orgname> [orgunit...]\nExample: /vcard org "Acme Inc" Engineering Sales');
+                      return;
+                    }
+                    const orgname = args[1];
+                    const orgunits = args.slice(2);
+                    
+                    try {
+                      const current = await queryVCardFromServer('');
+                      const merged = current || {};
+                      merged.org = { orgname, orgunit: orgunits.length > 0 ? orgunits : undefined };
+                      
+                      const success = await updateVCardOnServer({ org: merged.org });
+                      if (success) {
+                        vcard.setOrgComponents(orgname, ...orgunits);
+                        const orgStr = orgname + (orgunits.length > 0 ? ` (${orgunits.join(', ')})` : '');
+                        await sendReply(`✅ Organization updated: ${orgStr}`);
+                      } else {
+                        await sendReply(`❌ Failed to update organization on server`);
+                      }
+                    } catch (err) {
+                      await sendReply(`❌ Error updating organization: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                    }
+                    return;
+                  } else {
+                    await sendReply(`Unknown vCard subcommand: ${subcmd}. Use /vcard help for available commands.`);
+                    return;
+                  }
 
                 case 'test':
                    // Test commands for debugging

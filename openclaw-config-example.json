@@ -16,7 +16,10 @@
           "jid": "bot@your-server.com",
           "password": "PLAIN or ENCRYPTED PASS",
           "adminJid": "admin@your-server.com",
-          "rooms": [],
+          "rooms": [
+            "room1@conference.your-server.com",
+            "room2@conference.your-server.com"
+          ],
           "encryptionKey": "GENERATE THIS WITH THE CLI COMMAND"
         }
       }

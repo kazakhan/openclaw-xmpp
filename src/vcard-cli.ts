@@ -11,6 +11,7 @@ interface XmppConfig {
   domain: string;
   jid: string;
   password: string;
+  dataDir: string;
 }
 
 interface VCardName {
@@ -104,13 +105,30 @@ function loadXmppConfig(): XmppConfig {
         service: xmppAccount.service || `xmpp://${xmppAccount.domain}:5222`,
         domain: xmppAccount.domain,
         jid: xmppAccount.jid,
-        password: password
+        password: password,
+        dataDir: xmppAccount.dataDir || path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'extensions', 'xmpp', 'data')
       };
     }
   } catch (e) {
   }
   
   throw new Error('XMPP configuration not found');
+}
+
+function saveVCardLocally(vcardData: VCardData): void {
+  try {
+    const config = loadXmppConfig();
+    const dataDir = config.dataDir;
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const vcardFile = path.join(dataDir, "xmpp-vcard.json");
+    vcardData.rev = new Date().toISOString();
+    fs.writeFileSync(vcardFile, JSON.stringify(vcardData, null, 2));
+    console.log(`[VCARD] Saved locally to ${vcardFile}`);
+  } catch (err) {
+    console.error('[VCARD] Failed to save locally:', err);
+  }
 }
 
 function parseVCard(vcardEl: any): VCardData {
@@ -538,6 +556,8 @@ export async function setVCard(field: string, value: string): Promise<{ ok: bool
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -818,6 +838,8 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
       ));
       await new Promise(r => setTimeout(r, 300));
 
+      saveVCardLocally(vcard);
+
       return { ok: true, url: imageUrl };
     });
   } catch (err: any) {
@@ -877,6 +899,8 @@ export async function setVCardName(
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -909,6 +933,8 @@ export async function addVCardPhone(
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -939,6 +965,8 @@ export async function removeVCardPhone(index: number): Promise<{ ok: boolean; er
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -971,6 +999,8 @@ export async function addVCardEmail(
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -1001,6 +1031,8 @@ export async function removeVCardEmail(index: number): Promise<{ ok: boolean; er
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -1039,6 +1071,8 @@ export async function addVCardAddress(
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -1069,6 +1103,8 @@ export async function removeVCardAddress(index: number): Promise<{ ok: boolean; 
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -1100,6 +1136,8 @@ export async function setVCardOrg(
       
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
       await new Promise(r => setTimeout(r, 300));
+      
+      saveVCardLocally(vcard);
     });
     
     return { ok: true };

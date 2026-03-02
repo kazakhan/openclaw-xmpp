@@ -958,16 +958,21 @@ gateway: {
               console.log("⚠️ Last error:", dispatchError || "Unknown error");
             }
            
-           // Note: api.emit doesn't exist, only api.on for listening
-         });
-
-          // Auto-join configured rooms - DISABLED by default
-          // Rooms require invites, do not auto-join
-          if (Array.isArray(config.rooms) && config.rooms.length > 0 && config.rooms.length > 0) {
-            console.log(`[${account.accountId}] Auto-join config found but disabled (rooms require invites)`);
-            console.log(`[${account.accountId}] Rooms in config:`, config.rooms);
-            console.log(`[${account.accountId}] To enable auto-join, set autoJoinRooms: true in config`);
-          }
+            // Note: api.emit doesn't exist, only api.on for listening
+          }, async (xmppClient) => {
+            // Auto-join configured rooms when XMPP is online
+            if (Array.isArray(config.rooms) && config.rooms.length > 0) {
+              console.log(`[${account.accountId}] Auto-joining ${config.rooms.length} room(s)...`);
+              for (const room of config.rooms) {
+                try {
+                  await xmppClient.joinRoom(room, config.nick);
+                  console.log(`✅ Auto-joined room: ${room}`);
+                } catch (err) {
+                  console.error(`❌ Failed to join room ${room}:`, err);
+                }
+              }
+            }
+          });
 
           // Store client globally by account ID
          xmppClients.set(account.accountId, xmpp);

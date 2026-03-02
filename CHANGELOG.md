@@ -5,6 +5,92 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] - 2026-03-02
+
+### Added
+- **Enhanced In-Chat vCard Commands**: The in-chat `/vcard` command now supports all fields available in the CLI commands, making it easier for admins to manage vCard directly from XMPP.
+
+#### New Commands
+- `/vcard set birthday <YYYY-MM-DD>` - Set Birthday
+- `/vcard set title <value>` - Set Job Title
+- `/vcard set role <value>` - Set Job Role
+- `/vcard set timezone <value>` - Set Timezone
+- `/vcard name <family> <given> [middle] [prefix] [suffix]` - Set structured name
+- `/vcard phone add <number> [type...]` - Add phone number
+- `/vcard phone remove <index>` - Remove phone number
+- `/vcard email add <address> [type...]` - Add email address
+- `/vcard email remove <index>` - Remove email address
+- `/vcard address add <street> <city> <region> <postal> <country> [type]` - Add address
+- `/vcard address remove <index>` - Remove address
+- `/vcard org <orgname> [orgunit...]` - Set organization
+- `/vcard get` - Now shows all vCard fields including phone, email, address, organization
+
+#### Changes
+- **`src/startXMPP.ts`**:
+  - Updated help text to show all available commands
+  - Added handlers for new subcommands: name, phone, email, address, org
+  - Updated `get` command to display all vCard fields
+  - Added support for simple fields: birthday, title, role, timezone
+
+### Fixed
+- **vCard Local Storage**: CLI vCard commands now save to local file (`data/xmpp-vcard.json`) in addition to updating the XMPP server. This fixes the issue where copying the plugin code to another PC would reset the vCard on the server because the local file wasn't being updated.
+
+#### Changes
+- **`src/vcard-cli.ts`**:
+  - Added `dataDir` to `XmppConfig` interface
+  - Updated `loadXmppConfig()` to return `dataDir` from config (with default fallback)
+  - Added `saveVCardLocally()` helper function to save vCard to local JSON file
+  - Updated all vCard modification functions to call `saveVCardLocally()` after server update:
+    - `setVCard()`
+    - `setVCardAvatar()`
+    - `setVCardName()`
+    - `addVCardPhone()`
+    - `removeVCardPhone()`
+    - `addVCardEmail()`
+    - `removeVCardEmail()`
+    - `addVCardAddress()`
+    - `removeVCardAddress()`
+    - `setVCardOrg()`
+
+### Added
+- **Auto-Join Groupchat Rooms**: The bot can now automatically join configured groupchat rooms on startup.
+
+#### How It Works
+- Add room JIDs to the `rooms` array in the account configuration
+- When the XMPP connection is established, the bot will join each configured room
+- Uses the account's `nick` setting for the nickname in each room
+
+#### Configuration
+```json
+{
+  "channels": {
+    "xmpp": {
+      "accounts": {
+        "default": {
+          "rooms": [
+            "room1@conference.your-server.com",
+            "room2@conference.your-server.com"
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+#### Changes
+- **`src/startXMPP.ts`**:
+  - Added optional `onOnline` callback parameter to `startXmpp()` function
+  - Callback is invoked when XMPP connection is established (after vCard registration)
+- **`index.ts`**:
+  - Added `onOnline` callback implementation that iterates through `config.rooms` and joins each room
+  - Each room join is attempted sequentially with error handling per-room
+
+#### Technical Details
+- The auto-join happens in the "online" event handler, ensuring the XMPP connection is fully established
+- If joining a room fails, the bot continues trying other rooms and logs the error
+- The nickname used is from the account's `nick` config (or JID local part if not set)
+
 ## [1.8.7] - 2026-02-26
 
 ### Fixed
