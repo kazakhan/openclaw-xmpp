@@ -1134,20 +1134,7 @@ gateway: {
       return;
     }
     try {
-      // Detect groupchat (MUC) vs direct message
-      const isGroupChat = jid.includes('@conference.');
-      const isGroupchatPrivateMessage = isGroupChat && jid.includes('/');
-      
-      if (isGroupChat && !isGroupchatPrivateMessage) {
-        // Public groupchat message - use sendGroupchat
-        client.sendGroupchat(jid.split('/')[0], message);
-      } else if (isGroupchatPrivateMessage) {
-        // Private message in groupchat - use send to room/nick
-        client.send(jid, message);
-      } else {
-        // Direct message - use regular send
-        client.send(jid, message);
-      }
+      client.send(jid, message);
       respond(true, { ok: true, jid });
     } catch (err: any) {
       respond(false, { error: err.message || String(err) });

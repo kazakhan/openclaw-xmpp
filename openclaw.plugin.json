@@ -1,14 +1,51 @@
 {
   "id": "xmpp",
-  "name": "XMPP Channel",
-  "version": "1.3.1",
-  "main": "index.ts",
-  "kind": "xmpp",
+  "kind": "channel",
   "channels": ["xmpp"],
-  "cli": ["channels"],
+  "name": "XMPP",
+  "description": "XMPP/Jabber messaging channel plugin with file transfer and whiteboard support",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "xmpp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "service": { "type": "string" },
+                "domain": { "type": "string" },
+                "jid": { "type": "string" },
+                "password": { "type": "string" },
+                "dataDir": { "type": "string" },
+                "resource": { "type": "string" },
+                "adminJid": { "type": "string" },
+                "nick": { "type": "string" },
+                "rooms": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "vcard": {
+                  "type": "object",
+                  "properties": {
+                    "fn": { "type": "string" },
+                    "nickname": { "type": "string" },
+                    "url": { "type": "string" },
+                    "desc": { "type": "string" },
+                    "avatarUrl": { "type": "string" }
+                  }
+                }
+              },
+              "required": ["service", "domain", "jid", "password", "dataDir"]
+            }
+          }
+        }
+      }
+    }
   }
 }

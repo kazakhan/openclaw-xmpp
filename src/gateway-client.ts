@@ -48,7 +48,7 @@ function extractJsonFromOutput(output: string): string | null {
   return null;
 }
 
-async function callGatewayRpc<T = any>(method: string, params?: Record<string, any>): Promise<T | null> {
+export async function callGatewayRpc<T = any>(method: string, params?: Record<string, any>): Promise<T | null> {
   const config = await getGatewayConfig();
   const isWindows = process.platform === "win32";
 

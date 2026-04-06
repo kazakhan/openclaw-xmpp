@@ -21,41 +21,29 @@ async function saveRoster() {
 
 
 
-// Helper to call openclaw message send via gateway
+// Helper to send XMPP message via gateway RPC instead of openclaw message send
+// This bypasses the CLI plugin loading issue
+async function sendViaGatewayRpc(jid: string, message: string): Promise<boolean> {
+  const { callGatewayRpc } = await import("./gateway-client.js");
+  
+  try {
+    const result = await callGatewayRpc<{ ok: boolean; error?: string }>("xmpp.sendMessage", { jid, message });
+    if (result?.ok) {
+      console.log(`Message sent to ${jid}`);
+      return true;
+    } else {
+      console.error(`Failed to send message: ${result?.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (err: any) {
+    console.error(`Failed to send message: ${err.message || String(err)}`);
+    return false;
+  }
+}
+
+// Helper to call openclaw message send via gateway (deprecated - use sendViaGatewayRpc)
 async function sendViaGateway(jid: string, message: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const proc = spawn("cmd.exe", ["/c", "openclaw", "message", "send", "--channel", "xmpp", "--target", jid, "--message", message], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-      windowsHide: true
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        console.log(`Message sent to ${jid}`);
-        resolve(true);
-      } else {
-        console.error(`Failed to send message: ${stderr || stdout}`);
-        resolve(false);
-      }
-    });
-
-    proc.on('error', (err) => {
-      console.error(`Failed to send message: ${err}`);
-      resolve(false);
-    });
-  });
+  return sendViaGatewayRpc(jid, message);
 }
 
 // Main CLI registration function following Commander.js pattern
