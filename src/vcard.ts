@@ -1,361 +1,434 @@
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 import { VCardData, VCardName, VCardPhone, VCardEmail, VCardAddress, VCardOrg, VCardPhoto } from "./types.js";
 
 export class VCard {
   private vcardFile: string;
   private vcardData: VCardData;
+  private initialized: Promise<void> | null = null;
 
   constructor(dataDir: string) {
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     this.vcardFile = path.join(dataDir, "xmpp-vcard.json");
-    this.vcardData = this.loadVCard();
+    this.initialized = fs.mkdir(dataDir, { recursive: true })
+      .then(() => this.loadVCard())
+      .then((d) => { this.vcardData = d; });
   }
 
-  private loadVCard(): VCardData {
-    if (!fs.existsSync(this.vcardFile)) {
-      return { version: "3.0" };
+  private async whenReady(): Promise<void> {
+    if (this.initialized) {
+      await this.initialized;
+      this.initialized = null;
     }
+  }
+
+  private async loadVCard(): Promise<VCardData> {
     try {
-      return JSON.parse(fs.readFileSync(this.vcardFile, "utf8"));
-    } catch {
+      const content = await fs.readFile(this.vcardFile, "utf8");
+      return JSON.parse(content);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { version: "3.0" };
+      }
       return { version: "3.0" };
     }
   }
 
-  private saveVCard() {
+  private async saveVCard(): Promise<void> {
     try {
       this.vcardData.rev = new Date().toISOString();
-      fs.writeFileSync(this.vcardFile, JSON.stringify(this.vcardData, null, 2));
+      await fs.writeFile(this.vcardFile, JSON.stringify(this.vcardData, null, 2), "utf8");
     } catch (err) {
       console.error("Failed to save vCard:", err);
     }
   }
 
   // VERSION
-  getVersion(): string | undefined {
+  async getVersion(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.version || "3.0";
   }
 
   // FORMATTED NAME (FN) - Required
-  getFN(): string | undefined {
+  async getFN(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.fn;
   }
 
-  setFN(fn: string) {
+  async setFN(fn: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.fn = fn;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // STRUCTURED NAME (N)
-  getN(): VCardName | undefined {
+  async getN(): Promise<VCardName | undefined> {
+    await this.whenReady();
     return this.vcardData.n;
   }
 
-  setN(name: VCardName) {
+  async setN(name: VCardName): Promise<void> {
+    await this.whenReady();
     this.vcardData.n = name;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // Build N from components
-  setNameComponents(family: string, given: string, middle?: string, prefix?: string, suffix?: string) {
+  async setNameComponents(family: string, given: string, middle?: string, prefix?: string, suffix?: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.n = { family, given, middle, prefix, suffix };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // NICKNAME
-  getNickname(): string | undefined {
+  async getNickname(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.nickname;
   }
 
-  setNickname(nickname: string) {
+  async setNickname(nickname: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.nickname = nickname;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // PHOTO
-  getPhoto(): VCardPhoto | undefined {
+  async getPhoto(): Promise<VCardPhoto | undefined> {
+    await this.whenReady();
     return this.vcardData.photo;
   }
 
-  getPhotoUrl(): string | undefined {
+  async getPhotoUrl(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.photo?.extval || this.vcardData.avatarUrl;
   }
 
-  setPhotoUrl(url: string) {
+  async setPhotoUrl(url: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.photo = { extval: url };
     this.vcardData.avatarUrl = url;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  setPhotoData(mimeType: string, data: string) {
+  async setPhotoData(mimeType: string, data: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.photo = { type: mimeType, binval: data };
     this.vcardData.avatarMimeType = mimeType;
     this.vcardData.avatarData = data;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // BIRTHDAY (BDAY)
-  getBday(): string | undefined {
+  async getBday(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.bday;
   }
 
-  setBday(bday: string) {
+  async setBday(bday: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.bday = bday;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // TELEPHONE (TEL) - Multi-value
-  getTel(): VCardPhone[] {
+  async getTel(): Promise<VCardPhone[]> {
+    await this.whenReady();
     return this.vcardData.tel || [];
   }
 
-  setTel(phones: VCardPhone[]) {
+  async setTel(phones: VCardPhone[]): Promise<void> {
+    await this.whenReady();
     this.vcardData.tel = phones;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  addPhone(types: string[], number: string) {
+  async addPhone(types: string[], number: string): Promise<void> {
+    await this.whenReady();
     if (!this.vcardData.tel) this.vcardData.tel = [];
     this.vcardData.tel.push({ types, number });
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  removePhone(index: number) {
+  async removePhone(index: number): Promise<void> {
+    await this.whenReady();
     if (this.vcardData.tel && this.vcardData.tel[index]) {
       this.vcardData.tel.splice(index, 1);
-      this.saveVCard();
+      await this.saveVCard();
     }
   }
 
   // EMAIL - Multi-value
-  getEmail(): VCardEmail[] {
+  async getEmail(): Promise<VCardEmail[]> {
+    await this.whenReady();
     return this.vcardData.email || [];
   }
 
-  setEmail(emails: VCardEmail[]) {
+  async setEmail(emails: VCardEmail[]): Promise<void> {
+    await this.whenReady();
     this.vcardData.email = emails;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  addEmail(types: string[], userid: string) {
+  async addEmail(types: string[], userid: string): Promise<void> {
+    await this.whenReady();
     if (!this.vcardData.email) this.vcardData.email = [];
     this.vcardData.email.push({ types, userid });
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  removeEmail(index: number) {
+  async removeEmail(index: number): Promise<void> {
+    await this.whenReady();
     if (this.vcardData.email && this.vcardData.email[index]) {
       this.vcardData.email.splice(index, 1);
-      this.saveVCard();
+      await this.saveVCard();
     }
   }
 
   // ADDRESS (ADR) - Multi-value
-  getAdr(): VCardAddress[] {
+  async getAdr(): Promise<VCardAddress[]> {
+    await this.whenReady();
     return this.vcardData.adr || [];
   }
 
-  setAdr(addresses: VCardAddress[]) {
+  async setAdr(addresses: VCardAddress[]): Promise<void> {
+    await this.whenReady();
     this.vcardData.adr = addresses;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  addAddress(address: VCardAddress) {
+  async addAddress(address: VCardAddress): Promise<void> {
+    await this.whenReady();
     if (!this.vcardData.adr) this.vcardData.adr = [];
     this.vcardData.adr.push(address);
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  removeAddress(index: number) {
+  async removeAddress(index: number): Promise<void> {
+    await this.whenReady();
     if (this.vcardData.adr && this.vcardData.adr[index]) {
       this.vcardData.adr.splice(index, 1);
-      this.saveVCard();
+      await this.saveVCard();
     }
   }
 
   // JABBERID
-  getJabberid(): string | undefined {
+  async getJabberid(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.jabberid;
   }
 
-  setJabberid(jabberid: string) {
+  async setJabberid(jabberid: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.jabberid = jabberid;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // MAILER
-  getMailer(): string | undefined {
+  async getMailer(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.mailer;
   }
 
-  setMailer(mailer: string) {
+  async setMailer(mailer: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.mailer = mailer;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // TIMEZONE (TZ)
-  getTz(): string | undefined {
+  async getTz(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.tz;
   }
 
-  setTz(tz: string) {
+  async setTz(tz: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.tz = tz;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // GEO
-  getGeo(): { lat?: string; lon?: string } | undefined {
+  async getGeo(): Promise<{ lat?: string; lon?: string } | undefined> {
+    await this.whenReady();
     return this.vcardData.geo;
   }
 
-  setGeo(lat: string, lon: string) {
+  async setGeo(lat: string, lon: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.geo = { lat, lon };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // TITLE
-  getTitle(): string | undefined {
+  async getTitle(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.title;
   }
 
-  setTitle(title: string) {
+  async setTitle(title: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.title = title;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // ROLE
-  getRole(): string | undefined {
+  async getRole(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.role;
   }
 
-  setRole(role: string) {
+  async setRole(role: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.role = role;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // ORGANIZATION (ORG)
-  getOrg(): VCardOrg | undefined {
+  async getOrg(): Promise<VCardOrg | undefined> {
+    await this.whenReady();
     return this.vcardData.org;
   }
 
-  setOrg(org: VCardOrg) {
+  async setOrg(org: VCardOrg): Promise<void> {
+    await this.whenReady();
     this.vcardData.org = org;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  setOrgComponents(orgname: string, ...orgunits: string[]) {
+  async setOrgComponents(orgname: string, ...orgunits: string[]): Promise<void> {
+    await this.whenReady();
     this.vcardData.org = { orgname, orgunit: orgunits.length > 0 ? orgunits : undefined };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // LOGO
-  getLogo(): VCardPhoto | undefined {
+  async getLogo(): Promise<VCardPhoto | undefined> {
+    await this.whenReady();
     return this.vcardData.logo;
   }
 
-  setLogoUrl(url: string) {
+  async setLogoUrl(url: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.logo = { extval: url };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  setLogoData(mimeType: string, data: string) {
+  async setLogoData(mimeType: string, data: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.logo = { type: mimeType, binval: data };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // CATEGORIES
-  getCategories(): string[] {
+  async getCategories(): Promise<string[]> {
+    await this.whenReady();
     return this.vcardData.categories || [];
   }
 
-  setCategories(categories: string[]) {
+  async setCategories(categories: string[]): Promise<void> {
+    await this.whenReady();
     this.vcardData.categories = categories;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // NOTE
-  getNote(): string | undefined {
+  async getNote(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.note;
   }
 
-  setNote(note: string) {
+  async setNote(note: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.note = note;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // UID
-  getUid(): string | undefined {
+  async getUid(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.uid;
   }
 
-  setUid(uid: string) {
+  async setUid(uid: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.uid = uid;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // URL
-  getUrl(): string | undefined {
+  async getUrl(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.url;
   }
 
-  setUrl(url: string) {
+  async setUrl(url: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.url = url;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // DESC
-  getDesc(): string | undefined {
+  async getDesc(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.desc;
   }
 
-  setDesc(desc: string) {
+  async setDesc(desc: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.desc = desc;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // REV (auto-managed)
-  getRev(): string | undefined {
+  async getRev(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.rev;
   }
 
   // PROdid
-  getProdid(): string | undefined {
+  async getProdid(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.prodid;
   }
 
-  setProdid(prodid: string) {
+  async setProdiD(prodid: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.prodid = prodid;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // SORT-STRING
-  getSortString(): string | undefined {
+  async getSortString(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.sortString;
   }
 
-  setSortString(sortString: string) {
+  async setSortString(sortString: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.sortString = sortString;
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // Get all vCard data for XML generation
-  getData(): VCardData {
+  async getData(): Promise<VCardData> {
+    await this.whenReady();
     return { ...this.vcardData };
   }
 
   // Legacy getters for backward compatibility
-  getAvatarUrl(): string | undefined {
+  async getAvatarUrl(): Promise<string | undefined> {
+    await this.whenReady();
     return this.vcardData.avatarUrl || this.vcardData.photo?.extval;
   }
 
-  setAvatarUrl(avatarUrl: string) {
+  async setAvatarUrl(avatarUrl: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.avatarUrl = avatarUrl;
     this.vcardData.photo = { extval: avatarUrl };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
-  getAvatarData(): { mimeType?: string; data?: string } | undefined {
+  async getAvatarData(): Promise<{ mimeType?: string; data?: string } | undefined> {
+    await this.whenReady();
     if (!this.vcardData.avatarData && !this.vcardData.photo?.binval) return undefined;
     return {
       mimeType: this.vcardData.avatarMimeType || this.vcardData.photo?.type,
@@ -363,16 +436,18 @@ export class VCard {
     };
   }
 
-  setAvatarData(mimeType: string, data: string) {
+  async setAvatarData(mimeType: string, data: string): Promise<void> {
+    await this.whenReady();
     this.vcardData.avatarMimeType = mimeType;
     this.vcardData.avatarData = data;
     this.vcardData.photo = { type: mimeType, binval: data };
-    this.saveVCard();
+    await this.saveVCard();
   }
 
   // Set multiple fields at once
-  update(fields: Partial<VCardData>) {
+  async update(fields: Partial<VCardData>): Promise<void> {
+    await this.whenReady();
     Object.assign(this.vcardData, fields);
-    this.saveVCard();
+    await this.saveVCard();
   }
 }

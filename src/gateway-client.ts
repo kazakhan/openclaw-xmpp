@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import { log } from "./lib/logger.js";
 
 interface GatewayConfig {
   url: string;
@@ -48,7 +49,15 @@ function extractJsonFromOutput(output: string): string | null {
   return null;
 }
 
-export async function callGatewayRpc<T = any>(method: string, params?: Record<string, any>): Promise<T | null> {
+export interface RpcResult<T = any> {
+  ok: boolean;
+  data?: T;
+  error?: string;
+}
+
+const RPC_TIMEOUT_MS = 30_000;
+
+export async function callGatewayRpc<T = any>(method: string, params?: Record<string, any>): Promise<RpcResult<T>> {
   const config = await getGatewayConfig();
   const isWindows = process.platform === "win32";
 
@@ -82,72 +91,81 @@ export async function callGatewayRpc<T = any>(method: string, params?: Record<st
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
 
-    proc.stdout.on('data', (data) => {
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; proc.kill('SIGTERM'); resolve({ ok: false, error: 'timeout' }); }
+    }, RPC_TIMEOUT_MS);
+
+    proc.stdout.on('data', (data: Buffer) => {
       stdout += data.toString();
     });
 
-    proc.stderr.on('data', (data) => {
+    proc.stderr.on('data', (data: Buffer) => {
       stderr += data.toString();
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code: number | null) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
       const output = stdout.trim();
       if (code === 0 && output) {
         try {
           const json = extractJsonFromOutput(output);
           if (json) {
             const parsed = JSON.parse(json);
-            resolve(parsed);
+            resolve({ ok: true, data: parsed as T });
           } else {
-            resolve(null);
+            resolve({ ok: false, error: 'no-json-in-output' });
           }
-        } catch {
-          resolve(null);
+        } catch (e: any) {
+          resolve({ ok: false, error: `parse-failed: ${e.message}` });
         }
       } else {
-        resolve(null);
+        resolve({ ok: false, error: `exit-code-${code}` });
       }
     });
 
-    proc.on('error', (err) => {
-      resolve(null);
+    proc.on('error', (err: Error) => {
+      clearTimeout(timer);
+      if (!settled) { settled = true; resolve({ ok: false, error: err.message }); }
     });
   });
 }
 
 export async function joinRoom(room: string, nick?: string): Promise<boolean> {
   const result = await callGatewayRpc<{ ok: boolean; room?: string; nick?: string }>("xmpp.joinRoom", { room, nick });
-  if (result?.ok) {
-    console.log(`Joined room: ${result.room} as ${result.nick}`);
+  if (result?.ok && result.data?.ok) {
+    log.debug("room joined", { room: result.data.room, nick: result.data.nick });
     return true;
   }
   return false;
 }
 
 export async function leaveRoom(room: string, nick?: string): Promise<boolean> {
-  const result = await callGatewayRpc<{ ok: boolean; room?: string }>("xmpp.leaveRoom", { room, nick });
-  return result?.ok || false;
+  const result = await callGatewayRpc<{ ok: boolean }>("xmpp.leaveRoom", { room, nick });
+  return (result?.ok && result.data?.ok) || false;
 }
 
 export async function getJoinedRooms(): Promise<Array<{ room: string; nick?: string }>> {
   const result = await callGatewayRpc<{ rooms: Array<{ room: string; nick?: string }> }>("xmpp.getJoinedRooms");
-  return result?.rooms || [];
+  return result?.data?.rooms || [];
 }
 
 export async function inviteToRoom(contact: string, room: string, reason?: string): Promise<boolean> {
-  const result = await callGatewayRpc<{ ok: boolean; contact?: string; room?: string }>("xmpp.inviteToRoom", { contact, room, reason });
-  if (result?.ok) {
-    console.log(`Invited ${contact} to room ${room}`);
+  const result = await callGatewayRpc<{ ok: boolean }>("xmpp.inviteToRoom", { contact, room, reason });
+  if (result?.ok && result.data?.ok) {
+    log.debug("room invite sent", { contact, room });
     return true;
   }
   return false;
 }
 
 export async function removeContact(jid: string): Promise<boolean> {
-  const result = await callGatewayRpc<{ ok: boolean; jid?: string }>("xmpp.removeContact", { jid });
-  if (result?.ok) {
-    console.log(`Removed contact: ${jid}`);
+  const result = await callGatewayRpc<{ ok: boolean }>("xmpp.removeContact", { jid });
+  if (result?.ok && result.data?.ok) {
+    log.debug("contact removed", { jid });
     return true;
   }
   return false;

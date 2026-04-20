@@ -1,4 +1,4 @@
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 
 export interface JsonStoreOptions<T> {
@@ -14,68 +14,80 @@ export class JsonStore<T extends object> {
   private defaults: T;
   private onLoad?: (data: T) => T;
   private onSave?: (data: T) => T;
-  
+  private initialized: Promise<void> | null = null;
+
   constructor(options: JsonStoreOptions<T>) {
     this.filePath = options.filePath;
     this.defaults = options.defaults || {} as T;
     this.onLoad = options.onLoad;
     this.onSave = options.onSave;
-    
+
     const parentDir = path.dirname(this.filePath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
-    
-    this.data = this.load();
+    this.initialized = fs.mkdir(parentDir, { recursive: true })
+      .then(() => this.load())
+      .then((d) => { this.data = d; });
   }
-  
-  private load(): T {
-    if (!fs.existsSync(this.filePath)) {
-      if (Array.isArray(this.defaults)) {
-        return [...this.defaults] as unknown as T;
-      }
-      return { ...this.defaults };
+
+  private async whenReady(): Promise<void> {
+    if (this.initialized) {
+      await this.initialized;
+      this.initialized = null;
     }
+  }
+
+  private async load(): Promise<T> {
     try {
-      const content = fs.readFileSync(this.filePath, "utf8");
+      const content = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(content);
       return this.onLoad ? this.onLoad(parsed) : parsed;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // File doesn't exist yet, return defaults
+        if (Array.isArray(this.defaults)) {
+          return [...this.defaults] as unknown as T;
+        }
+        return { ...this.defaults };
+      }
+      // Parse error or other issue
       if (Array.isArray(this.defaults)) {
         return [...this.defaults] as unknown as T;
       }
       return { ...this.defaults };
     }
   }
-  
-  private save(): void {
+
+  private async save(): Promise<void> {
     try {
       const dataToSave = this.onSave ? this.onSave(this.data) : this.data;
-      fs.writeFileSync(this.filePath, JSON.stringify(dataToSave, null, 2));
+      await fs.writeFile(this.filePath, JSON.stringify(dataToSave, null, 2), "utf8");
     } catch (err) {
       console.error(`Failed to save ${this.filePath}:`, err);
     }
   }
-  
-  get(): T {
+
+  async get(): Promise<T> {
+    await this.whenReady();
     if (Array.isArray(this.data)) {
       return [...this.data] as unknown as T;
     }
     return { ...this.data };
   }
-  
-  set(updates: Partial<T>): void {
+
+  async set(updates: Partial<T>): Promise<void> {
+    await this.whenReady();
     Object.assign(this.data, updates);
-    this.save();
+    await this.save();
   }
-  
-  update(fn: (data: T) => void): void {
+
+  async update(fn: (data: T) => void): Promise<void> {
+    await this.whenReady();
     fn(this.data);
-    this.save();
+    await this.save();
   }
-  
-  clear(): void {
+
+  async clear(): Promise<void> {
+    await this.whenReady();
     this.data = { ...this.defaults } as T;
-    this.save();
+    await this.save();
   }
 }

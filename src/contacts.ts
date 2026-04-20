@@ -33,84 +33,84 @@ export class Contacts {
     });
   }
   
-  list(): Contact[] {
+  async list(): Promise<Contact[]> {
     return this.contactsStore.get();
   }
   
-  exists(jid: string): boolean {
+  async exists(jid: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    return this.contactsStore.get().some(c => c.jid === bareJid);
+    return (await this.contactsStore.get()).some(c => c.jid === bareJid);
   }
   
-  add(jid: string, name?: string): boolean {
+  async add(jid: string, name?: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    const contacts = this.contactsStore.get();
+    const contacts = await this.contactsStore.get();
     const existingIndex = contacts.findIndex(c => c.jid === bareJid);
     
     if (existingIndex >= 0) {
       const updatedContacts = [...contacts];
       updatedContacts[existingIndex].name = name || updatedContacts[existingIndex].name || bareJid.split('@')[0];
-      this.contactsStore.set(updatedContacts);
+      await this.contactsStore.set(updatedContacts);
     } else {
       const newContact: ContactEntry = {
         jid: bareJid,
         name: name || bareJid.split('@')[0]
       };
-      this.contactsStore.set([...contacts, newContact]);
+      await this.contactsStore.set([...contacts, newContact]);
     }
     return true;
   }
   
-  remove(jid: string): boolean {
+  async remove(jid: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    const contacts = this.contactsStore.get();
+    const contacts = await this.contactsStore.get();
     const initialLength = contacts.length;
     const updatedContacts = contacts.filter(c => c.jid !== bareJid);
     
     if (updatedContacts.length < initialLength) {
-      this.contactsStore.set(updatedContacts);
+      await this.contactsStore.set(updatedContacts);
       return true;
     }
     return false;
   }
   
-  getName(jid: string): string | undefined {
+  async getName(jid: string): Promise<string | undefined> {
     const bareJid = jid.split('/')[0];
-    const contact = this.contactsStore.get().find(c => c.jid === bareJid);
+    const contact = (await this.contactsStore.get()).find(c => c.jid === bareJid);
     return contact?.name;
   }
   
-  isAdmin(jid: string): boolean {
+  async isAdmin(jid: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    return this.adminsStore.get().includes(bareJid);
+    return (await this.adminsStore.get()).includes(bareJid);
   }
   
-  addAdmin(jid: string): boolean {
+  async addAdmin(jid: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    const admins = this.adminsStore.get();
+    const admins = await this.adminsStore.get();
     if (!admins.includes(bareJid)) {
-      this.adminsStore.set([...admins, bareJid]);
+      await this.adminsStore.set([...admins, bareJid]);
     }
     return true;
   }
   
-  removeAdmin(jid: string): boolean {
+  async removeAdmin(jid: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
-    const admins = this.adminsStore.get();
+    const admins = await this.adminsStore.get();
     const updatedAdmins = admins.filter(a => a !== bareJid);
     
     if (updatedAdmins.length < admins.length) {
-      this.adminsStore.set(updatedAdmins);
+      await this.adminsStore.set(updatedAdmins);
       return true;
     }
     return false;
   }
   
-  listAdmins(): string[] {
+  async listAdmins(): Promise<string[]> {
     return this.adminsStore.get();
   }
   
-  getAllJids(): string[] {
-    return this.contactsStore.get().map(c => c.jid);
+  async getAllJids(): Promise<string[]> {
+    return (await this.contactsStore.get()).map(c => c.jid);
   }
 }

@@ -26,6 +26,9 @@
                 "resource": { "type": "string" },
                 "adminJid": { "type": "string" },
                 "nick": { "type": "string" },
+                "dmPolicy": { "type": "string", "enum": ["open", "allowlist"] },
+                "allowFrom": { "type": "array", "items": { "type": "string" } },
+                "autoJoinRooms": { "type": "array", "items": { "type": "string" } },
                 "rooms": {
                   "type": "array",
                   "items": { "type": "string" }

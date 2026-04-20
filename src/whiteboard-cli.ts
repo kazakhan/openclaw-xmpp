@@ -1,14 +1,7 @@
 import { xml } from "@xmpp/client";
-import path from "path";
-import fs from "fs";
-import { decryptPasswordFromConfig } from './security/encryption.js';
-
-interface XmppConfig {
-  service: string;
-  domain: string;
-  jid: string;
-  password: string;
-}
+import { loadXmppConfig } from './lib/config-loader.js';
+import { createXmppClient } from './lib/xmpp-connect.js';
+import { log } from "./lib/logger.js";
 
 interface SxeConfig {
   sessionId: string;
@@ -16,51 +9,9 @@ interface SxeConfig {
   isGroupChat: boolean;
 }
 
-function loadXmppConfig(): XmppConfig {
-  const configPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'openclaw.json');
-  
-  try {
-    const configData = fs.readFileSync(configPath, 'utf8');
-    const config = JSON.parse(configData);
-    const xmppAccount = config.channels?.xmpp?.accounts?.default;
-    
-    if (xmppAccount) {
-      let password: string;
-      try {
-        password = decryptPasswordFromConfig(xmppAccount);
-      } catch (err) {
-        password = xmppAccount.password || '';
-      }
-      
-      return {
-        service: xmppAccount.service || `xmpp://${xmppAccount.domain}:5222`,
-        domain: xmppAccount.domain,
-        jid: xmppAccount.jid,
-        password: password
-      };
-    }
-  } catch (e) {
-    console.error('Failed to load config:', e);
-  }
-  
-  return {
-    service: 'xmpp://localhost:5222',
-    domain: 'localhost',
-    jid: 'bot@localhost',
-    password: ''
-  };
-}
-
 async function withConnection<T>(fn: (xmpp: any) => Promise<T>): Promise<T> {
   const config = loadXmppConfig();
-  const { client } = await import('@xmpp/client');
-  
-  const xmpp = client({
-    service: config.service,
-    domain: config.domain,
-    username: config.jid.split('@')[0],
-    password: config.password
-  });
+  const xmpp = createXmppClient(config);
   
   let error: Error | null = null;
   xmpp.on('error', (err: Error) => error = err);
@@ -186,7 +137,7 @@ export async function sendWhiteboardInvitation(to: string, isGroupChat: boolean 
       const message = xml('message', { type: messageType, to }, sxeElement);
       
       await xmpp.send(message);
-      console.log(`[SXE] Sent invitation to ${to} with session ${sessionId}`);
+      log.debug("sxe invitation sent", { to, sessionId });
       return { ok: true, sessionId };
     });
   } catch (err: any) {
@@ -220,7 +171,7 @@ export async function sendWhiteboardMessage(to: string, pathData: string, option
       );
       
       await xmpp.send(message);
-      console.log(`[SXE] Sent whiteboard path ${pathId} to ${to}`);
+      log.debug("sxe whiteboard path sent", { to, pathId });
       return { ok: true };
     });
   } catch (err: any) {
@@ -242,7 +193,7 @@ export async function sendWhiteboardMove(to: string, id: string, dx: number, dy:
       );
       
       await xmpp.send(message);
-      console.log(`[SXE] Sent move for ${id} to ${to}`);
+      log.debug("sxe move sent", { to, id });
       return { ok: true };
     });
   } catch (err: any) {
@@ -264,7 +215,7 @@ export async function sendWhiteboardDelete(to: string, id: string, sessionId?: s
       );
       
       await xmpp.send(message);
-      console.log(`[SXE] Sent delete for ${id} to ${to}`);
+      log.debug("sxe delete sent", { to, id });
       return { ok: true };
     });
   } catch (err: any) {
@@ -287,7 +238,7 @@ export async function sendWhiteboardClear(to: string, sessionId?: string): Promi
       );
       
       await xmpp.send(message);
-      console.log(`[SXE] Sent clear to ${to}`);
+      log.debug("sxe clear sent", { to });
       return { ok: true };
     });
   } catch (err: any) {

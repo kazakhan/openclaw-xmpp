@@ -1,13 +1,17 @@
 import fs from "fs";
+import fsp from "fs/promises";
 import path from "path";
 import { validators } from "../security/validation.js";
 import { Config } from "../config.js";
+import { log } from "../lib/logger.js";
 
 const SENSITIVE_PATTERNS = [
   /password["']?\s*[:=]\s*["']?[^"']+["']?/gi,
   /password[:\s][^\s,"']+/gi,
   /credential[s]?[:\s][^\s,"']+/gi,
   /api[_-]?key[s]?[:\s][^\s,"']+/gi,
+  /xmpp[_-]?password[:\s][^\s,"']+/gi,
+  /auth[:\s][^\s,"']+/gi,
 ];
 
 export function sanitize(message: string): string {
@@ -15,6 +19,27 @@ export function sanitize(message: string): string {
   let sanitized = message;
   for (const pattern of SENSITIVE_PATTERNS) {
     sanitized = sanitized.replace(pattern, '[REDACTED]');
+  }
+  return sanitized;
+}
+
+export function sanitizeMeta(meta: any): any {
+  if (!meta || typeof meta !== "object") return meta;
+  const sanitized: Record<string, any> = {};
+  for (const key of Object.keys(meta)) {
+    const k = key.toLowerCase();
+    if (
+      k.includes("password") ||
+      k.includes("credential") ||
+      k.includes("secret") ||
+      k.includes("key")
+    ) {
+      sanitized[key] = "[REDACTED]";
+    } else if (typeof meta[key] === "string") {
+      sanitized[key] = sanitize(meta[key]);
+    } else {
+      sanitized[key] = meta[key];
+    }
   }
   return sanitized;
 }
@@ -31,16 +56,12 @@ export function setDebugLogDir(dir: string | undefined): void {
 
 export function debugLog(msg: string): void {
   const sanitizedMsg = sanitize(msg);
-  const logFile = debugLogDir 
+  const logFile = debugLogDir
     ? path.join(debugLogDir, 'cli-debug.log')
     : path.join(process.cwd(), 'cli-debug.log');
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${sanitizedMsg}\n`;
-  try {
-    fs.appendFileSync(logFile, line);
-  } catch {
-    // Silently ignore logging errors
-  }
+  fsp.appendFile(logFile, line).catch(() => {});
 }
 
 export interface RateLimitEntry {
@@ -57,22 +78,40 @@ export function checkRateLimit(jid: string): boolean {
   const now = Date.now();
   const entry = rateLimitMap.get(jid);
 
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+  if (entry && now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 10) {
+    rateLimitMap.delete(jid);
+  }
+
+  const fresh = rateLimitMap.get(jid);
+  if (!fresh || now - fresh.windowStart > RATE_LIMIT_WINDOW_MS) {
     rateLimitMap.set(jid, { count: 1, windowStart: now });
     return true;
   }
 
-  if (entry.count >= RATE_LIMIT_MAX_REQUESTS) {
-    console.log(`[RATE LIMIT] Rejected command from ${jid} (${entry.count} requests in window)`);
+  if (fresh.count >= RATE_LIMIT_MAX_REQUESTS) {
+    log.warn("rate limit hit", { jid, count: fresh.count });
     return false;
   }
 
-  entry.count++;
+  fresh.count++;
   return true;
 }
 
 export function clearRateLimitMap(): void {
   rateLimitMap.clear();
+}
+
+export function evictStaleRateLimits(): number {
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS * 10;
+  let evicted = 0;
+  for (const [jid, entry] of rateLimitMap.entries()) {
+    if (entry.windowStart < cutoff) {
+      rateLimitMap.delete(jid);
+      evicted++;
+    }
+  }
+  return evicted;
 }
 
 export const MAX_FILE_SIZE = Config.MAX_FILE_SIZE;
@@ -88,7 +127,7 @@ export async function downloadFile(
 ): Promise<string> {
   const maxSize = options.maxSize ?? MAX_FILE_SIZE;
 
-  console.log(`Downloading file from ${url}`);
+  log.debug("download starting", { url });
 
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
@@ -106,14 +145,14 @@ export async function downloadFile(
   // Sanitize filename using validator
   const safeFilename = validators.sanitizeFilename(filename);
   if (safeFilename !== filename) {
-    console.log(`[SECURITY] Sanitized filename: "${filename}" -> "${safeFilename}"`);
+    log.debug("filename sanitized", { original: filename, safe: safeFilename });
     filename = safeFilename;
   }
 
   // Ensure filename doesn't escape tempDir using validator
   if (!validators.isSafePath(filename, tempDir)) {
     filename = `file_${Date.now()}_${safeFilename}`;
-    console.log(`[SECURITY] Rejected unsafe filename, using: ${filename}`);
+    log.warn("unsafe filename rejected", { filename });
   }
 
   const filePath = path.join(tempDir, filename);
@@ -139,10 +178,10 @@ export async function downloadFile(
 
     await fs.promises.writeFile(filePath, Buffer.from(buffer));
 
-    console.log(`File downloaded to ${filePath} (${buffer.byteLength} bytes)`);
+    log.debug("file downloaded", { size: buffer.byteLength });
     return filePath;
   } catch (err) {
-    console.error("File download failed:", err);
+    log.error("File download failed", err);
     throw err;
   }
 }
@@ -162,7 +201,7 @@ export async function processInboundFiles(
       const localPath = await downloadFile(url, tempDir, options);
       localPaths.push(localPath);
     } catch (err) {
-      console.error(`Failed to download ${url}:`, err);
+      log.error("inbound file download failed", { url, error: err });
     }
   }
 

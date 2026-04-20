@@ -1,4 +1,4 @@
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 import { Config } from "./config.js";
 
@@ -44,23 +44,24 @@ export interface SaveMessageOptions {
 
 export class MessageStore {
   private messagesDir: string;
-  
+  private initialized: Promise<void> | null = null;
+
   constructor(dataDir: string) {
     this.messagesDir = path.join(dataDir, 'messages');
-    if (!fs.existsSync(this.messagesDir)) {
-      fs.mkdirSync(this.messagesDir, { recursive: true });
-    }
-    
-    const groupDir = path.join(this.messagesDir, 'group');
-    const directDir = path.join(this.messagesDir, 'direct');
-    if (!fs.existsSync(groupDir)) {
-      fs.mkdirSync(groupDir, { recursive: true });
-    }
-    if (!fs.existsSync(directDir)) {
-      fs.mkdirSync(directDir, { recursive: true });
+    this.initialized = Promise.all([
+      fs.mkdir(this.messagesDir, { recursive: true }),
+      fs.mkdir(path.join(this.messagesDir, 'group'), { recursive: true }),
+      fs.mkdir(path.join(this.messagesDir, 'direct'), { recursive: true }),
+    ]).then(() => {});
+  }
+
+  private async whenReady(): Promise<void> {
+    if (this.initialized) {
+      await this.initialized;
+      this.initialized = null;
     }
   }
-  
+
   private getTodayDate(): string {
     const now = new Date();
     const year = now.getFullYear();
@@ -68,32 +69,32 @@ export class MessageStore {
     const day = String(now.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   }
-  
+
   private getGroupFilePath(roomJid: string, date: string): string {
     const safeRoomName = roomJid.replace(/[^a-zA-Z0-9@._-]/g, '_');
     return path.join(this.messagesDir, 'group', safeRoomName, `${date}.json`);
   }
-  
+
   private getDirectFilePath(jid: string): string {
     const safeJid = jid.replace(/[^a-zA-Z0-9@._-]/g, '_');
     return path.join(this.messagesDir, 'direct', `${safeJid}.json`);
   }
-  
-  private loadMessageFile(filePath: string): MessageFile {
-    if (!fs.existsSync(filePath)) {
-      return {
-        meta: {
-          created: new Date().toISOString(),
-          updated: new Date().toISOString(),
-          messageCount: 0
-        },
-        messages: []
-      };
-    }
+
+  private async loadMessageFile(filePath: string): Promise<MessageFile> {
     try {
-      const content = fs.readFileSync(filePath, 'utf8');
+      const content = await fs.readFile(filePath, 'utf8');
       return JSON.parse(content);
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          meta: {
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+            messageCount: 0
+          },
+          messages: []
+        };
+      }
       return {
         meta: {
           created: new Date().toISOString(),
@@ -104,28 +105,28 @@ export class MessageStore {
       };
     }
   }
-  
-  private saveMessageFile(filePath: string, data: MessageFile): void {
+
+  private async saveMessageFile(filePath: string, data: MessageFile): Promise<void> {
     const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    
+    await fs.mkdir(dir, { recursive: true });
+
     data.meta.updated = new Date().toISOString();
     data.meta.messageCount = data.messages.length;
-    
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
   }
-  
-  saveMessage(options: SaveMessageOptions): void {
+
+  async saveMessage(options: SaveMessageOptions): Promise<void> {
+    await this.whenReady();
+
     const timestamp = options.timestamp || Date.now();
     const messageId = `${timestamp}-${Math.random().toString(36).substring(2, 11)}`;
-    
+
     if (options.type === 'groupchat' && options.roomJid) {
       const date = this.getTodayDate();
       const filePath = this.getGroupFilePath(options.roomJid, date);
-      const data = this.loadMessageFile(filePath);
-      
+      const data = await this.loadMessageFile(filePath);
+
       const newMessage: MessageEntry = {
         id: messageId,
         direction: options.direction,
@@ -136,18 +137,18 @@ export class MessageStore {
         timestamp,
         accountId: options.accountId
       };
-      
+
       if (data.messages.length >= MAX_MESSAGES_PER_FILE) {
         data.messages.shift();
       }
-      
+
       data.messages.push(newMessage);
       data.meta.roomJid = options.roomJid;
-      this.saveMessageFile(filePath, data);
+      await this.saveMessageFile(filePath, data);
     } else {
       const filePath = this.getDirectFilePath(options.fromBareJid);
-      const data = this.loadMessageFile(filePath);
-      
+      const data = await this.loadMessageFile(filePath);
+
       const newMessage: MessageEntry = {
         id: messageId,
         direction: options.direction,
@@ -158,85 +159,94 @@ export class MessageStore {
         timestamp,
         accountId: options.accountId
       };
-      
+
       if (data.messages.length >= MAX_MESSAGES_PER_FILE) {
         data.messages.shift();
       }
-      
+
       data.messages.push(newMessage);
       data.meta.chatJid = options.fromBareJid;
-      this.saveMessageFile(filePath, data);
+      await this.saveMessageFile(filePath, data);
     }
   }
-  
-  getGroupchatMessages(roomJid: string, date?: string): MessageEntry[] {
+
+  async getGroupchatMessages(roomJid: string, date?: string): Promise<MessageEntry[]> {
+    await this.whenReady();
     const targetDate = date || this.getTodayDate();
     const filePath = this.getGroupFilePath(roomJid, targetDate);
-    const data = this.loadMessageFile(filePath);
+    const data = await this.loadMessageFile(filePath);
     return data.messages;
   }
-  
-  getDirectMessages(jid: string): MessageEntry[] {
+
+  async getDirectMessages(jid: string): Promise<MessageEntry[]> {
+    await this.whenReady();
     const filePath = this.getDirectFilePath(jid);
-    const data = this.loadMessageFile(filePath);
+    const data = await this.loadMessageFile(filePath);
     return data.messages;
   }
-  
-  getRecentDirectMessages(jid: string, limit: number = 50): MessageEntry[] {
-    const messages = this.getDirectMessages(jid);
+
+  async getRecentDirectMessages(jid: string, limit: number = 50): Promise<MessageEntry[]> {
+    const messages = await this.getDirectMessages(jid);
     return messages.slice(-limit);
   }
-  
-  getRecentGroupchatMessages(roomJid: string, limit: number = 50): MessageEntry[] {
-    const messages = this.getGroupchatMessages(roomJid);
+
+  async getRecentGroupchatMessages(roomJid: string, limit: number = 50): Promise<MessageEntry[]> {
+    const messages = await this.getGroupchatMessages(roomJid);
     return messages.slice(-limit);
   }
-  
-  getDirectChatJIDs(): string[] {
+
+  async getDirectChatJIDs(): Promise<string[]> {
+    await this.whenReady();
     const directDir = path.join(this.messagesDir, 'direct');
-    if (!fs.existsSync(directDir)) {
+
+    try {
+      const files = await fs.readdir(directDir);
+      return files.filter(f => f.endsWith('.json')).map(f => f.replace('.json', '_')).map(s => s.replace(/_/g, '.'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return [];
     }
-    
-    const files = fs.readdirSync(directDir).filter(f => f.endsWith('.json'));
-    return files.map(f => f.replace('.json', '_')).map(s => s.replace(/_/g, '.'));
   }
-  
-  getGroupChatRoomJIDs(): string[] {
+
+  async getGroupChatRoomJIDs(): Promise<string[]> {
+    await this.whenReady();
     const groupDir = path.join(this.messagesDir, 'group');
-    if (!fs.existsSync(groupDir)) {
+
+    try {
+      const rooms = await fs.readdir(groupDir);
+      return rooms.map(room => room.replace(/_/g, '.'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return [];
     }
-    
-    const rooms = fs.readdirSync(groupDir);
-    return rooms.map(room => room.replace(/_/g, '.'));
   }
-  
-  getGroupChatDates(roomJid: string): string[] {
+
+  async getGroupChatDates(roomJid: string): Promise<string[]> {
+    await this.whenReady();
     const safeRoomName = roomJid.replace(/[^a-zA-Z0-9@._-]/g, '_');
     const roomDir = path.join(this.messagesDir, 'group', safeRoomName);
-    if (!fs.existsSync(roomDir)) {
+
+    try {
+      const files = await fs.readdir(roomDir);
+      return files.filter(f => f.endsWith('.json')).map(f => f.replace('.json', '')).sort();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return [];
     }
-    
-    return fs.readdirSync(roomDir)
-      .filter(f => f.endsWith('.json'))
-      .map(f => f.replace('.json', ''))
-      .sort();
   }
-  
-  getStats(): { directChats: number; groupChats: number; totalMessages: number } {
-    const directJids = this.getDirectChatJIDs();
-    const groupRooms = this.getGroupChatRoomJIDs();
-    
+
+  async getStats(): Promise<{ directChats: number; groupChats: number; totalMessages: number }> {
+    const directJids = await this.getDirectChatJIDs();
+    const groupRooms = await this.getGroupChatRoomJIDs();
+
     let totalMessages = 0;
     for (const jid of directJids) {
-      totalMessages += this.getDirectMessages(jid).length;
+      totalMessages += (await this.getDirectMessages(jid)).length;
     }
     for (const room of groupRooms) {
-      totalMessages += this.getGroupchatMessages(room).length;
+      totalMessages += (await this.getGroupchatMessages(room)).length;
     }
-    
+
     return {
       directChats: directJids.length,
       groupChats: groupRooms.length,

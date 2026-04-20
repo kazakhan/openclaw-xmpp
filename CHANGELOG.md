@@ -5,6 +5,55 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.9] - 2026-04-06
+
+### Fixed
+- **CLI Message Command**: The `openclaw xmpp msg <jid> <message>` command now works correctly with OpenClaw 2026.4.x.
+
+#### Root Cause
+The CLI command was attempting to send messages via `openclaw message send --channel xmpp`, which spawns a subprocess that loads its own plugin registry. In OpenClaw 2026.4.x, the XMPP plugin wasn't being properly discovered/registered in this CLI subprocess context, resulting in "unsupported channel: xmpp" error.
+
+#### Changes
+- **`src/commands.ts`**:
+  - Changed message sending mechanism from spawning `openclaw message send` subprocess to using gateway RPC
+  - Added `sendViaGatewayRpc()` function that calls `callGatewayRpc("xmpp.sendMessage", { jid, message })`
+  - The CLI now communicates directly with the gateway instead of spawning a new CLI process
+
+- **`index.ts`**:
+  - Added new `xmpp.sendMessage` gateway method (lines 1125-1158) to handle message sending from CLI
+  - Gateway method detects groupchat vs direct messages and routes appropriately
+
+- **`src/gateway-client.ts`**:
+  - Made `callGatewayRpc()` function public (exported) so it can be used by commands.ts
+
+- **`openclaw.plugin.json`**:
+  - Updated manifest with proper channel format for OpenClaw 2026.4.x compatibility
+
+- **`package.json`**:
+  - Added new OpenClaw metadata structure with `channel`, `compat`, and `build` fields
+
+### Fixed
+- **Groupchat (MUC) Message Support**: The CLI command now correctly sends messages to groupchat rooms like `general@conference.kazakhan.com`.
+
+#### Root Cause
+The new `xmpp.sendMessage` gateway method only used `client.send()` which is for direct messages. Groupchat messages require `client.sendGroupchat()`.
+
+#### Changes
+- **`index.ts`** (xmpp.sendMessage gateway method):
+  - Added detection for groupchat JIDs (contains `@conference.`)
+  - Added detection for private messages in groupchat (contains `/` after conference domain)
+  - Use `sendGroupchat()` for public groupchat messages
+  - Use `send()` for direct messages and private messages in groupchat
+
+#### Example
+```bash
+# Direct message - works
+openclaw xmpp msg jamie@kazakhan.com "Hello"
+
+# Groupchat message - now works
+openclaw xmpp msg general@conference.kazakhan.com "Hello room"
+```
+
 ## [1.8.8] - 2026-03-02
 
 ### Added

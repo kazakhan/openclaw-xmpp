@@ -7,27 +7,46 @@ import { VCard } from "./vcard.js";
 import { parseWhiteboardMessage } from "./whiteboard.js";
 import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_SIZE } from "./shared/index.js";
 import { Config } from "./config.js";
+import { log } from "./lib/logger.js";
+import { child } from "./lib/logger.js";
+import { parseVCard } from "./lib/vcard-protocol.js";
+import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFileWithHTTPUpload, discoverUploadService } from "./lib/upload-protocol.js";
+
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 60000;
+const RECONNECT_BACKOFF_FACTOR = 2;
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
 let isRunning = false;
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void, onOnline?: (xmppClient: any) => void) {
+const xmppLog = child("xmpp");
+
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string) => void) {
     // Helper to get default resource/nick from JID local part
     const getDefaultResource = () => {
       const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
       return result;
     };
     
-    const getDefaultNick = () => {
+     const getDefaultNick = async () => {
        // Use local vCard value directly (set by CLI command)
-       const localNick = vcard?.getNickname?.();
+       const localNick = await vcard?.getNickname?.();
        const result = localNick || cfg.jid.split("@")[0] || "openclaw";
-       console.log(`[DEBUG] getDefaultNick: vcard=${localNick}, result=${result}`);
-       return result;
-    };
+        xmppLog.debug("getDefaultNick", { localNick, result });
+        return result;
+     };
+
+    async function shouldAcceptInvite(inviterJid: string, roomJid: string): Promise<boolean> {
+      const bareInviter = inviterJid.split('/')[0];
+      const bareRoom = roomJid.split('/')[0];
+      if (await contacts.isAdmin(bareInviter)) return true;
+      const autoJoinRooms: string[] = cfg?.autoJoinRooms || cfg?.rooms || [];
+      if (autoJoinRooms.includes(bareRoom)) return true;
+      return false;
+    }
      
-    debugLog(`Starting XMPP connection to ${cfg?.service}`);
+     debugLog(`Starting XMPP connection to ${cfg?.service}`);
     debugLog(`XMPP config: jid=${cfg?.jid}, domain=${cfg?.domain}`);
    
    // Lazy load @xmpp/client module
@@ -64,117 +83,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       return `${room}@conference.${cfg.domain}`;
     };
     
-    // vCard server query helpers
-    const parseVCardXml = (vcardEl: any): any => {
-      const data: any = {};
-      if (!vcardEl) return data;
-      
-      // Simple fields
-      const fn = vcardEl.getChild('FN');
-      const nickname = vcardEl.getChild('NICKNAME');
-      const url = vcardEl.getChild('URL');
-      const desc = vcardEl.getChild('DESC');
-      const bday = vcardEl.getChild('BDAY');
-      const title = vcardEl.getChild('TITLE');
-      const role = vcardEl.getChild('ROLE');
-      const tz = vcardEl.getChild('TZ');
-      const photo = vcardEl.getChild('PHOTO');
-      
-      if (fn) data.fn = fn.text();
-      if (nickname) data.nickname = nickname.text();
-      if (url) data.url = url.text();
-      if (desc) data.desc = desc.text();
-      if (bday) data.bday = bday.text();
-      if (title) data.title = title.text();
-      if (role) data.role = role.text();
-      if (tz) data.tz = tz.text();
-      if (photo) {
-        const extval = photo.getChild('EXTVAL');
-        if (extval) data.avatarUrl = extval.text();
-      }
-      
-      // Structured name (N)
-      const n = vcardEl.getChild('N');
-      if (n) {
-        data.n = {
-          family: n.getChildText('FAMILY'),
-          given: n.getChildText('GIVEN'),
-          middle: n.getChildText('MIDDLE'),
-          prefix: n.getChildText('PREFIX'),
-          suffix: n.getChildText('SUFFIX')
-        };
-      }
-      
-      // Phone numbers (TEL) - multi-value
-      const telElements = vcardEl.getChildren('TEL');
-      if (telElements && telElements.length > 0) {
-        data.tel = telElements.map((tel: any) => {
-          const types: string[] = [];
-          if (tel.getChild('HOME')) types.push('HOME');
-          if (tel.getChild('WORK')) types.push('WORK');
-          if (tel.getChild('VOICE')) types.push('VOICE');
-          if (tel.getChild('FAX')) types.push('FAX');
-          if (tel.getChild('CELL')) types.push('CELL');
-          if (tel.getChild('VIDEO')) types.push('VIDEO');
-          if (tel.getChild('PAGER')) types.push('PAGER');
-          if (tel.getChild('MSG')) types.push('MSG');
-          if (tel.getChild('PREF')) types.push('PREF');
-          const number = tel.getChild('NUMBER');
-          return { types, number: number ? number.text() : '' };
-        });
-      }
-      
-      // Emails (EMAIL) - multi-value
-      const emailElements = vcardEl.getChildren('EMAIL');
-      if (emailElements && emailElements.length > 0) {
-        data.email = emailElements.map((email: any) => {
-          const types: string[] = [];
-          if (email.getChild('HOME')) types.push('HOME');
-          if (email.getChild('WORK')) types.push('WORK');
-          if (email.getChild('INTERNET')) types.push('INTERNET');
-          if (email.getChild('PREF')) types.push('PREF');
-          const userid = email.getChild('USERID');
-          return { types, userid: userid ? userid.text() : '' };
-        });
-      }
-      
-      // Addresses (ADR) - multi-value
-      const adrElements = vcardEl.getChildren('ADR');
-      if (adrElements && adrElements.length > 0) {
-        data.adr = adrElements.map((adr: any) => {
-          const types: string[] = [];
-          if (adr.getChild('HOME')) types.push('HOME');
-          if (adr.getChild('WORK')) types.push('WORK');
-          if (adr.getChild('POSTAL')) types.push('POSTAL');
-          if (adr.getChild('PARCEL')) types.push('PARCEL');
-          if (adr.getChild('PREF')) types.push('PREF');
-          return {
-            types,
-            pobox: adr.getChildText('POBOX'),
-            extadd: adr.getChildText('EXTADD'),
-            street: adr.getChildText('STREET'),
-            locality: adr.getChildText('LOCALITY'),
-            region: adr.getChildText('REGION'),
-            pcode: adr.getChildText('PCODE'),
-            ctry: adr.getChildText('CTRY')
-          };
-        });
-      }
-      
-      // Organization (ORG)
-      const org = vcardEl.getChild('ORG');
-      if (org) {
-        const orgname = org.getChild('ORGNAME');
-        const orgunit = org.getChild('ORGUNIT');
-        data.org = {
-          orgname: orgname ? orgname.text() : undefined,
-          orgunit: orgunit ? [orgunit.text()] : undefined
-        };
-      }
-      
-      return data;
-    };
-    
+    // vCard server query helpers (parseVCard imported from vcard-protocol)
+
     const queryVCardFromServer = async (targetJid: string): Promise<any> => {
       const id = `vc-get-${Date.now()}`;
       let response: any = null;
@@ -213,11 +123,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       
       if (response) {
         const vcardEl = response.getChild('vCard');
-        console.log(`[VCARD QUERY] Full vCard XML: ${vcardEl?.toString()}`);
+        xmppLog.debug("vCard query response received");
         if (vcardEl) {
-          const data = parseVCardXml(vcardEl);
+          const data = parseVCard(vcardEl);
           debugLog(`vCard parsed: fn=${data.fn}, nickname=${data.nickname}, avatarUrl=${data.avatarUrl}`);
-          console.log(`[VCARD QUERY] Parsed data: fn=${data.fn}, avatarUrl=${data.avatarUrl}`);
           return data;
         }
       }
@@ -236,14 +145,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       
       // Wait for IQ response
       const handler = (stanza: any) => {
-        console.log(`[VCARD UPDATE] Received stanza: id=${stanza.attrs.id}, type=${stanza.attrs.type}, from=${stanza.attrs.from}`);
+        xmppLog.debug("vCard update stanza", { id: stanza.attrs.id, type: stanza.attrs.type });
         if (stanza.attrs.id === vcardId) {
           if (stanza.attrs.type === 'result') {
-            console.log(`[VCARD UPDATE] Success!`);
             updateSuccess = true;
           } else if (stanza.attrs.type === 'error') {
-            console.log(`[VCARD UPDATE] Error: ${stanza.toString()}`);
-            updateSuccess = false;
+            xmppLog.error("vCard update error");
           }
           responseReceived = true;
         }
@@ -266,7 +173,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       );
       
       try {
-        console.log(`[VCARD UPDATE] Sending vCard update with id ${vcardId}`);
+        xmppLog.debug("vCard update sending", { id: vcardId });
         await xmpp.send(vcardSet);
         
         // Wait for response with timeout
@@ -277,13 +184,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         }
         
         if (!responseReceived) {
-          console.log(`[VCARD UPDATE] Timeout waiting for response`);
+          xmppLog.warn("vCard update timeout");
         }
         
-        console.log(`[VCARD UPDATE] Final result: ${updateSuccess}`);
         return updateSuccess;
       } catch (err) {
-        console.error("[VCARD UPDATE] Failed to send vCard update:", err);
+        xmppLog.error("vCard update send failed", err);
         return false;
       } finally {
         xmpp.off('stanza', handler);
@@ -292,37 +198,52 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
 
   xmpp.on("error", (err: any) => {
     log.error("XMPP error", err);
-    console.error("XMPP error details:", err);
+    xmppLog.error("connection error", err);
   });
 
   xmpp.on("offline", () => {
-    debugLog("XMPP went offline");
+    log.warn("XMPP went offline, scheduling reconnect");
     isRunning = false;
-    // Cleanup intervals
-    if (ibbCleanupInterval) {
-      clearInterval(ibbCleanupInterval);
-    }
+    if (ibbCleanupInterval) { clearInterval(ibbCleanupInterval); }
+    scheduleReconnect(xmpp);
   });
 
+   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = 0;
+
+  function scheduleReconnect(client: any): void {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    const delay = Math.min(RECONNECT_BASE_MS * Math.pow(RECONNECT_BACKOFF_FACTOR, reconnectAttempts), RECONNECT_MAX_MS);
+    log.info("reconnect scheduled", { attempt: reconnectAttempts + 1, delayMs: delay });
+    reconnectTimer = setTimeout(async () => {
+      reconnectAttempts++;
+      try { await client.start(); } catch (err) { log.error("reconnect failed", err); scheduleReconnect(client); }
+    }, delay);
+  }
+
+  function clearReconnect(): void {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    reconnectAttempts = 0;
+  }
+
    xmpp.on("online", async (address: any) => {
-      log.info("XMPP online as", address.toString());
+    log.info("XMPP online as", address.toString());
+    clearReconnect();
       debugLog("XMPP connected successfully");
  
       // Send initial presence to appear online
       try {
         const presence = xml("presence");
         await xmpp.send(presence);
-        console.log("✅ Presence sent - should appear online now as", address.toString());
         log.info("Presence sent");
       } catch (err) {
-        console.error("❌ Failed to send presence:", err);
+        xmppLog.error("presence failed", err);
         log.error("Failed to send presence", err);
       }
  
       // Register vCard with the XMPP server so clients can query it
       try {
-       console.log("📝 Registering vCard with XMPP server...");
-       const vcardData = vcard.getData();
+       const vcardData = await vcard.getData();
        const fn = vcardData.fn || `OpenClaw (${cfg.jid?.split('@')[0]})`;
        const nickname = vcardData.nickname || cfg.jid?.split('@')[0] || "openclaw";
        const url = vcardData.url || "https://github.com/anomalyco/openclaw";
@@ -338,11 +259,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          )
        );
 
-       await xmpp.send(vcardSet);
-        console.log("✅ vCard registered with server (id=" + vcardId + ") - clients can now query it");
-        log.info("vCard registered with server");
+        await xmpp.send(vcardSet);
+         log.info("vCard registered with server");
       } catch (err) {
-       console.error("❌ Failed to register vCard with server:", err);
+        xmppLog.error("vCard register failed", err);
        log.error("Failed to register vCard", err);
       }
 
@@ -350,7 +270,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         try {
           onOnline(xmppClient);
         } catch (err) {
-          console.error("❌ Error in onOnline callback:", err);
+          xmppLog.error("online callback error", err);
           log.error("Error in onOnline callback", err);
         }
       }
@@ -363,9 +283,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      const cleanupIbbSessions = () => {
        const now = Date.now();
        for (const [sid, session] of ibbSessions.entries()) {
-         if (now - session.createdAt > Config.IBB_SESSION_TIMEOUT_MS) {
-           console.log(`[IBB] Cleaning up stale session: ${sid}`);
-           ibbSessions.delete(sid);
+          if (now - session.createdAt > Config.IBB_SESSION_TIMEOUT_MS) {
+            ibbSessions.delete(sid);
          }
        }
      };
@@ -381,7 +300,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     const vcard = new VCard(cfg.dataDir);
     // Update vCard with config defaults if fields are not set
     if (cfg.vcard) {
-      const vcardData = vcard.getData();
+      const vcardData = await vcard.getData();
       const updates: any = {};
       if (cfg.vcard.fn && !vcardData.fn) updates.fn = cfg.vcard.fn;
       if (cfg.vcard.nickname && !vcardData.nickname) updates.nickname = cfg.vcard.nickname;
@@ -389,8 +308,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       if (cfg.vcard.desc && !vcardData.desc) updates.desc = cfg.vcard.desc;
       if (cfg.vcard.avatarUrl && !vcardData.avatarUrl) updates.avatarUrl = cfg.vcard.avatarUrl;
       if (Object.keys(updates).length > 0) {
-        vcard.update(updates);
-        console.log("vCard updated with config defaults:", updates);
+        await vcard.update(updates);
       }
     }
 
@@ -407,44 +325,44 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         // Handle subscription requests (not MUC)
         if (type === "subscribe") {
           const bareFrom = from.split('/')[0];
-          if (contacts.exists(bareFrom)) {
-            // Auto-approve whitelisted contacts
+          if (await contacts.isAdmin(bareFrom)) {
             const subscribed = xml("presence", { to: from, type: "subscribed" });
             await xmpp.send(subscribed);
-            console.log(`✅ Auto-approved subscription for whitelisted contact: ${bareFrom}`);
+            xmppLog.debug("presence", { type: "subscribed-auto-admin", from: bareFrom });
           } else {
-            console.log(`📨 Subscription request from ${bareFrom} - not whitelisted, awaiting admin approval`);
+            const unsubscribed = xml("presence", { to: from, type: "unsubscribed" });
+            await xmpp.send(unsubscribed);
+            xmppLog.warn("subscription rejected (non-admin)", { from: bareFrom });
           }
           return;
         }
       
        // Handle other subscription types
-      if (type === "subscribed" || type === "unsubscribe" || type === "unsubscribed") {
-        console.log(`📨 Received ${type} from ${from}`);
-        // Add to contacts if subscribed
+       if (type === "subscribed" || type === "unsubscribe" || type === "unsubscribed") {
+         xmppLog.debug("presence", { type, from });
+         // Add to contacts if subscribed
         if (type === "subscribed") {
           const bareFrom = from.split('/')[0];
-          if (!contacts.exists(bareFrom)) {
-            contacts.add(bareFrom);
-            console.log(`📝 Added ${bareFrom} to contacts after subscription approval`);
+          if (!(await contacts.exists(bareFrom))) {
+            await contacts.add(bareFrom);
+            xmppLog.debug("contact added", { jid: bareFrom });
           }
         }
         return;
       }
       
-      // Handle presence probes
-      if (type === "probe") {
-        console.log(`🔍 Received presence probe from ${from}`);
-        // Respond with available presence
-        try {
-          const presence = xml("presence", { to: from });
-          await xmpp.send(presence);
-          console.log(`✅ Sent presence response to probe from ${from}`);
-        } catch (err) {
-          console.error(`❌ Failed to respond to presence probe from ${from}:`, err);
-        }
-        return;
-      }
+       // Handle presence probes
+       if (type === "probe") {
+         xmppLog.debug("presence", { type: "probe", from });
+         // Respond with available presence
+         try {
+           const presence = xml("presence", { to: from });
+           await xmpp.send(presence);
+         } catch (err) {
+           xmppLog.error("presence probe response failed", err);
+         }
+         return;
+       }
       
       // Check for MUC status codes
       const xElement = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
@@ -452,37 +370,34 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         const statusElements = xElement.getChildren('status');
         for (const status of statusElements) {
           const code = status.attrs.code;
-          console.log(`MUC status code ${code} for room ${room}, nick ${nick}`);
+          xmppLog.debug("muc", { room, nick, code });
           // Common MUC status codes:
           // 201: Room created
           // 210: Room is being configured
           // 100: User's presence in room
           // 110: Self-presence (our own join)
           if (code === "201") {
-            console.log(`🏗️ Room ${room} was created`);
             roomsPendingConfig.add(room);
           } else if (code === "210") {
-            console.log(`⚙️ Room ${room} needs configuration`);
             roomsPendingConfig.add(room);
           } else if (code === "110") {
-            console.log(`✅ Successfully joined room ${room} as ${nick}`);
             roomsPendingConfig.delete(room);
           }
         }
       }
       
       if (type === "unavailable") {
-        console.log(`👋 User left room ${room}: ${nick} (${from})`);
+        xmppLog.debug("muc", { room, nick, action: "leave" });
         // Check if bot was removed from room (kicked or left)
         const botNick = roomNicks.get(room);
         if (nick && nick === botNick) {
-          console.log(`🤖 Bot was removed from room ${room}, cleaning up...`);
+          xmppLog.debug("muc", { room, action: "bot-removed" });
           joinedRooms.delete(room);
           roomNicks.delete(room);
         }
       } else {
-        console.log(`👋 User joined room ${room}: ${nick} (${from})`);
-      }
+        xmppLog.debug("muc", { room, nick, action: "join" });
+    }
     }
     
     if (stanza.is("iq")) {
@@ -519,9 +434,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             }
             
             if (supportedMethod === "http://jabber.org/protocol/ibb") {
-              console.log(`Accepting SI file transfer with IBB: ${filename}`);
+              xmppLog.debug("fileTransfer", { action: "accept-si", filename });
               if (size > MAX_FILE_SIZE) {
-                console.log(`[SECURITY] Rejected file transfer: ${filename} (${size} bytes) exceeds ${MAX_FILE_SIZE} bytes limit`);
+                log.warn("Rejected oversized file transfer", { filename, size, max: MAX_FILE_SIZE });
                 const errorIq = xml("iq", { to: from, type: "error", id },
                   xml("error", { type: "modify" },
                     xml("file-too-large", { xmlns: "urn:xmpp:file:too-large" }),
@@ -534,7 +449,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               // Capture session ID from SI element
               const sid = si.attrs.sid;
               if (!sid) {
-                console.log("No SID in SI, rejecting");
+                xmppLog.debug("fileTransfer", { action: "reject-no-sid" });
                 const errorIq = xml("iq", { to: from, type: "error", id },
                   xml("error", { type: "cancel" },
                     xml("bad-request", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }),
@@ -545,24 +460,25 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 return;
               }
               
-               // Store IBB session
-               ibbSessions.set(sid, {
-                 sid,
-                 from,
-                 filename,
-                 size,
-                 data: Buffer.alloc(0),
-                 received: 0,
-                 createdAt: Date.now()
-               });
+               // Store IBB session - ensure from is a valid string
+                const fromJid = typeof from === 'string' ? from : String(from);
+                ibbSessions.set(sid, {
+                  sid,
+                  from: fromJid,
+                  filename,
+                  size,
+                  data: Buffer.alloc(0),
+                  received: 0,
+                  createdAt: Date.now()
+                });
               
               // Accept the SI request
               const acceptIq = xml("iq", { to: from, type: "result", id });
               await xmpp.send(acceptIq);
-              console.log(`SI session ${sid} accepted, waiting for IBB open`);
+              xmppLog.debug("fileTransfer", { action: "si-accepted", sid, filename });
             } else {
               // No supported method, reject
-              console.log(`No supported stream method, rejecting SI transfer`);
+              xmppLog.debug("fileTransfer", { action: "reject-no-method" });
               const errorIq = xml("iq", { to: from, type: "error", id },
                 xml("error", { type: "cancel" },
                   xml("feature-not-implemented", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }),
@@ -580,8 +496,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        if (ibbOpen) {
          const sid = ibbOpen.attrs.sid;
          const session = ibbSessions.get(sid);
-         if (!session) {
-           console.log(`Unknown IBB session ${sid}, rejecting`);
+          if (!session) {
+            xmppLog.debug("ibb", { action: "reject-unknown-session", sid });
            const errorIq = xml("iq", { to: from, type: "error", id },
              xml("error", { type: "cancel" },
                xml("item-not-found", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
@@ -592,8 +508,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          }
          // Accept open
          const resultIq = xml("iq", { to: from, type: "result", id });
-         await xmpp.send(resultIq);
-         console.log(`IBB session ${sid} opened for file ${session.filename}`);
+          await xmpp.send(resultIq);
+          xmppLog.debug("ibb", { action: "opened", sid, filename: session.filename });
          return;
        }
        
@@ -601,8 +517,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        if (ibbData) {
          const sid = ibbData.attrs.sid;
          const session = ibbSessions.get(sid);
-         if (!session) {
-           console.log(`Unknown IBB session ${sid} for data, rejecting`);
+          if (!session) {
+            xmppLog.debug("ibb", { action: "reject-unknown-data", sid });
            const errorIq = xml("iq", { to: from, type: "error", id },
              xml("error", { type: "cancel" },
                xml("item-not-found", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
@@ -614,16 +530,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          const base64Data = ibbData.getText();
          try {
            const chunk = Buffer.from(base64Data, 'base64');
-           session.data = Buffer.concat([session.data, chunk]);
-           session.received += chunk.length;
-           console.log(`IBB session ${sid} received ${chunk.length} bytes, total ${session.received}/${session.size}`);
+            session.data = Buffer.concat([session.data, chunk]);
+            session.received += chunk.length;
+            xmppLog.debug("ibb", { sid, received: session.received, total: session.size });
            // Acknowledge data
            const resultIq = xml("iq", { to: from, type: "result", id });
            await xmpp.send(resultIq);
            
              // If we've received all data, close session and process file
-             if (session.size > 0 && session.received >= session.size) {
-               console.log(`File ${session.filename} received completely (${session.received} bytes)`);
+              if (session.size > 0 && session.received >= session.size) {
+                xmppLog.debug("ibb", { action: "complete", sid, filename: session.filename, bytes: session.received });
                // Save file to downloads directory with path traversal protection
                const tempDir = path.join(cfg.dataDir, 'downloads');
                if (!fs.existsSync(tempDir)) {
@@ -632,19 +548,20 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                
                // Sanitize filename from sender using validator
                let safeFilename = validators.sanitizeFilename(session.filename);
-               if (!validators.isSafePath(safeFilename, tempDir)) {
-                 safeFilename = `file_${Date.now()}_${safeFilename}`;
-                 console.log(`[SECURITY] IBB: Rejected unsafe filename, using: ${safeFilename}`);
+                if (!validators.isSafePath(safeFilename, tempDir)) {
+                  safeFilename = `file_${Date.now()}_${safeFilename}`;
+                }
+                
+                 const filePath = path.join(tempDir, safeFilename);
+                await fs.promises.writeFile(filePath, session.data);
+                ibbSessions.delete(sid);
+               // Notify about incoming file
+               if (onFileReceived) {
+                 onFileReceived(filePath, session.filename, session.from);
                }
-               
-               const filePath = path.join(tempDir, safeFilename);
-              await fs.promises.writeFile(filePath, session.data);
-              console.log(`File saved to ${filePath}`);
-              ibbSessions.delete(sid);
-              // TODO: Notify about incoming file
-            }
-         } catch (err) {
-           console.error(`Error processing IBB data:`, err);
+             }
+          } catch (err) {
+            xmppLog.error("IBB data error", err);
            const errorIq = xml("iq", { to: from, type: "error", id },
              xml("error", { type: "cancel" },
                xml("bad-request", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
@@ -660,7 +577,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           const sid = ibbClose.attrs.sid;
           const session = ibbSessions.get(sid);
           if (session) {
-             console.log(`IBB session ${sid} closed, received ${session.received} bytes`);
+              xmppLog.debug("ibb", { action: "closed", sid, received: session.received });
              // Save file if we have data with path traversal protection
              if (session.received > 0) {
                const tempDir = path.join(cfg.dataDir, 'downloads');
@@ -670,16 +587,18 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                
                // Sanitize filename from sender using validator
                let safeFilename = validators.sanitizeFilename(session.filename);
-               if (!validators.isSafePath(safeFilename, tempDir)) {
-                 safeFilename = `file_${Date.now()}_${safeFilename}`;
-                 console.log(`[SECURITY] IBB Close: Rejected unsafe filename, using: ${safeFilename}`);
-               }
-               
-               const filePath = path.join(tempDir, safeFilename);
-               await fs.promises.writeFile(filePath, session.data);
-               console.log(`File saved to ${filePath}`);
-             }
-             ibbSessions.delete(sid);
+                if (!validators.isSafePath(safeFilename, tempDir)) {
+                  safeFilename = `file_${Date.now()}_${safeFilename}`;
+                }
+                
+                 const filePath = path.join(tempDir, safeFilename);
+                await fs.promises.writeFile(filePath, session.data);
+                // Notify about incoming file
+                if (onFileReceived) {
+                  onFileReceived(filePath, session.filename, session.from);
+                }
+              }
+              ibbSessions.delete(sid);
            }
            const resultIq = xml("iq", { to: from, type: "result", id });
            await xmpp.send(resultIq);
@@ -690,7 +609,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           const vcardElement = stanza.getChild("vCard", "vcard-temp");
           if (vcardElement) {
             const targetJid = to || from;
-            console.log(`vCard request from ${from}, target: ${targetJid}, type: ${type}`);
+            xmppLog.debug("vCard request", { from, target: targetJid, type });
 
             // Check if this is for the bot's JID
             const botBareJid = cfg.jid?.split('/')[0];
@@ -701,10 +620,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               if (isForBot) {
                 // Respond with bot's vCard
                 const localPart = cfg?.jid?.split("@")[0] || "openclaw";
-                const fn = vcard.getFN() || `OpenClaw (${localPart})`;
-                const nickname = vcard.getNickname() || localPart;
-                const url = vcard.getUrl() || "https://github.com/anomalyco/openclaw";
-                const desc = vcard.getDesc() || "OpenClaw XMPP Plugin - AI Assistant";
+                const fn = await vcard.getFN() || `OpenClaw (${localPart})`;
+                const nickname = await vcard.getNickname() || localPart;
+                const url = await vcard.getUrl() || "https://github.com/anomalyco/openclaw";
+                const desc = await vcard.getDesc() || "OpenClaw XMPP Plugin - AI Assistant";
 
                 const vcardResponse = xml("iq", { to: from, type: "result", id },
                   xml("vCard", { xmlns: "vcard-temp" },
@@ -715,10 +634,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   )
                 );
                 await xmpp.send(vcardResponse);
-                console.log(`Sent bot vCard response to ${from}`);
+                xmppLog.debug("vCard response sent", { to: from });
               } else {
                 // Forward request to server for user vCard
-                console.log(`Forwarding vCard GET for ${targetJid} to server`);
+                 xmppLog.debug("vCard forward", { target: targetJid });
                 const forwardIq = xml("iq", { to: targetJid, type: "get", id }, stanza.children);
                 await xmpp.send(forwardIq);
               }
@@ -727,7 +646,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               // vCard SET from user - this is for storing on the server
               // The user's XMPP client should handle this directly
               // But if it comes to us, we just acknowledge it (we don't store user vCards)
-              console.log(`vCard SET from ${from} - user should update via their XMPP client`);
+               xmppLog.debug("vCard set ignored", { from });
               const resultIq = xml("iq", { to: from, type: "result", id });
               await xmpp.send(resultIq);
               return;
@@ -744,11 +663,14 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
               xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
               xml("feature", { var: "vcard-temp" }),
-              xml("feature", { var: "http://jabber.org/protocol/muc" })
+              xml("feature", { var: "http://jabber.org/protocol/muc" }),
+              xml("feature", { var: "http://jabber.org/protocol/si/profile/file-transfer" }),
+              xml("feature", { var: "http://jabber.org/protocol/bytestreams" }),
+              xml("feature", { var: "http://jabber.org/protocol/ibb" })
             )
           );
           await xmpp.send(discoResponse);
-          console.log(`[DISCO] Sent disco#info to ${from}`);
+          xmppLog.debug("disco#info sent", { to: from });
           return;
         }
 
@@ -760,11 +682,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     }
     
     if (stanza.is("message")) {
-      // DEBUG stanza for invite: Log raw debugging
-      console.log(`[RAW STANZA] from=${stanza.attrs.from}, type=${stanza.attrs.type}`);
-      console.log(`[RAW STANZA XML] ${stanza.toString()}`);
-      
-      const from = stanza.attrs.from;
+       const from = stanza.attrs.from;
       const to = stanza.attrs.to;
       const messageType = stanza.attrs.type || "chat";
       
@@ -775,54 +693,43 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         if (inviteElement) {
           const inviter = inviteElement.attrs.from || from.split('/')[0];
           const reason = inviteElement.getChildText('reason') || 'No reason given';
-          console.log(`🤝 Received MUC invite to room ${from} from ${inviter}: ${reason}`);
           
-          // Auto-accept invite by joining the room
+           // Auto-accept invite by joining the room
           try {
             const room = from.split('/')[0];
-            const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+            const presence = xml("presence", { to: `${room}/${await getDefaultNick()}` },
               xml("x", { xmlns: "http://jabber.org/protocol/muc" },
                 xml("history", { maxstanzas: "0" })
               )
             );
             await xmpp.send(presence);
             joinedRooms.add(room);
-            roomNicks.set(room, getDefaultNick());
-            console.log(`✅ Auto-accepted invite to room ${room}`);
+            roomNicks.set(room, await getDefaultNick());
+            log.info("autoJoin", { room });
           } catch (err) {
-            console.error(`❌ Failed to accept invite to room ${from}:`, err);
+            xmppLog.error("invite accept failed", err);
           }
           return;
         }
       }
       
-      // DEBUG: Check all x elements in stanza
-      const allXElements = stanza.getChildren('x');
-      console.log(`[DEBUG] Message from=${from}, type=${messageType}, xElements count=${allXElements?.length || 0}`);
-      for (const xel of allXElements || []) {
-        console.log(`[DEBUG] Found x element with xmlns: ${xel.attrs.xmlns}`);
-      }
-      
       // Check for jabber:x:conference invites
       const conferenceElement = stanza.getChild('x', 'jabber:x:conference');
-      console.log(`[DEBUG] jabber:x:conference element found: ${!!conferenceElement}`);
-      if (conferenceElement) {
-        console.log(`[DEBUG] conferenceElement attrs:`, conferenceElement.attrs);
-        console.log(`[DEBUG] conferenceElement children:`, conferenceElement.children);
-      }
       
       if (conferenceElement) {
         const room = conferenceElement.attrs.jid as string;
         const password = conferenceElement.attrs.password as string;
         const reason = conferenceElement.attrs.reason as string || 'No reason given';
-        console.log(`[DEBUG] Parsed invite - room=${room}, password=${password}, reason=${reason}`);
         
         if (room) {
-          console.log(`🤝 Received jabber:x:conference invite to room ${room}: ${reason}`);
+          if (!(await shouldAcceptInvite(from, room))) {
+            log.warn("Rejected conference invite from non-admin", { from });
+            return;
+          }
           
-          // Auto-accept invite by joining the room
+           // Auto-accept invite by joining the room
           try {
-            const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+            const presence = xml("presence", { to: `${room}/${await getDefaultNick()}` },
               xml("x", { xmlns: "http://jabber.org/protocol/muc" },
                 password ? xml("password", {}, password) : undefined,
                 xml("history", { maxstanzas: "0" })
@@ -830,10 +737,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             );
             await xmpp.send(presence);
             joinedRooms.add(room);
-            roomNicks.set(room, getDefaultNick());
-            console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
+            roomNicks.set(room, await getDefaultNick());
+            log.info("autoJoin", { room });
           } catch (err) {
-            console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
+            xmppLog.error("conference invite accept failed", err);
           }
           return;
         }
@@ -844,13 +751,11 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       if (mucOwnerX) {
         const xDataForm = mucOwnerX.getChild('x', 'jabber:x:data');
         if (xDataForm && xDataForm.attrs.type === 'form') {
-          console.log(`📋 Received room configuration form for room ${from}`);
           
-          // Try to auto-configure room by submitting the form with default values
+           // Try to auto-configure room by submitting the form with default values
           try {
             // Create a submitted form with same fields but empty values (use defaults)
             const formId = xDataForm.getChildText('title') || 'Room Configuration';
-            console.log(`Auto-configuring room: ${formId}`);
             
             // Build a submitted form
             const submittedForm = xml("x", { xmlns: "jabber:x:data", type: "submit" });
@@ -871,77 +776,53 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               )
             );
             await xmpp.send(configMessage);
-            console.log(`✅ Sent room configuration submission for ${from}`);
             roomsPendingConfig.delete(from.split('/')[0]);
           } catch (err) {
-            console.error(`❌ Failed to send room configuration:`, err);
+            xmppLog.error("room config failed", err);
           }
           return;
         }
       }
-       // DEBUG: Log raw stanza for file messages
-       console.log(`[DEBUG FILE] ==== MESSAGE STANZA DEBUG ====`);
-       console.log(`[DEBUG FILE] from=${from}, type=${messageType}`);
-       console.log(`[DEBUG FILE] body=${stanza.getChildText("body")?.substring(0, 200)}`);
-       console.log(`[DEBUG FILE] raw stanza: ${stanza.toString()}`);
-       
-       // DEBUG: Log all children
-       const allChildren = stanza.children || [];
-       console.log(`[DEBUG FILE] Total children: ${allChildren.length}`);
-       for (const child of allChildren) {
-         if (typeof child === 'object' && child.name) {
-           console.log(`[DEBUG FILE] Child: name=${child.name}, xmlns=${child.attrs?.xmlns || 'none'}`);
-         }
-       }
-       
        // Check for file attachments (XEP-0066: Out of Band Data)
        const oobElement = stanza.getChild('x', 'jabber:x:oob');
-       console.log(`[DEBUG FILE] OOB element found: ${oobElement ? 'YES' : 'NO'}`);
        
        let mediaUrls: string[] = [];
        let mediaPaths: string[] = [];
        
-       if (oobElement) {
-         const url = oobElement.getChildText('url');
-         console.log(`[DEBUG FILE] OOB URL: ${url || 'none'}`);
-         if (url) {
-           mediaUrls.push(url);
-           console.log(`[DEBUG FILE] Detected file attachment: ${url}`);
-           
-            // Download file locally for agent processing
-            try {
-              const localPaths = await processInboundFiles([url], cfg.dataDir);
+        if (oobElement) {
+          const url = oobElement.getChildText('url');
+          if (url) {
+            mediaUrls.push(url);
+            
+             // Download file locally for agent processing
+             try {
+               const localPaths = await processInboundFiles([url], cfg.dataDir);
              mediaPaths = localPaths;
-             console.log(`[DEBUG FILE] Downloaded file to local paths: ${localPaths.join(', ')}`);
            } catch (err) {
-             console.error("[DEBUG FILE] Failed to download file:", err);
+             xmppLog.error("file download failed", err);
            }
          }
        }
        
-       // DEBUG: Check for other common file sharing namespaces
+       // Check for other common file sharing namespaces
        const sfsElement = stanza.getChild('file-sharing', 'urn:xmpp:sfs:0');
-       console.log(`[DEBUG FILE] XEP-0447 (SFS) found: ${sfsElement ? 'YES' : 'NO'}`);
-       
        const simsElement = stanza.getChild('media-sharing', 'urn:xmpp:sims:1');
-       console.log(`[DEBUG FILE] XEP-0385 (SIMS) found: ${simsElement ? 'YES' : 'NO'}`);
-       
        const jingleFile = stanza.getChild('file', 'http://jabber.org/protocol/si/profile/file-transfer');
-       console.log(`[DEBUG FILE] XEP-0234 (File Transfer) found: ${jingleFile ? 'YES' : 'NO'}`);
-       
        const bobElement = stanza.getChild('data', 'urn:xmpp:bob');
-       console.log(`[DEBUG FILE] XEP-0231 (BoB) found: ${bobElement ? 'YES' : 'NO'}`);
-       
-       console.log(`[DEBUG FILE] ==== END DEBUG ====`);
          
          // Extract body and subject from message
-         const body = stanza.getChildText("body");
-         const subject = stanza.getChildText("subject");
+          const body = stanza.getChildText("body");
+          const subject = stanza.getChildText("subject");
+
+          if (body && body.length > Config.MAX_MESSAGE_BODY_SIZE) {
+            log.warn("Dropping oversized message", { size: body.length, max: Config.MAX_MESSAGE_BODY_SIZE });
+            return;
+          }
          
          // Check for room subject change (MUC subject message)
          const isGroupChat = messageType === "groupchat";
-         if (isGroupChat && subject && !body) {
-           console.log(`📝 Room subject changed to: ${subject}`);
+          if (isGroupChat && subject && !body) {
+            xmppLog.debug("room subject", { subject });
            // Forward subject as a special message to the agent
            const botNick = roomNicks.get(from.split('/')[0]);
            onMessage(from.split('/')[0], `[Room Subject: ${subject}]`, { type: messageType, room: from.split('/')[0], nick: '', botNick, roomSubject: subject, mediaUrls: [], mediaPaths: [] });
@@ -953,9 +834,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         
           // Check for jabber:x:conference invites in body (may be escaped)
           if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
-            console.log(`🤝 Checking for jabber:x:conference invite in body: ${body.substring(0, 100)}`);
             
-            // Extract invite attributes (handle both escaped and unescaped)
+             // Extract invite attributes (handle both escaped and unescaped)
             const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
             const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
             const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
@@ -964,12 +844,14 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             const password = passwordMatch?.[1];
             const reason = reasonMatch?.[1] || 'No reason given';
             
-            if (room) {
-              console.log(`🤝 Detected jabber:x:conference invite to room ${room}: ${reason}`);
-              
-              // Auto-accept invite by joining the room
+if (room) {
+              if (!(await shouldAcceptInvite(inviter, room))) {
+                log.warn("Rejected body-parsed conference invite from non-admin", { from: inviter });
+                return;
+              }
+               // Auto-accept invite by joining the room
               try {
-                const presence = xml("presence", { to: `${room}/${getDefaultNick()}` },
+                const presence = xml("presence", { to: `${room}/${await getDefaultNick()}` },
                   xml("x", { xmlns: "http://jabber.org/protocol/muc" },
                     password ? xml("password", {}, password) : undefined,
                     xml("history", { maxstanzas: "0" })
@@ -977,10 +859,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 );
                 await xmpp.send(presence);
                 joinedRooms.add(room);
-                roomNicks.set(room, getDefaultNick());
-                console.log(`✅ Auto-accepted jabber:x:conference invite to room ${room}`);
+                roomNicks.set(room, await getDefaultNick());
+                log.info("autoJoin", { room });
               } catch (err) {
-                console.error(`❌ Failed to accept jabber:x:conference invite to room ${room}:`, err);
+                xmppLog.error("body-parsed invite accept failed", err);
               }
               return; // Don't dispatch invite to AI
             }
@@ -993,8 +875,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         
         // Check for XEP-0113 Whiteboard messages (forward to AI)
         const whiteboardData = parseWhiteboardMessage(stanza);
-        if (whiteboardData) {
-          console.log(`🎨 Detected whiteboard message: type=${whiteboardData.type}, paths=${whiteboardData.paths?.length || 0}`);
+          if (whiteboardData) {
+            xmppLog.debug("whiteboard", { type: whiteboardData.type, paths: whiteboardData.paths?.length || 0 });
           onMessage(fromBareJid, body || '[Whiteboard]', { 
             type: messageType, 
             room: undefined, 
@@ -1033,16 +915,14 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 if (roomJid) {
                   toAddress = roomJid;
                 } else {
-                  console.error(`[SENDREPLY ERROR] roomJid is null for groupchat message! from=${from}`);
+                  xmppLog.error("sendReply roomJid null", { from });
                 }
               }
-              console.log(`[SENDREPLY] messageType=${messageType}, from=${from}, roomJid=${roomJid}, toAddress=${toAddress}`);
+              xmppLog.debug("command reply", { to: toAddress, type: messageType, replyLength: replyText?.length });
               const message = xml("message", { type: messageType, to: toAddress }, xml("body", {}, replyText));
               await xmpp.send(message);
-              console.log(`Command reply sent to ${toAddress} (type=${messageType}): ${replyText}`);
             } catch (err) {
-              console.error("Error sending command reply:", err);
-              console.error("Error details:", err.message || err);
+              xmppLog.error("command reply send failed", err);
             }
           };
           
@@ -1072,7 +952,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               // Plugin command in chat - handle locally (except /help special case)
             } else {
               // Non-plugin command in chat - only forward if sender is contact
-              if (contacts.exists(fromBareJid)) {
+              if (await contacts.exists(fromBareJid)) {
                 debugLog(`Forwarding non-plugin command /${command} to agent`);
                 onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
               } else {
@@ -1086,9 +966,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          // Process plugin commands (both chat and groupchat)
          try {
            // Helper to check admin access (works differently for chat vs groupchat)
-           const checkAdminAccess = (): boolean => {
-             if (messageType === "chat") {
-               return contacts.isAdmin(fromBareJid);
+            const checkAdminAccess = async (): Promise<boolean> => {
+              if (messageType === "chat") {
+                return await contacts.isAdmin(fromBareJid);
              } else {
                // In groupchat, admin commands not available (can't verify user identity)
                return false;
@@ -1111,7 +991,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
   /help - Show this help`);
               
                 // SPECIAL CASE: /help forwards to agent ONLY in direct chat (not groupchat)
-                if (messageType === "chat" && contacts.exists(fromBareJid)) {
+                if (messageType === "chat" && await contacts.exists(fromBareJid)) {
                    debugLog(`Forwarding /help to agent`);
                    onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
                 }
@@ -1120,13 +1000,13 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               
              case 'list':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
-                 await sendReply(messageType === "groupchat" 
-                   ? "❌ Admin commands not available in groupchat. Use direct message."
-                   : "❌ Permission denied. Admin access required.");
-                 return;
-               }
-              const contactList = contacts.list();
+                if (!(await checkAdminAccess())) {
+                  await sendReply(messageType === "groupchat" 
+                    ? "❌ Admin commands not available in groupchat. Use direct message."
+                    : "❌ Permission denied. Admin access required.");
+                  return;
+                }
+               const contactList = await contacts.list();
               if (contactList.length === 0) {
                 await sendReply("No contacts configured.");
               } else {
@@ -1137,7 +1017,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               
              case 'add':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
@@ -1149,16 +1029,15 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               }
                const jidToAdd = args[0];
                const nameToAdd = args[1] || jidToAdd.split('@')[0];
-               const added = contacts.add(jidToAdd, nameToAdd);
+                const added = await contacts.add(jidToAdd, nameToAdd);
                if (added) {
                  await sendReply(`✅ Added contact: ${jidToAdd} (${nameToAdd})`);
                  // Send subscription request to new contact
                  try {
-                   const subscribe = xml("presence", { to: jidToAdd, type: "subscribe" });
-                   await xmpp.send(subscribe);
-                   console.log(`📤 Sent subscription request to ${jidToAdd}`);
-                 } catch (err) {
-                   console.error(`❌ Failed to send subscription request to ${jidToAdd}:`, err);
+                    const subscribe = xml("presence", { to: jidToAdd, type: "subscribe" });
+                    await xmpp.send(subscribe);
+                  } catch (err) {
+                    xmppLog.error("subscription send failed", err);
                  }
                } else {
                  await sendReply(`❌ Failed to add contact: ${jidToAdd}`);
@@ -1167,7 +1046,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               
              case 'remove':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
@@ -1178,7 +1057,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                 return;
               }
               const jidToRemove = args[0];
-              const removed = contacts.remove(jidToRemove);
+               const removed = await contacts.remove(jidToRemove);
               if (removed) {
                 await sendReply(`✅ Removed contact: ${jidToRemove}`);
               } else {
@@ -1188,13 +1067,13 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               
              case 'admins':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
                  return;
                }
-              const adminList = contacts.listAdmins();
+               const adminList = await contacts.listAdmins();
               if (adminList.length === 0) {
                 await sendReply("No admins configured.");
               } else {
@@ -1212,15 +1091,15 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                  await sendReply(`Room: ${roomJid}\nNick: ${nick}\nBot nick: ${botNick || "Not joined"}`);
                } else {
                  // In direct chat, show JID-based info
-                 const isAdmin = contacts.isAdmin(fromBareJid);
-                 const isContact = contacts.exists(fromBareJid);
+                  const isAdmin = await contacts.isAdmin(fromBareJid);
+                  const isContact = await contacts.exists(fromBareJid);
                  await sendReply(`JID: ${fromBareJid}\nAdmin: ${isAdmin ? '✅ Yes' : '❌ No'}\nContact: ${isContact ? '✅ Yes' : '❌ No'}`);
                }
                return;
               
              case 'join':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
@@ -1232,7 +1111,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               }
               try {
                 const roomRaw = args[0];
-                const nick = args[1] || getDefaultNick();
+                const nick = args[1] || await getDefaultNick();
                 const room = resolveRoomJid(roomRaw);
                 
                 // MUC protocol presence with muc namespace
@@ -1244,17 +1123,17 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                 await xmpp.send(presence);
                 joinedRooms.add(room);
                 roomNicks.set(room, nick);
-                console.log(`✅ Joined room ${room} as ${nick} via slash command (MUC protocol)`);
+                log.info("room joined", { room, nick });
                 await sendReply(`✅ Joined room: ${room} as ${nick}`);
               } catch (err) {
-                console.error("Error joining room:", err);
+                xmppLog.error("join room failed", err);
                 await sendReply(`❌ Failed to join room. Please check the room address and try again.`);
               }
               return;
               
              case 'rooms':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
@@ -1271,7 +1150,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               
              case 'leave':
                // Admin only - not available in groupchat
-               if (!checkAdminAccess()) {
+               if (!(await checkAdminAccess())) {
                  await sendReply(messageType === "groupchat" 
                    ? "❌ Admin commands not available in groupchat. Use direct message."
                    : "❌ Permission denied. Admin access required.");
@@ -1284,15 +1163,15 @@ await sendReply(`Available commands (groupchat: only whoami, help):
               try {
                 const roomRaw = args[0];
                 const room = resolveRoomJid(roomRaw);
-                const nick = getDefaultNick();
+                const nick = await getDefaultNick();
                 const presence = xml("presence", { to: `${room}/${nick}`, type: "unavailable" });
                 await xmpp.send(presence);
                 joinedRooms.delete(room);
                 roomNicks.delete(room);
-                console.log(`✅ Left room ${room} via slash command`);
+                log.info("room left", { room });
                 await sendReply(`✅ Left room: ${room}`);
               } catch (err) {
-                console.error("Error leaving room:", err);
+                xmppLog.error("leave room failed", err);
                 const room = resolveRoomJid(args[0]);
                 joinedRooms.delete(room); // Still remove from tracking since we attempted to leave
                 roomNicks.delete(room);
@@ -1302,7 +1181,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
               case 'vcard':
                  // vCard management
-                 if (!checkAdminAccess()) {
+                 if (!(await checkAdminAccess())) {
                    await sendReply(messageType === 'groupchat' 
                      ? '❌ Admin commands not available in groupchat. Use direct message.'
                      : '❌ Permission denied. Admin access required.');
@@ -1428,8 +1307,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                        
                        // Check if URL was provided as argument
                        if (args.length >= 3) {
-                         const url = args.slice(2).join(' ');
-                         console.log(`[AVATAR] URL provided: ${url}`);
+                        const url = args.slice(2).join(' ');
+                        xmppLog.debug("avatar", { action: "url-provided" });
                          
                          // Download the file from URL
                          try {
@@ -1471,18 +1350,16 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                              filename = `avatar_${Date.now()}.jpg`;
                            }
                            
-                           filePath = path.join(tempDir, filename);
-                           await fs.promises.writeFile(filePath, Buffer.from(buffer));
-                           console.log(`[AVATAR] Downloaded to: ${filePath}`);
-                         } catch (err) {
-                           console.error('[AVATAR] Download failed:', err);
+                            filePath = path.join(tempDir, filename);
+                            await fs.promises.writeFile(filePath, Buffer.from(buffer));
+                          } catch (err) {
+                            xmppLog.error("avatar download failed", err);
                            await sendReply(`❌ Failed to download image: ${err instanceof Error ? err.message : 'Unknown error'}`);
                            return;
                          }
-                       } else if (mediaPaths.length > 0) {
-                         // Use attached file
-                         filePath = mediaPaths[0];
-                         console.log(`[AVATAR] Using attached file: ${filePath}`);
+                        } else if (mediaPaths.length > 0) {
+                          // Use attached file
+                          filePath = mediaPaths[0];
                        } else {
                          await sendReply('❌ No image URL or attachment provided.\nUsage: /vcard set avatar <url>\nOr attach an image and use /vcard set avatar');
                          return;
@@ -1500,21 +1377,18 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                              imageUrl = args.slice(2).join(' ');
                            } else {
                              // For attached files, we need to upload via XEP-0363
-                             const filename = path.basename(filePath);
-                             console.log(`[AVATAR] Uploading ${filename} (${size} bytes) via XEP-0363...`);
-                             const slot = await requestUploadSlot(filename, size);
-                             await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
-                             imageUrl = slot.getUrl;
-                             console.log(`[AVATAR] File uploaded to: ${imageUrl}`);
+                              const filename = path.basename(filePath);
+                              xmppLog.debug("avatar", { action: "uploading", filename, size });
+                              const slot = await requestUploadSlot(filename, size);
+                              await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
+                              imageUrl = slot.getUrl;
                            }
                            
-                           // Step 1: Publish via XEP-0084 User Avatar
-                           console.log(`[AVATAR] Publishing XEP-0084 avatar with URL: ${imageUrl}`);
-                            const avatarPublished = await publishAvatar(filePath, imageUrl);
-                            
-                            // Step 2: Update vCard with embedded base64 avatar (BINVAL) - this is what clients expect
-                            console.log(`[AVATAR] Reading file for vCard embedding...`);
-                            const fileBuffer = await fs.promises.readFile(filePath);
+                            // Step 1: Publish via XEP-0084 User Avatar
+                             const avatarPublished = await publishAvatar(filePath, imageUrl);
+                             
+                             // Step 2: Update vCard with embedded base64 avatar (BINVAL) - this is what clients expect
+                             const fileBuffer = await fs.promises.readFile(filePath);
                             const base64Data = fileBuffer.toString('base64');
                             const ext = path.extname(filePath).toLowerCase();
                             let mimeType = 'image/jpeg';
@@ -1522,29 +1396,28 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                             else if (ext === '.gif') mimeType = 'image/gif';
                             else if (ext === '.webp') mimeType = 'image/webp';
                             
-                            console.log(`[AVATAR] Updating vCard with embedded avatar (${mimeType}, ${fileBuffer.length} bytes)...`);
                             const updates = { 
-                              avatarUrl: imageUrl,
-                              avatarBinval: base64Data,
-                              avatarType: mimeType
-                            };
-                            const vcardUpdated = await updateVCardOnServer(updates);
+                               avatarUrl: imageUrl,
+                               avatarBinval: base64Data,
+                               avatarType: mimeType
+                             };
+                             const vcardUpdated = await updateVCardOnServer(updates);
                            
                            // Report results
-                           if (avatarPublished && vcardUpdated) {
-                             vcard.setAvatarUrl(imageUrl);
-                             await sendReply(`✅ Avatar updated successfully!\n\nXEP-0084 (PEP): Published\nvCard (XEP-0054): Updated\nURL: ${imageUrl}`);
-                           } else if (avatarPublished) {
-                             vcard.setAvatarUrl(imageUrl);
-                             await sendReply(`✅ XEP-0084 avatar published!\n⚠️ vCard update failed (non-critical)\nURL: ${imageUrl}`);
-                           } else if (vcardUpdated) {
-                             vcard.setAvatarUrl(imageUrl);
-                             await sendReply(`✅ vCard avatar updated!\n⚠️ XEP-0084 publish failed (non-critical)\nURL: ${imageUrl}`);
+                            if (avatarPublished && vcardUpdated) {
+                              await vcard.setAvatarUrl(imageUrl);
+                              await sendReply(`✅ Avatar updated successfully!\n\nXEP-0084 (PEP): Published\nvCard (XEP-0054): Updated\nURL: ${imageUrl}`);
+                            } else if (avatarPublished) {
+                              await vcard.setAvatarUrl(imageUrl);
+                              await sendReply(`✅ XEP-0084 avatar published!\n⚠️ vCard update failed (non-critical)\nURL: ${imageUrl}`);
+                            } else if (vcardUpdated) {
+                              await vcard.setAvatarUrl(imageUrl);
+                              await sendReply(`✅ vCard avatar updated!\n⚠️ XEP-0084 publish failed (non-critical)\nURL: ${imageUrl}`);
                            } else {
                              await sendReply(`❌ Failed to publish avatar`);
                            }
-                         } catch (err) {
-                           console.error('Avatar upload failed:', err);
+                          } catch (err) {
+                            xmppLog.error("avatar upload failed", err);
                            await sendReply(`❌ Failed to upload avatar: ${err instanceof Error ? err.message : 'Unknown error'}`);
                          }
                         return;
@@ -1577,15 +1450,15 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                     
                     const success = await updateVCardOnServer(updates);
                     
-                    if (success) {
-                      if (field === 'fn') vcard.setFN(value);
-                      if (field === 'nickname') vcard.setNickname(value);
-                      if (field === 'url') vcard.setUrl(value);
-                      if (field === 'desc') vcard.setDesc(value);
-                      if (field === 'birthday') vcard.setBday(value);
-                      if (field === 'title') vcard.setTitle(value);
-                      if (field === 'role') vcard.setRole(value);
-                      if (field === 'timezone') vcard.setTz(value);
+                      if (success) {
+                       if (field === 'fn') await vcard.setFN(value);
+                       if (field === 'nickname') await vcard.setNickname(value);
+                       if (field === 'url') await vcard.setUrl(value);
+                       if (field === 'desc') await vcard.setDesc(value);
+                       if (field === 'birthday') await vcard.setBday(value);
+                       if (field === 'title') await vcard.setTitle(value);
+                       if (field === 'role') await vcard.setRole(value);
+                       if (field === 'timezone') await vcard.setTz(value);
                       
                       await sendReply(`✅ vCard field '${field}' updated on server: ${value}`);
                     } else {
@@ -1646,7 +1519,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                       xmpp.off('stanza', handler);
                       
                       if (updateSuccess) {
-                        vcard.setNameComponents(family, given, middle, prefix, suffix);
+                        await vcard.setNameComponents(family, given, middle, prefix, suffix);
                         const nameStr = [prefix, given, middle, family, suffix].filter(Boolean).join(' ').trim();
                         await sendReply(`✅ vCard name updated: ${nameStr}`);
                       } else {
@@ -1687,7 +1560,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ tel: merged.tel });
                         if (success) {
-                          vcard.setTel(merged.tel);
+                          await vcard.setTel(merged.tel);
                           await sendReply(`✅ Phone added: ${number} (${types.join(', ') || 'default'})`);
                         } else {
                           await sendReply(`❌ Failed to add phone on server`);
@@ -1712,7 +1585,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ tel: current.tel });
                         if (success) {
-                          vcard.setTel(current.tel);
+                          await vcard.setTel(current.tel);
                           await sendReply(`✅ Phone removed: ${removed.number}`);
                         } else {
                           await sendReply(`❌ Failed to remove phone on server`);
@@ -1755,7 +1628,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ email: merged.email });
                         if (success) {
-                          vcard.setEmail(merged.email);
+                          await vcard.setEmail(merged.email);
                           await sendReply(`✅ Email added: ${userid} (${types.join(', ') || 'default'})`);
                         } else {
                           await sendReply(`❌ Failed to add email on server`);
@@ -1780,7 +1653,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ email: current.email });
                         if (success) {
-                          vcard.setEmail(current.email);
+                          await vcard.setEmail(current.email);
                           await sendReply(`✅ Email removed: ${removed.userid}`);
                         } else {
                           await sendReply(`❌ Failed to remove email on server`);
@@ -1827,7 +1700,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ adr: merged.adr });
                         if (success) {
-                          vcard.setAdr(merged.adr);
+                          await vcard.setAdr(merged.adr);
                           await sendReply(`✅ Address added: ${street}, ${locality}, ${region} ${pcode}, ${ctry} (${types.join(', ') || 'default'})`);
                         } else {
                           await sendReply(`❌ Failed to add address on server`);
@@ -1853,7 +1726,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         
                         const success = await updateVCardOnServer({ adr: current.adr });
                         if (success) {
-                          vcard.setAdr(current.adr);
+                          await vcard.setAdr(current.adr);
                           await sendReply(`✅ Address removed: ${parts.join(', ')}`);
                         } else {
                           await sendReply(`❌ Failed to remove address on server`);
@@ -1943,8 +1816,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                        await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
                        
                        await sendReply(`✅ XEP-0363 upload successful!\nFile URL: ${slot.getUrl}`);
-                     } catch (err) {
-                       console.error('[TEST UPLOAD] Failed:', err);
+                      } catch (err) {
+                        xmppLog.error("test upload failed", err);
                        await sendReply(`❌ Upload test failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
                      }
                    } else {
@@ -1958,7 +1831,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                 return;
           }
         } catch (err) {
-          console.error("Error processing slash command:", err);
+          xmppLog.error("slash command error", err);
            try {
              let toAddress = from;
              if (messageType === "groupchat" && roomJid) {
@@ -2002,7 +1875,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           onMessage(roomJid, body || '', { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths });
         } else {
           // Direct message
-          if (contacts.exists(fromBareJid)) {
+          if (await contacts.exists(fromBareJid)) {
             debugLog(`[NORMAL] Forwarding chat message from ${fromBareJid} to agent`);
 
             // Use bare JID for session
@@ -2017,267 +1890,46 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
   xmpp.start().catch((err: any) => {
     log.error("XMPP start failed", err);
-    console.error("XMPP start failed details:", err);
+    xmppLog.error("start failed", err);
   });
 
-   // HTTP File Upload (XEP-0363) helpers
-    
-    // Cache for upload service JID
-    let uploadServiceJid: string | null = null;
-    
-    // Service Discovery to find HTTP File Upload service
-    const discoverUploadService = async (): Promise<string | null> => {
-      if (uploadServiceJid) return uploadServiceJid;
-      
-      console.log(`[DISCOVERY] Looking for HTTP File Upload service...`);
-      const iqId = `disco-${Date.now()}`;
-      
-      return new Promise((resolve) => {
-        let resolved = false;
-        
-        const handler = (stanza: any) => {
-          if (stanza.attrs.id === iqId && stanza.attrs.type === 'result') {
-            resolved = true;
-            xmpp.off('stanza', handler);
-            
-            const query = stanza.getChild('query', 'http://jabber.org/protocol/disco#items');
-            if (query) {
-              const items = query.getChildren('item');
-              for (const item of items) {
-                const jid = item.attrs.jid;
-                console.log(`[DISCOVERY] Found service: ${jid}`);
-                // Check if this is an upload service
-                if (jid.includes('upload') || jid.includes('httpfile')) {
-                  uploadServiceJid = jid;
-                  console.log(`[DISCOVERY] Found upload service: ${jid}`);
-                  resolve(jid);
-                  return;
-                }
-              }
-            }
-            resolve(null);
-          } else if (stanza.attrs.id === iqId && stanza.attrs.type === 'error') {
-            resolved = true;
-            xmpp.off('stanza', handler);
-            console.log(`[DISCOVERY] Service discovery failed`);
-            resolve(null);
-          }
-        };
-        
-        xmpp.on('stanza', handler);
-        
-        // Query server for services
-        const discoStanza = xml("iq", { type: "get", to: cfg.domain, id: iqId },
-          xml("query", { xmlns: "http://jabber.org/protocol/disco#items" })
-        );
-        
-        xmpp.send(discoStanza).catch(() => {
-          if (!resolved) {
-            xmpp.off('stanza', handler);
-            resolve(null);
-          }
-        });
-        
-        setTimeout(() => {
-          if (!resolved) {
-            xmpp.off('stanza', handler);
-            resolve(null);
-          }
-        }, 10000);
-      });
-    };
-    
-    const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}> => {
-      debugLog(`Requesting upload slot for ${filename} (${size} bytes)`);
-      
-      // Discover upload service if needed
-      let uploadJid = uploadServiceJid;
-      if (!uploadJid) {
-        uploadJid = await discoverUploadService();
-      }
-      
-      // Fallback to domain if no upload service found
-      const targetJid = uploadJid || cfg.domain;
-      console.log(`[UPLOAD] Requesting slot from: ${targetJid}`);
-      
-      // Create IQ request for upload slot
-      const iqId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-      const requestStanza = xml("iq", { type: "get", to: targetJid, id: iqId },
-        xml("request", { xmlns: "urn:xmpp:http:upload:0", filename, size: size.toString() })
-      );
-      
-      return new Promise((resolve, reject) => {
-        let responseReceived = false;
-        
-        const handler = (stanza: any) => {
-          if (stanza.attrs.id === iqId && stanza.attrs.type === 'result') {
-            responseReceived = true;
-            xmpp.off('stanza', handler);
-            
-            try {
-              console.log(`[XEP-0363] Full response: ${stanza.toString()}`);
-              
-              const slot = stanza.getChild("slot", "urn:xmpp:http:upload:0");
-              if (!slot) {
-                console.log(`[XEP-0363] No slot element found`);
-                reject(new Error("No upload slot in response"));
-                return;
-              }
-              
-              console.log(`[XEP-0363] Slot element: ${slot.toString()}`);
-              console.log(`[XEP-0363] Slot children: ${slot.children.map((c: any) => c.name).join(', ')}`);
-              
-              // Prosody returns URLs as attributes, not text content
-              const putElement = slot.getChild("put");
-              const getElement = slot.getChild("get");
-              const putUrl = putElement?.attrs?.url;
-              const getUrl = getElement?.attrs?.url;
-              
-              console.log(`[XEP-0363] putUrl=${putUrl}, getUrl=${getUrl}`);
-              
-              if (!putUrl || !getUrl) {
-                reject(new Error("Missing put or get URL in slot"));
-                return;
-              }
-              
-              // Parse optional headers (putElement already defined above)
-              const putHeaders: Record<string, string> = {};
-              if (putElement) {
-                const headerElements = putElement.getChildren("header");
-                for (const header of headerElements) {
-                  const name = header.attrs.name;
-                  const value = header.getText();
-                  if (name && value) {
-                    putHeaders[name] = value;
-                  }
-                }
-              }
-              
-              debugLog(`Upload slot obtained for ${filename}`);
-              resolve({ putUrl, getUrl, headers: Object.keys(putHeaders).length > 0 ? putHeaders : undefined });
-            } catch (err) {
-              reject(err);
-            }
-          } else if (stanza.attrs.id === iqId && stanza.attrs.type === 'error') {
-            responseReceived = true;
-            xmpp.off('stanza', handler);
-            console.log(`[UPLOAD] Error stanza: ${stanza.toString()}`);
-            const errorEl = stanza.getChild('error');
-            let errorDetails = 'Unknown error';
-            if (errorEl) {
-              const errorText = errorEl.getChildText('text', 'urn:ietf:params:xml:ns:xmpp-stanzas');
-              const errorCondition = errorEl.children.find((c: any) => c.name && c.name !== 'text')?.name;
-              errorDetails = errorText || errorCondition || `Error type: ${errorEl.attrs.type}`;
-            }
-            reject(new Error(`Upload slot request failed: ${errorDetails}`));
-          }
-        };
-        
-        // Set up listener
-        xmpp.on('stanza', handler);
-        
-        // Send request
-        xmpp.send(requestStanza).catch((err: any) => {
-          if (!responseReceived) {
-            xmpp.off('stanza', handler);
-            reject(err);
-          }
-        });
-        
-        // Timeout after 30 seconds
-        setTimeout(() => {
-          if (!responseReceived) {
-            xmpp.off('stanza', handler);
-            reject(new Error("Upload slot request timeout"));
-          }
-        }, 30000);
-      });
-    };
+   // HTTP File Upload (XEP-0363) helpers -- delegated to upload-protocol.ts
 
-    const uploadFileViaHTTP = async (filePath: string, putUrl: string, headers?: Record<string, string>): Promise<void> => {
-      debugLog(`Uploading file ${filePath}`);
-      
-      try {
-        // Convert HTTPS to HTTP for upload (many XMPP servers use HTTP on port 5281)
-        const httpPutUrl = putUrl.replace(/^https:\/\//, 'http://');
-        console.log(`[UPLOAD] Using HTTP URL: ${httpPutUrl}`);
-        
-        // Read file
-        const fileBuffer = await fs.promises.readFile(filePath);
-        const fileSize = fileBuffer.length;
-        
-        // Prepare headers
-        const fetchHeaders: Record<string, string> = {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': fileSize.toString(),
-        };
-        
-        if (headers) {
-          Object.assign(fetchHeaders, headers);
-        }
-        
-        // Upload via PUT
-       const response = await fetch(httpPutUrl, {
-         method: 'PUT',
-         headers: fetchHeaders,
-         body: fileBuffer,
-       });
-      
-       if (!response.ok) {
-         throw new Error(`HTTP upload failed: ${response.status} ${response.statusText}`);
-       }
-       
-       debugLog(`File uploaded successfully`);
-     } catch (err) {
-       console.error("File upload failed:", err);
-       throw err;
-     }
+   let uploadServiceJid: string | null = null;
+
+   const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}> => {
+     return requestUploadSlotShared(xmpp, cfg.domain, filename, size, contentType, uploadServiceJid);
    };
 
-   const sendFileWithHTTPUpload = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
-     try {
-       // Get file stats
-       const stats = await fs.promises.stat(filePath);
-       const filename = path.basename(filePath);
-       const size = stats.size;
-       
-       // Request upload slot
-       const slot = await requestUploadSlot(filename, size);
-       
-       // Upload file
-       await uploadFileViaHTTP(filePath, slot.putUrl, slot.headers);
-       
-       // Send message with file URL
-       const messageType = isGroupChat ? "groupchat" : "chat";
-       const message = xml("message", { type: messageType, to },
-         text ? xml("body", {}, text) : null,
-         xml("x", { xmlns: "jabber:x:oob" },
-          xml("url", {}, slot.getUrl)
-        )
-       );
-       
-       await xmpp.send(message);
-       debugLog(`File sent successfully to ${to}`);
-     } catch (err) {
-       console.error("Failed to send file via HTTP Upload:", err);
-       throw err;
-     }
+   const _uploadFileViaHTTP = async (filePath: string, putUrl: string, headers?: Record<string, string>): Promise<void> => {
+     return uploadFileViaHTTP(filePath, putUrl, headers);
    };
 
-   // SI File Transfer (XEP-0096) helpers (fallback)
+   const _sendFileWithHTTPUpload = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
+     return sendFileWithHTTPUpload(xmpp, to, filePath, cfg.domain, text, isGroupChat, cfg.dataDir || path.join(process.cwd(), 'data'), uploadServiceJid);
+   };
+
+     // SI File Transfer (XEP-0096) helpers (fallback)
     const sendFileWithSITransfer = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
-      debugLog(`Attempting SI file transfer to ${to}`);
-      // For now, fallback to out-of-band URL sharing
-      // TODO: Implement proper SI file transfer with bytestreams
-      const filename = path.basename(filePath);
-      const message = `[File: ${filename}] ${text || ''}`;
-      if (isGroupChat) {
-       await xmpp.sendGroupchat(to, message);
-     } else {
-       await xmpp.send(to, message);
-     }
-     console.log(`SI fallback: Sent file notification for ${filename}`);
-   };
+        debugLog(`Attempting SI file transfer to ${to}`);
+        const filename = path.basename(filePath);
+
+        const downloadsDir = path.join(cfg.dataDir || path.join(process.cwd(), 'data'), 'downloads');
+        if (!fs.existsSync(downloadsDir)) {
+          fs.mkdirSync(downloadsDir, { recursive: true });
+        }
+        const localPath = path.join(downloadsDir, filename);
+        try {
+          await fs.promises.copyFile(filePath, localPath);
+          debugLog(`File saved locally to: ${localPath}`);
+        } catch (copyErr) {
+          xmppLog.error("SI fallback save failed", copyErr);
+        }
+
+         const message = `[File: ${filename}] ${text || ''}`;
+         const msgEl = xml("message", { type: isGroupChat ? "groupchat" : "chat", to }, xml("body", {}, message));
+         await xmpp.send(msgEl);
+      };
 
     // XEP-0084: User Avatar helpers
     const publishAvatar = async (filePath: string, imageUrl: string): Promise<boolean> => {
@@ -2293,8 +1945,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
         if (ext === '.png') mimeType = 'image/png';
         else if (ext === '.gif') mimeType = 'image/gif';
         else if (ext === '.webp') mimeType = 'image/webp';
-        
-        console.log(`[XEP-0084] Publishing avatar: hash=${hash}, size=${size}, type=${mimeType}`);
+         
+         xmppLog.debug("avatar", { action: "publishing", size, type: mimeType });
         
         // Publish metadata to pubsub (XEP-0084) - MUST include 'to' with bare JID for PEP
         const bareJid = cfg.jid.split('/')[0];
@@ -2328,9 +1980,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
         );
         
         await xmpp.send(metadataStanza);
-        console.log(`[XEP-0084] Avatar metadata published to ${bareJid}`);
-        
-        // Also publish the actual avatar data for clients that support XEP-0084 natively
+         
+         // Also publish the actual avatar data for clients that support XEP-0084 natively
         const dataId = `avatar-data-${Date.now()}`;
         const base64Data = fileBuffer.toString('base64');
         const dataStanza = xml("iq", { type: "set", to: bareJid, id: dataId },
@@ -2344,11 +1995,10 @@ await sendReply(`Available commands (groupchat: only whoami, help):
         );
         
         await xmpp.send(dataStanza);
-        console.log(`[XEP-0084] Avatar data published`);
-        
-        return true;
+         
+         return true;
       } catch (err) {
-        console.error('[XEP-0084] Failed to publish avatar:', err);
+        xmppLog.error("PEP avatar publish failed", err);
         return false;
       }
     };
@@ -2370,7 +2020,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
       },
       joinRoom: async (roomJid: string, nick?: string) => {
         const resolvedRoomJid = resolveRoomJid(roomJid);
-        const actualNick = nick || getDefaultNick();
+        const actualNick = nick || await getDefaultNick();
         const fullJid = `${resolvedRoomJid}/${actualNick}`;
         
         // MUC protocol presence with muc namespace and optional history
@@ -2383,23 +2033,23 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           await xmpp.send(presence);
           joinedRooms.add(resolvedRoomJid);
           roomNicks.set(resolvedRoomJid, actualNick);
-          console.log(`✅ Joined room ${resolvedRoomJid} as ${actualNick} (MUC protocol)`);
+          log.info("room joined", { room: resolvedRoomJid, nick: actualNick });
         } catch (err) {
-          console.error(`❌ Failed to join room ${resolvedRoomJid}:`, err);
+          xmppLog.error("join room failed", err);
           throw err;
         }
       },
       leaveRoom: async (roomJid: string, nick?: string) => {
         const resolvedRoomJid = resolveRoomJid(roomJid);
-        const fullJid = nick ? `${resolvedRoomJid}/${nick}` : `${resolvedRoomJid}/${getDefaultNick()}`;
+        const fullJid = nick ? `${resolvedRoomJid}/${nick}` : `${resolvedRoomJid}/${await getDefaultNick()}`;
         const presence = xml("presence", { to: fullJid, type: "unavailable" });
         try {
           await xmpp.send(presence);
           joinedRooms.delete(resolvedRoomJid);
           roomNicks.delete(resolvedRoomJid);
-          console.log(`✅ Left room ${resolvedRoomJid}`);
+          log.info("room left", { room: resolvedRoomJid });
         } catch (err) {
-          console.error(`❌ Failed to leave room ${resolvedRoomJid}:`, err);
+          xmppLog.error("leave room failed", err);
           // Still remove from tracking since we attempted to leave
           joinedRooms.delete(resolvedRoomJid);
           roomNicks.delete(resolvedRoomJid);
@@ -2415,18 +2065,18 @@ await sendReply(`Available commands (groupchat: only whoami, help):
         return xmpp.send(iqStanza);
       },
        sendFile: async (to: string, filePath: string, text?: string, isGroupChat?: boolean) => {
-         console.log(`XMPP sendFile called: to=${to}, file=${filePath}, text=${text}, group=${isGroupChat}`);
+         xmppLog.debug("fileTransfer", { action: "send", to, file: filePath });
          try {
            // First try HTTP Upload
            await sendFileWithHTTPUpload(to, filePath, text, isGroupChat);
            return true;
-         } catch (httpErr) {
-           console.log("HTTP Upload failed, falling back to SI transfer:", httpErr);
-           try {
-             await sendFileWithSITransfer(to, filePath, text, isGroupChat);
-             return true;
-           } catch (siErr) {
-             console.error("All file transfer methods failed:", siErr);
+          } catch (httpErr) {
+            xmppLog.debug("fileTransfer", { action: "fallback-to-si" });
+            try {
+              await sendFileWithSITransfer(to, filePath, text, isGroupChat);
+              return true;
+            } catch (siErr) {
+              xmppLog.error("all transfer methods failed", siErr);
              throw new Error(`File transfer failed: ${httpErr.message}, ${siErr.message}`);
            }
          }
@@ -2441,16 +2091,28 @@ await sendReply(`Available commands (groupchat: only whoami, help):
            xml("x", { xmlns: "jabber:x:conference", ...inviteAttrs })
          );
          
-         debugLog(`Sending invite XML: ${message.toString()}`);
-         console.log(`[INVITE DEBUG] Contact: ${contact}, Room: ${resolvedRoom}`);
-         console.log(`[INVITE DEBUG] XML: ${message.toString()}`);
-         
-         await xmpp.send(message);
-         console.log(`Invited ${contact} to room ${resolvedRoom}`);
-       }
-     };
+           await xmpp.send(message);
+        }
+      };
 
   xmppClient.roomNicks = roomNicks;
+
+  xmppClient.stop = async () => {
+    log.info("XMPP shutting down gracefully");
+    clearReconnect();
+    if (ibbCleanupInterval) clearInterval(ibbCleanupInterval);
+    try { await xmpp.send(xml("presence", { type: "unavailable" })); } catch {}
+    try { await xmpp.stop(); } catch (err) { log.error("xmpp.stop error", err); }
+    isRunning = false;
+  };
+
+  const shutdownSignals = ['SIGTERM', 'SIGINT', 'SIGUSR2'] as const;
+  for (const signal of shutdownSignals) {
+    process.on(signal, async () => {
+      log.info(`Received ${signal}, shutting down`);
+      await xmppClient.stop();
+    });
+  }
 
   return xmppClient;
 }

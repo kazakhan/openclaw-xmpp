@@ -1,48 +1,12 @@
 import { Client } from "ssh2";
 import path from "path";
 import fs from "fs";
-import { decryptPasswordFromConfig } from './security/encryption.js';
-
-interface XmppConfig {
-  domain: string;
-  jid: string;
-  password: string;
-  sftpPort?: number;
-}
+import { loadXmppConfig } from './lib/config-loader.js';
 
 interface SftpResult<T = void> {
   ok: boolean;
   data?: T;
   error?: string;
-}
-
-function loadXmppConfig(): XmppConfig {
-  const configPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'openclaw.json');
-  
-  try {
-    const configData = fs.readFileSync(configPath, 'utf8');
-    const config = JSON.parse(configData);
-    const xmppAccount = config.channels?.xmpp?.accounts?.default;
-    
-    if (xmppAccount) {
-      let password: string;
-      try {
-        password = decryptPasswordFromConfig(xmppAccount);
-      } catch (err) {
-        password = xmppAccount.password || '';
-      }
-      
-      return {
-        domain: xmppAccount.domain,
-        jid: xmppAccount.jid,
-        password: password,
-        sftpPort: xmppAccount.sftpPort
-      };
-    }
-  } catch (e) {
-  }
-  
-  throw new Error('XMPP configuration not found');
 }
 
 function connectSftp(): Promise<Client> {
@@ -59,7 +23,9 @@ function connectSftp(): Promise<Client> {
       host: config.domain,
       port: config.sftpPort || 2211,
       username: config.jid.split('@')[0],
-      password: config.password
+      password: config.password,
+      readyTimeout: 10000,
+      hostVerifier: () => true
     });
   });
 }

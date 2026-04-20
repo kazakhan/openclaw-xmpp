@@ -18,6 +18,14 @@ export const Config = {
 
   // Logging
   DEBUG_LOG_FILE: 'cli-debug.log',
+
+  // Security
+  MAX_MESSAGE_BODY_SIZE: 64 * 1024,  // 64KB max inbound message body
+
+  // Reconnection
+  RECONNECT_BASE_MS: 1000,
+  RECONNECT_MAX_MS: 60000,
+  RECONNECT_BACKOFF_FACTOR: 2,
 };
 
 export type Config = typeof Config;

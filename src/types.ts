@@ -4,8 +4,10 @@ export interface XmppConfig {
   jid: string;
   password: string;
   resource?: string;
-  dataDir: string;
+  dataDir?: string;
   adminJid?: string;
+  sftpPort?: number;
+  autoJoinRooms?: string[];
   rooms?: string[];
   nick?: string;
   vcard?: VCardConfig;
@@ -183,17 +185,30 @@ export interface UploadSlot {
   headers?: Record<string, string>;
 }
 
+export interface StanzaElement {
+  name: string;
+  attrs: Record<string, string>;
+  children: StanzaElement[];
+  getText(): string;
+  getChild(name: string, xmlns?: string): StanzaElement | null;
+  getChildText(name: string, xmlns?: string): string;
+  getChildren(name: string): StanzaElement[];
+}
+
 export interface XmppClient {
-  xmpp: any;
-  status?: string;
-  send: (to: string, body: string) => Promise<void>;
-  sendGroupchat: (to: string, body: string) => Promise<void>;
-  joinRoom: (roomJid: string, nick?: string) => Promise<void>;
-  leaveRoom: (roomJid: string, nick?: string) => Promise<void>;
-  getJoinedRooms: () => string[];
-  isInRoom: (roomJid: string) => boolean;
-  iq: (to: string, type: string, payload?: any) => Promise<void>;
-  sendFile: (to: string, filePath: string, text?: string, isGroupChat?: boolean) => Promise<void>;
+  send(to: string, body: string): Promise<void>;
+  sendGroupchat(to: string, body: string): Promise<void>;
+  send(stanza: StanzaElement | any): Promise<any>;
+  sendFile(to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void>;
+  joinRoom(roomJid: string, nick?: string): Promise<void>;
+  leaveRoom(roomJid: string, nick?: string): Promise<void>;
+  getJoinedRooms(): string[];
+  isInRoom(roomJid: string): boolean;
+  iq?(to: string, type: string, payload?: StanzaElement | any): Promise<any>;
+  on(event: string, handler: (...args: any[]) => void): void;
+  off(event: string, handler: (...args: any[]) => void);
+  start(): Promise<any>;
+  stop(): Promise<void>;
   roomNicks: Map<string, string>;
 }
 
@@ -206,4 +221,62 @@ export interface PluginLogger {
 
 export interface OnMessageCallback {
   (from: string, body: string, options?: MessageOptions): void;
+}
+
+// --- Runtime & Gateway types (Phase 2) ---
+
+export interface AccountSnapshot {
+  accountId: string;
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  tokenSource: string;
+  running?: boolean;
+  lastStartAt?: string | null;
+  lastStopAt?: string | null;
+  lastError?: string | null;
+}
+
+export interface GatewayContext {
+  account: {
+    accountId: string;
+    enabled: boolean;
+    config: XmppConfig;
+  };
+  cfg: XmppConfig;
+  accountId: string;
+  abortSignal: AbortSignal;
+  log?: PluginLogger;
+  setStatus: (next: Partial<AccountSnapshot>) => void;
+  getStatus: () => AccountSnapshot;
+  channelRuntime?: Record<string, unknown>;
+}
+
+export interface PluginRuntime {
+  channel: {
+    session: Record<string, unknown>;
+    reply: Record<string, unknown>;
+    text?: (session: string, params: Record<string, unknown>) => Promise<unknown>;
+    message?: (session: string, params: Record<string, unknown>) => Promise<unknown>;
+    activity: { record: (data: unknown) => void };
+    [key: string]: unknown;
+  };
+  dispatchInboundMessage?: (params: Record<string, unknown>) => Promise<void>;
+  [key: string]: unknown;
+}
+
+export interface SendTextParams {
+  to: string;
+  text: string;
+  accountId?: string;
+}
+
+export interface SendMediaParams {
+  to: string;
+  text?: string;
+  mediaUrl?: string;
+  accountId?: string;
+  deps?: { loadWebMedia?: (url: string) => Promise<{ path?: string; url?: string }> };
+  replyToId?: string;
+  [key: string]: unknown;
 }

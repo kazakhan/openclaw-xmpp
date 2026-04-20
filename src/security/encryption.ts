@@ -6,30 +6,38 @@ const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
 const IV_LENGTH = 16;
 const TAG_LENGTH = 16;
-const DEFAULT_SALT = 'xmpp-plugin-salt-v1';
 const KEY_DERIVATION_ITERATIONS = 100000;
 const SALT_FILE_NAME = '.xmpp-plugin-salt';
 
-function getInstallationSalt(dataDir?: string): string {
-  if (dataDir) {
-    const saltFilePath = path.join(dataDir, SALT_FILE_NAME);
-    if (fs.existsSync(saltFilePath)) {
-      try {
-        return fs.readFileSync(saltFilePath, 'utf8').trim();
-      } catch {
-        // Fall through to generate new salt
-      }
-    }
-    const newSalt = crypto.randomBytes(32).toString('hex');
-    try {
-      fs.writeFileSync(saltFilePath, newSalt, { mode: 0o600 });
-    } catch {
-      // If we can't write the file, fall back to default
-      return DEFAULT_SALT;
-    }
-    return newSalt;
+// LEGACY DEFAULT - kept for backward compatibility with existing ENC: passwords
+// Users should configure dataDir for new encryptions to avoid this fallback
+const DEFAULT_SALT = 'xmpp-plugin-salt-v1';
+
+function getInstallationSalt(dataDir: string): string {
+  if (!dataDir) {
+    throw new Error(
+      "XMPP encryption requires dataDir to be configured. " +
+      "Set dataDir in your XMPP account configuration."
+    );
   }
-  return DEFAULT_SALT;
+  const saltFilePath = path.join(dataDir, SALT_FILE_NAME);
+  if (fs.existsSync(saltFilePath)) {
+    try {
+      return fs.readFileSync(saltFilePath, 'utf8').trim();
+    } catch {
+      // Fall through to generate new salt
+    }
+  }
+  const newSalt = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(saltFilePath, newSalt, { mode: 0o600 });
+    return newSalt;
+  } catch (writeErr) {
+    throw new Error(
+      `Failed to create encryption salt at ${saltFilePath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}. ` +
+      "Check directory permissions."
+    );
+  }
 }
 
 export interface EncryptionResult {
@@ -53,15 +61,16 @@ export interface XmppAccountConfig {
   encryptionKey?: string;
   encryptionSalt?: string;
   dataDir?: string;
-  ftpPort?: number;
 }
 
 export class PasswordEncryption {
   private key: Buffer;
 
-  constructor(key: string, salt?: string) {
-    const usedSalt = salt || DEFAULT_SALT;
-    this.key = crypto.pbkdf2Sync(key, usedSalt, KEY_DERIVATION_ITERATIONS, KEY_LENGTH, 'sha512');
+  constructor(key: string, salt: string) {
+    if (!salt) {
+      throw new Error("PasswordEncryption requires a salt argument.");
+    }
+    this.key = crypto.pbkdf2Sync(key, salt, KEY_DERIVATION_ITERATIONS, KEY_LENGTH, 'sha512');
   }
 
   encrypt(plaintext: string): EncryptionResult {
@@ -133,23 +142,25 @@ export function getOrCreateEncryptionKey(config: XmppAccountConfig): string {
 }
 
 export function getOrCreateEncryptionSalt(config: XmppAccountConfig): string {
-  // 1. If salt explicitly set in config, use it
   if (config.encryptionSalt && typeof config.encryptionSalt === 'string' && config.encryptionSalt.length > 0) {
     return config.encryptionSalt;
   }
 
-  // 2. If there's an existing encrypted password but no salt in config,
-  // use default salt for backward compatibility
+  // Legacy fallback for existing ENC: passwords encrypted with the old default salt
+  // This allows decryption of passwords encrypted before dataDir was configured
   if (config.password && config.password.startsWith('ENC:') && config.encryptionKey) {
+    console.warn("[ENCRYPTION] Using legacy default salt for existing encrypted password. Consider configuring dataDir for future encryptions.");
     return DEFAULT_SALT;
   }
 
-  // 3. For new encryptions, get or create installation salt
   if (config.dataDir) {
     return getInstallationSalt(config.dataDir);
   }
 
-  return DEFAULT_SALT;
+  throw new Error(
+    "Cannot determine encryption salt: neither encryptionSalt nor dataDir is configured. " +
+    "Set dataDir in your XMPP account configuration."
+  );
 }
 
 export function encryptPasswordWithKey(password: string, key: string, salt?: string): string {
@@ -215,7 +226,6 @@ export function updateConfigWithEncryptedPassword(
   plaintextPassword: string
 ): { success: boolean; error?: string } {
   try {
-    const fs = require('fs');
     const configData = fs.readFileSync(configPath, 'utf8');
     const config = JSON.parse(configData);
 

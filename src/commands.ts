@@ -3,6 +3,7 @@ import { spawn, execSync } from "child_process";
 import { fileURLToPath } from "node:url";
 import path from "path";
 import { joinRoom, leaveRoom, getJoinedRooms, inviteToRoom, removeContact } from "./gateway-client.js";
+import { getContactsInstance } from "./lib/contact-factory.js";
 
 // Simple roster functions without fs-extra
 let roster: Record<string, { nick?: string }> = {};
@@ -257,7 +258,7 @@ export function registerXmppCli({
       try {
         const contacts = getContacts?.();
         if (contacts?.add) {
-          const success = contacts.add(jid, name);
+          const success = await contacts.add(jid, name);
           if (success) {
             const displayName = name || jid.split('@')[0];
             console.log(`✓ Contact added: ${jid}`);
@@ -267,26 +268,16 @@ export function registerXmppCli({
             console.error("Failed to add contact");
           }
         } else {
-          // Fallback: direct Contacts class instantiation
-          const path = await import('path');
-          const fs = await import('fs');
-          const dataDir = process.env.OPENCLAW_DATA || path.join(process.cwd(), 'data');
+          const contactsInstance = await getContactsInstance();
           
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          
-          const { Contacts } = await import('./contacts.js');
-          const contactsInstance = new Contacts(dataDir);
-          
-          if (contactsInstance.exists(jid)) {
+          if (await contactsInstance.exists(jid)) {
             console.log(`Contact already exists: ${jid}`);
-            const existingName = contactsInstance.getName(jid);
+            const existingName = await contactsInstance.getName(jid);
             if (existingName) {
               console.log(`  Current name: ${existingName}`);
             }
           } else {
-            contactsInstance.add(jid, name);
+            await contactsInstance.add(jid, name);
             const displayName = name || jid.split('@')[0];
             console.log(`✓ Contact added: ${jid}`);
             console.log(`  Name: ${displayName}`);
@@ -312,25 +303,16 @@ export function registerXmppCli({
       try {
         const contacts = getContacts?.();
         if (contacts?.remove) {
-          const removed = contacts.remove(jid);
+          const removed = await contacts.remove(jid);
           if (removed) {
             console.log(`✓ Contact removed: ${jid}`);
           } else {
             console.error("Contact not found in whitelist");
           }
         } else {
-          const path = await import('path');
-          const fs = await import('fs');
-          const dataDir = process.env.OPENCLAW_DATA || path.join(process.cwd(), 'data');
+          const contactsInstance = await getContactsInstance();
           
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          
-          const { Contacts } = await import('./contacts.js');
-          const contactsInstance = new Contacts(dataDir);
-          
-          const removed = contactsInstance.remove(jid);
+          const removed = await contactsInstance.remove(jid);
           if (removed) {
             console.log(`✓ Contact removed: ${jid}`);
           } else {
@@ -384,7 +366,7 @@ export function registerXmppCli({
       try {
         const contacts = getContacts?.();
         if (contacts?.list) {
-          const contactList = contacts.list();
+          const contactList = await contacts.list();
           if (contactList.length === 0) {
             console.log("No contacts in whitelist");
             console.log("Add contacts with: openclaw xmpp add <jid> [name]");
@@ -395,18 +377,8 @@ export function registerXmppCli({
             });
           }
         } else {
-          // Fallback: direct Contacts class instantiation
-          const path = await import('path');
-          const fs = await import('fs');
-          const dataDir = process.env.OPENCLAW_DATA || path.join(process.cwd(), 'data');
-          
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          
-          const { Contacts } = await import('./contacts.js');
-          const contactsInstance = new Contacts(dataDir);
-          const contactList = contactsInstance.list();
+          const contactsInstance = await getContactsInstance();
+          const contactList = await contactsInstance.list();
           
           if (contactList.length === 0) {
             console.log("No contacts in whitelist");

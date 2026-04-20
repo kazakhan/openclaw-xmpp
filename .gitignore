@@ -51,3 +51,7 @@ PLAN.md
 
 dist/
 logs/*
+.backups
+_backups
+_trash
+
