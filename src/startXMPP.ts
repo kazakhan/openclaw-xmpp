@@ -12,9 +12,8 @@ import { child } from "./lib/logger.js";
 import { parseVCard } from "./lib/vcard-protocol.js";
 import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFileWithHTTPUpload, discoverUploadService } from "./lib/upload-protocol.js";
 
-const RECONNECT_BASE_MS = 1000;
-const RECONNECT_MAX_MS = 60000;
-const RECONNECT_BACKOFF_FACTOR = 2;
+// XEP-0199 Ping interval: 5 minutes
+const PING_INTERVAL_MS = 5 * 60 * 1000;
 
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
@@ -201,35 +200,89 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     xmppLog.error("connection error", err);
   });
 
+  // Use built-in reconnect with longer delay (1s default -> 5s)
+  if ((xmpp as any).reconnect) {
+    (xmpp as any).reconnect.delay = 5000;
+    xmppLog.debug("reconnect delay set to 5000ms");
+  }
+
   xmpp.on("offline", () => {
-    log.warn("XMPP went offline, scheduling reconnect");
+    log.warn("XMPP went offline, stopping ping timer");
     isRunning = false;
     if (ibbCleanupInterval) { clearInterval(ibbCleanupInterval); }
-    scheduleReconnect(xmpp);
+    stopPingTimer();
   });
 
-   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let reconnectAttempts = 0;
+  // XEP-0199 XMPP Ping keepalive timer
+  const PING_TIMEOUT_MS = 30 * 1000;       // 30s to respond
+  let pingTimer: ReturnType<typeof setTimeout> | null = null;
+  let pingOutstanding = false;
 
-  function scheduleReconnect(client: any): void {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    const delay = Math.min(RECONNECT_BASE_MS * Math.pow(RECONNECT_BACKOFF_FACTOR, reconnectAttempts), RECONNECT_MAX_MS);
-    log.info("reconnect scheduled", { attempt: reconnectAttempts + 1, delayMs: delay });
-    reconnectTimer = setTimeout(async () => {
-      reconnectAttempts++;
-      try { await client.start(); } catch (err) { log.error("reconnect failed", err); scheduleReconnect(client); }
-    }, delay);
+  function stopPingTimer(): void {
+    if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
+    pingOutstanding = false;
   }
 
-  function clearReconnect(): void {
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    reconnectAttempts = 0;
+  async function sendPing(): Promise<boolean> {
+    if (!isRunning || pingOutstanding) return false;
+    const id = `ping-${Date.now()}`;
+    let responseReceived = false;
+
+    const handler = (stanza: any) => {
+      if (stanza.attrs.id === id && stanza.attrs.type === "result") {
+        responseReceived = true;
+        pingOutstanding = false;
+        xmpp.off("stanza", handler);
+      }
+    };
+
+    xmpp.on("stanza", handler);
+
+    try {
+      await xmpp.send(xml("iq", { type: "get", id }, xml("ping", { xmlns: "urn:xmpp:ping" })));
+
+      // Wait for response with timeout
+      let waited = 0;
+      while (!responseReceived && waited < PING_TIMEOUT_MS) {
+        await new Promise((r) => setTimeout(r, 100));
+        waited += 100;
+      }
+
+      if (!responseReceived) {
+        xmpp.off("stanza", handler);
+        pingOutstanding = false;
+        return false;
+      }
+      return true;
+    } catch {
+      xmpp.off("stanza", handler);
+      pingOutstanding = false;
+      return false;
+    }
   }
 
-   xmpp.on("online", async (address: any) => {
+  function schedulePing(): void {
+    if (pingTimer) clearTimeout(pingTimer);
+    pingTimer = setTimeout(async () => {
+      if (!isRunning) return;
+      pingOutstanding = true;
+      const ok = await sendPing();
+      if (ok) {
+        xmppLog.debug("ping succeeded");
+        schedulePing();
+      } else {
+        xmppLog.warn("ping failed, reconnecting");
+        stopPingTimer();
+        try { await xmpp.stop(); } catch { /* ignore */ }
+        try { await xmpp.start(); } catch (err) { log.error("ping-triggered reconnect failed", err); }
+      }
+    }, PING_INTERVAL_MS);
+  }
+
+xmpp.on("online", async (address: any) => {
     log.info("XMPP online as", address.toString());
-    clearReconnect();
-      debugLog("XMPP connected successfully");
+    schedulePing();
+    debugLog("XMPP connected successfully");
  
       // Send initial presence to appear online
       try {
@@ -2099,7 +2152,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
   xmppClient.stop = async () => {
     log.info("XMPP shutting down gracefully");
-    clearReconnect();
+    stopPingTimer();
     if (ibbCleanupInterval) clearInterval(ibbCleanupInterval);
     try { await xmpp.send(xml("presence", { type: "unavailable" })); } catch {}
     try { await xmpp.stop(); } catch (err) { log.error("xmpp.stop error", err); }
