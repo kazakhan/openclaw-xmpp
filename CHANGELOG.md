@@ -5,6 +5,96 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-05-05
+
+### Fixed
+- **XMPP connection TimeoutError after OpenClaw 2026.5.x upgrade**: Increased connection timeout from 2s to 30s.
+- **Agent not replying to messages — rewritten dispatch to use modern pipeline**: The hand-rolled `simpleDispatcher` + `dispatchReplyFromConfig` approach was incompatible with OpenClaw 2026.5.3's reply dispatch pipeline. Replaced with the modern `dispatchInboundReplyWithBase` pattern (same approach used by IRC plugin).
+
+#### Root Causes
+1. The `@xmpp/connection` has a hardcoded 2-second default timeout for stream opening. Under OpenClaw 2026.5.x's jiti-based TypeScript loader, plugin initialization can take longer, causing the connection attempt to time out.
+
+2. **Primary reply dispatch failure — incompatible with OpenClaw 2026.5.3**: The hand-rolled `simpleDispatcher` + `dispatchReplyFromConfig` approach bypassed the turn kernel that OpenClaw 2026.5.3 now requires. The dispatch was missing `sendToolResult`, had wrong return types, wrong `getQueuedCounts` keys (`toolResult` vs `tool`), missing `getFailedCounts`, and missing `markComplete`. Even with all those fixed, the low-level approach doesn't go through the proper route resolution, session recording, and reply pipeline orchestration that modern OpenClaw expects.
+
+3. **Groupchat replies silently suppressed**: OpenClaw 2026.5.3's `resolveSourceReplyDeliveryMode` defaults group/channel messages to `"message_tool_only"`, which sets `suppressDelivery = true`. The agent response is stored in the session (visible in OpenClaw webchat) but the channel's `deliver` callback is never invoked. Direct messages default to `"automatic"` so they work. Fix: set `messages.groupChat.visibleReplies = "automatic"` in config.
+
+#### Changes
+- **`src/gateway.ts`**:
+  - **Rewrote message dispatch to use the modern pipeline**: Replaced the hand-rolled `buildContextPayload` + `recordInboundSession` + `dispatchReplyFromConfig` + `simpleDispatcher` + fallback methods with `dispatchInboundReplyWithBase` from `openclaw/plugin-sdk/inbound-reply-dispatch`
+  - Added diagnostic logging: `DISPATCH_ENTERED` at start of dispatch block, `DISPATCH_CALL` before `dispatchInboundReplyWithBase` call, `GC_DELIVER` at deliver callback, `GC_SEND` before/after XMPP send, to trace groupchat delivery path
+  - Cleaned up: removed diagnostic `log.error` lines after groupchat delivery was confirmed working
+  - Uses `runtime.channel.routing.resolveAgentRoute()` for proper route resolution (replaces hardcoded `agentId: "main"`)
+  - Uses `runtime.channel.reply.finalizeInboundContext()` for context normalization (replaces `buildContextPayload`)
+  - Uses `dispatchInboundReplyWithBase()` which orchestrates session recording, turn kernel dispatch, and reply delivery
+  - Provides a `deliver` callback that sends replies via `xmpp.send()`/`xmpp.sendGroupchat()` with full whiteboard (SXE/SWB) and message persistence support
+  - Removed 250+ lines of legacy dispatch code including `simpleDispatcher`, Method 1, Method 2, and all fallback dispatch methods
+  - **Bug fix**: `core` parameter passed as `channelRuntime` instead of `{ channel: channelRuntime }` — caused `TypeError` in `buildInboundReplyDispatchBase` when accessing `core.channel.session.recordInboundSession`
+  - **Added comprehensive error handling and logging**: Wrapped the entire dispatch block in try-catch with detailed error logging (message, stack, type, full error object) to diagnose any dispatch failures. Added `onRecordError` and `onDispatchError` callbacks. Added debug logs for each dispatch step (route resolution, store path, context finalization, import).
+  - **Added groupchat send logging and fallback**: Added detailed logging around `sendGroupchat` calls (isGroupChat, options.type, jid, text length). If `sendGroupchat` fails, falls back to constructing the stanza manually via `xml("message", ...)`.
+  - **Added definitive deliver call logging**: Added `log.error("DELIVER CALLED:")` at the very start of the deliver function and `log.error("DISPATCH BASE RETURNED:")` after `dispatchInboundReplyWithBase` to definitively determine whether deliver is being invoked.
+
+- **`dist/` directory deleted**:
+  - Old compiled JS files were shadowing the `.ts` source files. OpenClaw 2026.5.3 loads compiled `.js` from `dist/` in preference to `.ts` sources.
+
+- **`install.sh` / `install.ps1`**:
+  - Created Linux (bash) and Windows (PowerShell) install scripts that automate: cloning, npm install, dist cleanup, TypeScript compilation, plugin registration, and groupchat reply config.
+
+- **`README.md`**:
+  - Rewrote installation section for OpenClaw 2026.5.4+ (compile TS, `--force` flag, groupchat config)
+  - Added Troubleshooting section with common issues and fixes
+  - Updated file layout to reflect current source structure
+  - Added `visibleReplies` configuration documentation
+
+- **`src/startXMPP.ts`**:
+  - Increased connection timeout from 2s to 30s after client creation (`xmpp.timeout = 30000`)
+  - Added `scheduleReconnect()` with exponential backoff (base=1s, max=60s, factor=2) — checks `xmpp.status` before calling `stop()` to prevent `ERR_STREAM_WRITE_AFTER_END` crash on dead connections
+  - Modified initial `xmpp.start().catch()` to trigger reconnection on failure
+  - Unified ping-failure reconnect to use `scheduleReconnect()` instead of inline stop/start
+  - Modified "offline" event handler to call `scheduleReconnect()`
+  - Modified "online" event handler to clear reconnect timer and reset attempt count
+  - Added reconnection state variables and constants
+
+- **`setup-entry.ts`**:
+  - Fixed from `export default {}` to `export { default } from "./index.js"` — properly re-exports the register function from the main entry so setup-runtime mode doesn't silently fail
+
+- **`openclaw.plugin.json`**:
+  - Added `channelConfigs.xmpp` metadata with permissive `{ "type": "object" }` schema for cold-path config validation
+  - **Schema fix**: Removed all property-level validation after `oneOf` rejected a boolean value in `autoJoinRooms`
+
+- **`tsconfig.json`**:
+  - Created TypeScript compiler configuration for building the plugin
+
+- **`package.json`**:
+  - Updated build/typecheck scripts to use tsconfig.json
+
+- **OpenClaw config** (`messages.groupChat.visibleReplies`):
+  - Set to `"automatic"` to prevent OpenClaw 2026.5.3 from suppressing channel delivery for groupchat replies. Without this, `resolveSourceReplyDeliveryMode` defaults to `"message_tool_only"` for group/channel messages, which sets `suppressDelivery = true` and prevents the `deliver` callback from ever being called.
+
+#### Backups
+- `src/startXMPP.ts.backup_20260425_110028_eoffix` - Before EOF reconnection fix
+- `src/startXMPP.ts.backup_20260505_073729_initfix` - Before init timeout/reconnect fix
+- `src/startXMPP.ts.backup_20260505_143824_brokenreconnect` - Before revert to original connection code
+- `src/startXMPP.ts.backup_20260505_144535_reconn` - Before adding status-checked reconnection
+- `openclaw.plugin.json.backup_20260505_073729_initfix` - Before channelConfigs addition
+- `openclaw.plugin.json.backup_20260505_074505_schemafix` - Before schema strictness fix
+- `openclaw.plugin.json.backup_20260505_074909_permissive` - Before schema replaced with { type: object }
+- `src/gateway.ts.backup_20260505_081035_dispatchfix` - Before dispatcher missing sendToolResult
+- `src/gateway.ts.backup_20260505_084759_modern` - Before rewrite to modern dispatchInboundReplyWithBase pipeline
+- `src/gateway.ts.backup_20260505_092847_corefix` - Before core param fix (was missing { channel: } wrapper)
+- `src/gateway.ts.backup_20260505_100511_logging` - Before adding try-catch error logging
+- `src/gateway.ts.backup_20260505_135705_gclog` - Before adding groupchat send logging and fallback
+- `src/gateway.ts.backup_20260505_161501_dispatchlog` - Before adding DISPATCH_ENTERED diagnostic log
+- `src/gateway.ts.backup_20260505_180751_calllog` - Before adding DISPATCH_CALL diagnostic log
+- `src/gateway.ts.backup_20260505_181255_modfix` - Before fixing missing `const mod = await import(...)` line
+- `src/gateway.ts.backup_20260505_183016_cleanup` - Before removing diagnostic log.error lines
+- `README.md.backup_20260505_195408` - Before README rewrite for OpenClaw 2026.5.4+
+- `src/gateway.ts.backup_20260505_183016_cleanup` - Before removing diagnostic log.error lines
+- `src/gateway.ts.backup_20260505_183016_cleanup` - After restore from calllog backup (working state) + re-applied config
+- `C:\Users\kazak\.openclaw\openclaw.json.backup_20260505_160632` - Before setting messages.groupChat.visibleReplies=automatic
+- `dist.backup_20260505_102210.zip` - Before deleting old compiled JS that was shadowing .ts sources
+
+## [1.8.9] - 2026-04-06
+
 ## [1.8.9] - 2026-04-06
 
 ### Fixed

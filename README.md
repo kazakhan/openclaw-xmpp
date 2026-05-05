@@ -10,34 +10,138 @@ Fully functional with shared sessions, memory continuity, SFTP file transfers, p
 
 ## Installation
 
-### Option 1: Clone Repository
+### Prerequisites
+- OpenClaw 2026.5+ (tested on 2026.5.3-2026.5.4)
+- Node.js >= 22
+- npm
+
+### Quick Install (recommended)
+
+#### Linux
 ```bash
-# Create xmpp folder in extensions directory
-mkdir -p ~/.openclaw/extensions/xmpp
-
-# Clone the repository
+# Clone and run installer
 git clone https://github.com/kazakhan/openclaw-xmpp.git ~/.openclaw/extensions/xmpp
+chmod +x ~/.openclaw/extensions/xmpp/install.sh
+~/.openclaw/extensions/xmpp/install.sh
+```
 
-# Install dependencies
+#### Windows (PowerShell)
+```powershell
+# Clone and run installer
+git clone https://github.com/kazakhan/openclaw-xmpp.git "$env:USERPROFILE\.openclaw\extensions\xmpp"
+& "$env:USERPROFILE\.openclaw\extensions\xmpp\install.ps1"
+```
+
+### Manual Install
+
+#### Step 1: Get the code
+```bash
+# Linux
+mkdir -p ~/.openclaw/extensions/xmpp
+git clone https://github.com/kazakhan/openclaw-xmpp.git ~/.openclaw/extensions/xmpp
+```
+```powershell
+# Windows
+md "$env:USERPROFILE\.openclaw\extensions\xmpp" -Force
+git clone https://github.com/kazakhan/openclaw-xmpp.git "$env:USERPROFILE\.openclaw\extensions\xmpp"
+```
+
+#### Step 2: Install dependencies
+```bash
 cd ~/.openclaw/extensions/xmpp
 npm install
 ```
 
-### Option 2: Download Release
-1. Download the latest release from https://github.com/kazakhan/openclaw-xmpp/releases
-2. Extract to `~/.openclaw/extensions/`
-3. Rename `openclaw-xmpp` to `xmpp`
-4. Open terminal in `~/.openclaw/extensions/xmpp` and run:
+#### Step 3: Remove old compiled JS
 ```bash
-npm install
+rm -rf ~/.openclaw/extensions/xmpp/dist
+```
+The `dist/` directory contains compiled JavaScript that can shadow edited `.ts` source files. Always delete it after pulling updates.
+
+#### Step 4: Compile TypeScript
+OpenClaw 2026.5.4+ requires compiled JS for plugin installation:
+```bash
+cd ~/.openclaw/extensions/xmpp
+npx tsc
+```
+Type errors in the codebase are pre-existing and non-blocking; the compiler will still emit the required JS files.
+
+#### Step 5: Register the plugin
+```bash
+openclaw plugins install --force ~/.openclaw/extensions/xmpp
+```
+The `--force` flag bypasses the security scanner (the plugin uses `child_process` for SSH/SFTP support — legitimate functionality).
+
+#### Step 6: Configure your XMPP account
+```bash
+openclaw config set channels.xmpp.accounts.default.service "xmpp://your-server:5222"
+openclaw config set channels.xmpp.accounts.default.domain "your-domain"
+openclaw config set channels.xmpp.accounts.default.jid "user@domain"
+openclaw config set channels.xmpp.accounts.default.password "your-password"
+openclaw config set channels.xmpp.accounts.default.dataDir "~/.openclaw/extensions/xmpp/data"
+openclaw config set channels.xmpp.accounts.default.enabled true
 ```
 
-## Setup
+#### Step 7: Enable groupchat replies
+OpenClaw 2026.5+ suppresses channel delivery for groupchat by default. This is required for the plugin to send responses to MUC rooms:
+```bash
+openclaw config set messages.groupChat.visibleReplies automatic
+```
 
-Configure your XMPP account in ~/.openclaw/openclaw.json
-- Format in Configuration section below
-- Password can be plaintext or encrypted (ENC:...)
-- Run `openclaw xmpp encrypt-password` to encrypt existing password
+#### Step 8: Start the gateway
+```bash
+openclaw gateway
+```
+
+#### Step 9: Whitelist contacts
+```bash
+openclaw xmpp add user@domain.com
+```
+
+## Configuration
+
+### XMPP Account
+Configured under `channels.xmpp.accounts.default` in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "channels": {
+    "xmpp": {
+      "accounts": {
+        "default": {
+          "enabled": true,
+          "service": "xmpp://your-server:5222",
+          "domain": "your-domain",
+          "jid": "bot@domain",
+          "password": "your-password",
+          "dataDir": "/home/user/.openclaw/extensions/xmpp/data",
+          "resource": "openclaw",
+          "adminJid": "admin@domain",
+          "nick": "MyBot",
+          "dmPolicy": "open",
+          "allowFrom": [],
+          "rooms": [],
+          "vcard": {
+            "fn": "My Bot Name",
+            "nickname": "MyBot"
+          }
+        }
+      }
+    }
+  },
+  "messages": {
+    "groupChat": {
+      "visibleReplies": "automatic"
+    }
+  }
+}
+```
+
+### Password Encryption
+```bash
+openclaw xmpp encrypt-password
+```
+Encrypts the `password` field in config using AES-256-GCM with PBKDF2-SHA512.
 
 ## Security
 
@@ -208,54 +312,109 @@ Add to `~/.openclaw/openclaw.json`:
 - `password`: Use plaintext for initial setup, then run `openclaw xmpp encrypt-password` to encrypt
 - `encryptionKey`: Auto-generated when encrypting password
 - `sessionMemory`: Enable shared session memory between direct chat and groupchat
+- `visibleReplies`: **Must** be set to `"automatic"` for groupchat replies to work (see Installation Step 7)
 
 ## Quick Start
 
 ```bash
-# Configure account in ~/.openclaw/openclaw.json
-openclaw xmpp encrypt-password  # Encrypt your password (recommended)
+# Configure account
+openclaw config set channels.xmpp.accounts.default.service "xmpp://your-server:5222"
+openclaw config set channels.xmpp.accounts.default.domain "your-domain"
+openclaw config set channels.xmpp.accounts.default.jid "user@domain"
+openclaw config set channels.xmpp.accounts.default.password "your-password"
+openclaw config set channels.xmpp.accounts.default.dataDir "~/.openclaw/extensions/xmpp/data"
+openclaw config set channels.xmpp.accounts.default.enabled true
+openclaw config set messages.groupChat.visibleReplies automatic
 
-openclaw xmpp add user@domain.com  # Whitelist contact
-openclaw xmpp status               # Test connection
-openclaw xmpp sftp upload /path/to/file.pdf
+# Encrypt your password (recommended)
+openclaw xmpp encrypt-password
+
+# Whitelist contacts
+openclaw xmpp add user@domain.com
+
+# Start gateway
+openclaw gateway
 ```
+
+## Troubleshooting
+
+### Plugin not found / unknown channel id
+```bash
+openclaw plugins install --force ~/.openclaw/extensions/xmpp
+```
+
+### "requires compiled runtime output for TypeScript entry"
+Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
+
+### No groupchat replies (agent responds in webchat but not in room)
+```bash
+openclaw config set messages.groupChat.visibleReplies automatic
+```
+OpenClaw 2026.5+ defaults to `message_tool_only` for group/channel messages, which suppresses the channel `deliver` callback. Setting `visibleReplies = "automatic"` restores channel delivery.
+
+### Changes to .ts files have no effect
+Delete the `dist/` directory — compiled JS files there take precedence over `.ts` sources when OpenClaw loads the plugin.
+
+### Plugin install blocked by security scanner
+```bash
+openclaw plugins install --force ~/.openclaw/extensions/xmpp
+```
+The scanner flags `child_process` usage (SSH/SFTP) and environment variable access. These are legitimate and required for the plugin's file transfer features.
+
+### "write after end" crash on reconnect (ERR_STREAM_WRITE_AFTER_END)
+This was fixed by checking `xmpp.status` before calling `stop()` in the reconnect logic. Update to the latest version.
+
+### Certificate errors (CERT_HAS_EXPIRED)
+Your XMPP server's SSL certificate has expired. Renew it on the server, or use a trusted CA.
 
 ## File Layout
 
 ```
 xmpp/
-├── index.ts                    # Main plugin with XMPP client, MUC, messaging
-├── package.json                # Dependencies (@xmpp/client, ssh2, basic-ftp)
-├── openclaw.plugin.json
+├── index.ts                    # Plugin entry point (register function)
+├── setup-entry.ts              # Setup entry (re-exports from index.ts)
+├── package.json                # Dependencies (@xmpp/client, ssh2)
+├── openclaw.plugin.json        # Plugin manifest (channel registration)
+├── tsconfig.json               # TypeScript compiler configuration
+├── install.sh                  # Linux install script
+├── install.ps1                 # Windows install script
 ├── src/
+│   ├── gateway.ts            # Gateway lifecycle (start/stop account, message dispatch)
+│   ├── startXMPP.ts          # XMPP client setup, stanza handler, reconnection
+│   ├── outbound.ts           # Outbound message sending
 │   ├── commands.ts           # CLI commands registration
-│   ├── sftp.ts               # SFTP client (SSH-based, encrypted password)
-│   ├── ftp.ts                # FTP client (legacy)
 │   ├── contacts.ts           # Contact management
+│   ├── whiteboard.ts         # Whiteboard (SXE/SWB) message parsing
+│   ├── whiteboard-session.ts # Whiteboard session manager
 │   ├── messageStore.ts       # Message persistence
 │   ├── vcard.ts              # vCard handling
 │   ├── vcard-cli.ts          # vCard CLI commands
 │   ├── fileTransfer.ts       # HTTP upload/SI file transfer
-│   ├── roster.ts             # Roster management
 │   ├── jsonStore.ts          # JSON storage utilities
 │   ├── types.ts              # TypeScript types
-│   ├── state.ts              # State management
-│   ├── logger.ts             # Logging utilities
-│   ├── utils.ts              # Utility functions
+│   ├── config.ts             # Plugin configuration constants
+│   ├── gateway-client.ts     # Gateway RPC client
+│   ├── sftp.ts               # SFTP client (SSH-based)
 │   └── security/
+│       ├── adapter.ts        # Security adapter for OpenClaw SDK
 │       ├── encryption.ts     # Password encryption (AES-256-GCM)
 │       ├── validation.ts     # Input validation (JID, filename, URL)
-│       ├── logging.ts        # Secure debug logging with sanitization
-│       └── fileTransfer.ts   # Secure file transfer (MIME, quarantine, malware)
-├── data/                     # Storage
+│       ├── fileTransfer.ts   # Secure file transfer (MIME, quarantine)
+│   └── lib/
+│       ├── logger.ts         # Logging utilities
+│       ├── upload-protocol.ts # HTTP File Upload (XEP-0363)
+│       ├── vcard-protocol.ts # vCard protocol helpers
+│       ├── persistent-queue.ts # Persistent message queue
+│       ├── contact-factory.ts # Contact factory
+│       └── config-loader.ts  # Config loader
+├── data/                     # Storage (per-install, DO NOT COPY between machines)
 │   ├── xmpp-contacts.json
 │   ├── xmpp-admins.json
 │   ├── xmpp-vcard.json
 │   └── messages/
 │       ├── direct/
 │       └── group/
-├── quarantine/               # Quarantined files (auto-created)
-├── temp/                     # Temporary files (auto-created)
+├── dist/                     # Compiled JS (delete after pulling updates)
 ├── README.md
 └── CHANGELOG.md
 ```

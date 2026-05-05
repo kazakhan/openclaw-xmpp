@@ -116,6 +116,7 @@ export interface MessageOptions {
   mediaUrls?: string[];
   mediaPaths?: string[];
   whiteboardData?: WhiteboardData;
+  isSystemMessage?: boolean;
 }
 
 export interface WhiteboardPath {
@@ -141,6 +142,24 @@ export interface WhiteboardData {
   moves?: WhiteboardMove[];
   deletes?: WhiteboardDelete[];
   rawXml?: string;
+}
+
+export interface WhiteboardSession {
+  jid: string;
+  createdAt: number;
+  lastActivity: number;
+  instructionsSent: boolean;
+  paths: WhiteboardPath[];
+  moves: WhiteboardMove[];
+  deletes: WhiteboardDelete[];
+  incomingTimer: NodeJS.Timeout | null;
+}
+
+export interface SvgPathCommand {
+  path: string;
+  color?: string;
+  width?: number;
+  index: number;
 }
 
 export interface SlashCommandContext {

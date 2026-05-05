@@ -3,6 +3,8 @@ import crypto from "crypto";
 import { log } from "./lib/logger.js";
 import { debugLog } from "./shared/index.js";
 import { MessageStore } from "./messageStore.js";
+import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml } from "./whiteboard.js";
+import { xml } from "@xmpp/client";
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
 
 export { type GatewayContext } from "./types.js";
@@ -154,7 +156,7 @@ export class GatewayLifecycle {
       config,
       contacts,
       logger,
-      async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean }) => {
+      async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => {
         if (!isRunning) {
           debugLog("XMPP message ignored - plugin not running");
           return;
@@ -164,59 +166,6 @@ export class GatewayLifecycle {
 
         let dispatchSuccess = false;
         let dispatchError: any = null;
-
-        const buildContextPayload = (sessionKey: string, senderBareJid: string) => {
-          const room = options?.room || from;
-          const nick = options?.nick || from.split('/')[1] || from.split('@')[0];
-          const senderId = senderBareJid;
-          const senderName = from.split('@')[0];
-          const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
-          const chatType = (isGroupChatMessage ? "channel" : "direct") as "direct" | "channel";
-          const conversationLabel = options?.room
-            ? `XMPP Groupchat: ${options.room}`
-            : `XMPP: ${senderBareJid}`;
-
-          let replyDestination: string;
-          if (options?.type === "chat" && room) {
-            replyDestination = `${room}/${nick}`;
-          } else if (room) {
-            replyDestination = room;
-          } else {
-            replyDestination = senderBareJid;
-          }
-
-          const uniqueMessageId = `xmpp-${crypto.randomUUID()}`;
-
-          return {
-            Body: body,
-            RawBody: body,
-            CommandBody: body,
-            From: `xmpp:${senderBareJid}`,
-            To: `xmpp:${replyDestination}`,
-            SessionKey: sessionKey,
-            AccountId: account.accountId,
-            ChatType: chatType,
-            ConversationLabel: conversationLabel,
-            SenderName: senderName,
-            SenderId: senderId,
-            Provider: "xmpp" as const,
-            Surface: "xmpp" as const,
-            WasMentioned: false,
-            MessageSid: uniqueMessageId,
-            Timestamp: Date.now(),
-            CommandAuthorized: true,
-            CommandSource: "text" as const,
-            OriginatingChannel: "xmpp" as const,
-            OriginatingTo: `xmpp:${replyDestination}`,
-            MediaUrls: options?.mediaUrls || [],
-            MediaPaths: options?.mediaPaths || [],
-            MediaUrl: options?.mediaUrls?.[0] || null,
-            MediaPath: options?.mediaPaths?.[0] || null,
-            WhiteboardPrompt: options?.whiteboardPrompt || null,
-            WhiteboardRequest: options?.whiteboardRequest || false,
-            WhiteboardImage: options?.whiteboardImage || false,
-          };
-        };
 
         // Add message to queue for polling
         const messageId = this.queue.addToQueue({
@@ -267,279 +216,188 @@ export class GatewayLifecycle {
 
         // Try to forward message using runtime channel methods
         if (runtime?.channel) {
-          log.debug("dispatch inbound", { from: senderBareJid, type: options?.type });
+          log.debug("dispatch inbound", { from: senderBareJid, type: options?.type, hasWhiteboardData: !!options?.whiteboardData, bodyLen: body?.length });
 
           dispatchSuccess = false;
           dispatchError = null;
 
-          if (runtime.channel.session?.recordInboundSession) {
-            try {
-              const storePath = runtime.channel.session.resolveStorePath(ctx.cfg.session?.store, {
-                agentId: "main",
-              });
-
-              const isRoomJid = !!options?.room;
-
-              let sessionKey: string;
-              let replyTo: string;
-
-              const nick = options?.nick;
-              const room = options?.room;
-
-              if (room) {
-                sessionKey = `xmpp:${senderBareJid}`;
-                if (options?.type === "chat") {
-                  replyTo = `${room}/${nick}`;
-                } else {
-                  replyTo = room;
-                }
-              } else {
-                sessionKey = `xmpp:${senderBareJid}`;
-                replyTo = senderBareJid;
-              }
-
-              const payloadNick = nick || from.split('/')[1] || 'unknown';
-              const payloadJid = senderBareJid;
-              const ctxPayload = buildContextPayload(sessionKey, payloadJid);
-
-              await runtime.channel.session.recordInboundSession({
-                storePath,
-                sessionKey,
-                ctx: ctxPayload,
-                updateLastRoute: {
-                  sessionKey: sessionKey,
-                  channel: "xmpp",
-                  to: `xmpp:${payloadJid}`,
-                  accountId: account.accountId,
-                },
-                onRecordError: (err: any) => {
-                  log.error("Error recording session:", err);
-                  log.error("Error details:", err instanceof Error ? err.stack : err);
-                },
-              });
-
-              dispatchSuccess = false;
-              dispatchError = null;
-
-              try {
-                // METHOD 1: dispatchReplyFromConfig (fast path)
-                if (runtime.channel.reply?.dispatchReplyFromConfig && !dispatchSuccess) {
-
-                  const immediateSendText = async (to: string, text: string) => {
-                    let jid = to;
-                    if (to.startsWith('xmpp:')) {
-                      jid = to.substring(5);
-                    }
-
-                    let cleanText = text;
-                    const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;
-                    const match = text.match(thinkingRegex);
-                    if (match) {
-                      cleanText = text.slice(match[0].length).trim();
-                    }
-
-                    const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
-                    const isPrivateMessage = options?.type === "chat";
-
-                    try {
-                      if (isGroupChatMessage && !isPrivateMessage) {
-                        await xmpp.sendGroupchat(jid.split('/')[0], cleanText);
-                      } else {
-                        await xmpp.send(jid, cleanText);
-                      }
-
-                      try {
-                        await messageStore.saveMessage({
-                          direction: 'outbound',
-                          type: (options?.type || 'chat') as 'chat' | 'groupchat',
-                          roomJid: options?.room || undefined,
-                          fromBareJid: jid,
-                          fromFullJid: `${config.jid}/openclaw`,
-                          to: config.jid,
-                          body: cleanText,
-                          timestamp: Date.now(),
-                          accountId: account.accountId
-                        });
-                        log.debug("outbound message saved", { type: options?.type || 'chat', to: jid });
-                      } catch (err) {
-                        log.error('[MessageStore] Failed to save outbound:', err);
-                      }
-
-                      return { ok: true, channel: "xmpp" };
-                    } catch (err) {
-                      log.error('XMPP SEND ERROR:', err);
-                      return { ok: false, error: String(err), channel: "xmpp" };
-                    }
-                  };
-
-                  const replyToXmpp = `xmpp:${replyTo}`;
-
-                  const simpleDispatcher = {
-                    sendBlockReply: async (payload: any) => {
-                      return immediateSendText(replyToXmpp, payload?.text || payload?.message || payload?.body || JSON.stringify(payload));
-                    },
-                    sendFinalReply: async (payload: any) => {
-                      return immediateSendText(replyToXmpp, payload?.text || payload?.message || payload?.body || JSON.stringify(payload));
-                    },
-                    deliver: async (payload: any) => {
-                      return immediateSendText(replyToXmpp, payload?.text || payload?.message || payload?.body || JSON.stringify(payload));
-                    },
-                    sendText: async (to: string, text: string) => {
-                      return immediateSendText(to, text);
-                    },
-                    sendMessage: async (msg: any) => {
-                      return immediateSendText(msg?.to || replyToXmpp, msg?.text || msg?.body || JSON.stringify(msg));
-                    },
-
-                    waitForIdle: async () => ({ ok: true }),
-                    getQueuedCounts: async () => ({ ok: true, counts: {} }),
-                  };
-
-                  const dispatchStart = Date.now();
-
-                  try {
-                    const result = await runtime.channel.reply.dispatchReplyFromConfig({
-                      ctx: ctxPayload,
-                      cfg: ctx.cfg,
-                      dispatcher: simpleDispatcher,
-                      replyOptions: {},
-                    });
-                    if (result?.ok !== false) {
-                      dispatchSuccess = true;
-                    }
-                  } catch (err) {
-                    log.error("Dispatch error (Method 1):", err);
-                    dispatchError = err;
-                  }
-                }
-
-                // METHOD 2: dispatchReplyWithBufferedBlockDispatcher (if first failed)
-                if (runtime.channel.reply?.dispatchReplyWithBufferedBlockDispatcher && !dispatchSuccess) {
-
-                  const sendText = async (to: string, text: string) => {
-                    let jid = to;
-                    if (to.startsWith('xmpp:')) {
-                      jid = to.substring(5);
-                    }
-
-                    const isGroupChatMessage = options?.type === "groupchat" || options?.type === "chat";
-                    const isPrivateMessage = options?.type === "chat";
-
-                    try {
-                      if (isGroupChatMessage && !isPrivateMessage) {
-                        await xmpp.sendGroupchat(jid.split('/')[0], text);
-                      } else {
-                        await xmpp.send(jid, text);
-                      }
-                      return { ok: true, channel: "xmpp" };
-                    } catch (err) {
-                      log.error("XMPP SEND ERROR (Method 2):", err);
-                      return { ok: false, error: String(err) };
-                    }
-                  };
-
-                  const dispatchStart = Date.now();
-
-                  try {
-                    await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-                      ctx: ctxPayload,
-                      cfg: ctx.cfg,
-                      sendText: sendText,
-                      dispatcherOptions: {},
-                    });
-                    dispatchSuccess = true;
-                  } catch (err) {
-                    log.error("Method 2 dispatch error:", err);
-                    dispatchError = err;
-                  }
-                }
-
-              } catch (err) {
-                log.error("FATAL DISPATCH ERROR:", err);
-                log.error("Error details:", err instanceof Error ? err.stack : err);
-                dispatchError = err;
-              }
-
-              if (dispatchSuccess) {
-                this.queue.markAsProcessed(messageId);
-              } else {
-                log.warn("dispatch failed, message remains in queue", { error: dispatchError || "Unknown error" });
-              }
-              return;
-            } catch (err) {
-              log.error("Error with fallback:", err);
-            }
-          }
-        }
-
-        // Fallback: Try to find the correct inbound method on ctx
-        const inboundMethods = ['receiveText', 'receiveMessage', 'inbound', 'dispatch'];
-
-        for (const methodName of inboundMethods) {
-          if (typeof ctx[methodName] === 'function' && !dispatchSuccess) {
-            try {
-              const fbSenderBareJid = from.split('/')[0];
-              if (methodName === 'receiveText' || methodName === 'receiveMessage') {
-                await ctx[methodName]({
-                  from: `xmpp:${fbSenderBareJid}`,
-                  to: `xmpp:${config.jid}`,
-                  body: body,
-                  channel: "xmpp",
-                  accountId: account.accountId,
-                });
-              } else {
-                await ctx[methodName](fbSenderBareJid, body, {
-                  channel: "xmpp",
-                  accountId: account.accountId,
-                });
-              }
-              dispatchSuccess = true;
-              break;
-            } catch (err) {
-              log.error(`Error with ctx.${methodName}:`, err);
-              dispatchError = err;
-            }
-          }
-        }
-
-        // Try dispatchInboundMessage if ctx methods failed
-        if (runtime?.dispatchInboundMessage && !dispatchSuccess) {
           try {
-            const diSenderBareJid = from.split('/')[0];
-            const diCtxPayload = buildContextPayload(`xmpp:${diSenderBareJid}`, diSenderBareJid);
+            log.error(`DISPATCH_ENTERED: from=${from} bodyLen=${(body||"").length} type=${options?.type} room=${options?.room} nick=${options?.nick}`);
+            const isGroupChat = options?.type === "groupchat";
+            const roomJid = options?.room;
+            const senderBareJid = from.split('/')[0];
 
-            await runtime.dispatchInboundMessage({
-              ctx: diCtxPayload,
+            const channelRuntime = runtime.channel as any;
+
+            log.debug("Resolving agent route...");
+            const route = await channelRuntime.routing.resolveAgentRoute({
               cfg: ctx.cfg,
-            });
-            dispatchSuccess = true;
-          } catch (err) {
-            log.error("Error with dispatchInboundMessage:", err);
-            dispatchError = err;
-          }
-        }
-
-        // Try channel.activity.record as last resort (only logs, doesn't count as success)
-        if (runtime?.channel?.activity?.record && !dispatchSuccess) {
-          try {
-            const actSenderBareJid = from.split('/')[0];
-            runtime.channel.activity.record({
               channel: "xmpp",
               accountId: account.accountId,
-              from: `xmpp:${actSenderBareJid}`,
-              action: "message:inbound",
-              data: { body: body },
+              peer: {
+                kind: (roomJid || isGroupChat) ? "group" : "direct",
+                id: roomJid || senderBareJid,
+              },
             });
-          } catch (err) {
-            log.error("Error recording activity:", err);
-          }
-        }
+            log.debug(`Route resolved: agentId=${route.agentId} sessionKey=${route.sessionKey}`);
 
-        // Final success check - mark as processed only if dispatch succeeded
-        if (dispatchSuccess) {
-          this.queue.markAsProcessed(messageId);
+            const storePath = channelRuntime.session.resolveStorePath(
+              ctx.cfg.session?.store,
+              { agentId: route.agentId }
+            );
+            log.debug(`Store path: ${storePath}`);
+
+            const ctxPayload = channelRuntime.reply.finalizeInboundContext({
+              Body: body,
+              RawBody: body,
+              CommandBody: body,
+              From: `xmpp:${senderBareJid}`,
+              To: `xmpp:${roomJid || senderBareJid}`,
+              SessionKey: route.sessionKey,
+              AccountId: route.accountId,
+              ChatType: (roomJid || isGroupChat) ? "channel" : "direct",
+              ConversationLabel: options?.room
+                ? `XMPP Groupchat: ${options.room}`
+                : `XMPP: ${senderBareJid}`,
+              SenderName: from.split('@')[0],
+              SenderId: senderBareJid,
+              Provider: "xmpp",
+              Surface: "xmpp",
+              WasMentioned: false,
+              CommandAuthorized: true,
+              CommandSource: "text",
+              OriginatingChannel: "xmpp",
+              OriginatingTo: `xmpp:${roomJid || senderBareJid}`,
+              MessageSid: `xmpp-${crypto.randomUUID()}`,
+              Timestamp: Date.now(),
+              MediaUrls: options?.mediaUrls || [],
+              MediaPaths: options?.mediaPaths || [],
+              MediaUrl: options?.mediaUrls?.[0] || null,
+              MediaPath: options?.mediaPaths?.[0] || null,
+            });
+            log.debug("Context finalized");
+
+            log.debug("Importing inbound-reply-dispatch...");
+            const mod = await import("openclaw/plugin-sdk/inbound-reply-dispatch");
+            log.debug("inbound-reply-dispatch loaded");
+
+            await mod.dispatchInboundReplyWithBase({
+              cfg: ctx.cfg,
+              channel: "xmpp",
+              accountId: account.accountId,
+              route,
+              storePath,
+              ctxPayload,
+              core: { channel: channelRuntime },
+              onRecordError: (err: any) => {
+                log.error("Session record error:", err?.message ?? err);
+              },
+              onDispatchError: (err: any, info: { kind: string }) => {
+                log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
+              },
+              deliver: async (payload: any) => {
+                const text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+                let jid = roomJid || senderBareJid;
+                let cleanText = text;
+                const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;
+                const match = text.match(thinkingRegex);
+                if (match) {
+                  cleanText = text.slice(match[0].length).trim();
+                }
+                const bareJid = jid.split('/')[0];
+
+                log.error(`GC_DELIVER: called=true payloadKeys=${Object.keys(payload||{}).join(",")} textLen=${(payload?.text||"").length} isGC=${isGroupChat} optType=${options?.type} roomJid=${roomJid} jid=${jid}`);
+
+                try {
+                  const sessionManager = (global as any).whiteboardSessionManager;
+                  if (sessionManager && sessionManager.hasSession(bareJid)) {
+                    const session = sessionManager.getSession(bareJid);
+                    const svgCommands = parseSvgPathCommands(cleanText);
+                    if (svgCommands.length > 0) {
+                      const pathId = `agent${Date.now()}`;
+                      const paths: any[] = svgCommands.map((cmd: any) => ({
+                        d: cmd.path,
+                        stroke: cmd.color || '#000000',
+                        strokeWidth: cmd.width || 1,
+                        id: `${pathId}_${cmd.index}`
+                      }));
+                      const messageType = (isGroupChat && !(options?.type === "chat")) ? 'groupchat' : 'chat';
+                      let textOnly = cleanText.replace(/\[WHITEBOARD_DRAW\][\s\S]*?\[\/WHITEBOARD_DRAW\]/gi, '').trim();
+                      if (textOnly.length > 2) {
+                        if (isGroupChat && !(options?.type === "chat")) {
+                          await xmpp.sendGroupchat(jid, textOnly);
+                        } else {
+                          await xmpp.send(jid, textOnly);
+                        }
+                      }
+                      if (session.protocol === 'sxe' && session.sessionId) {
+                        const edits = buildSxePathEdits(paths);
+                        const sxeStanzas = sxeEditsToXml(session.sessionId, edits);
+                        for (const sxeElement of sxeStanzas) {
+                          const wbMessage = xml('message', { type: messageType, to: jid },
+                            xml('body', {}, ''),
+                            sxeElement
+                          );
+                          await xmpp.send(wbMessage);
+                        }
+                        sessionManager.updateSession(bareJid, { paths });
+                      } else {
+                        const whiteboardChildren = paths.map((p: any) =>
+                          xml('path', {
+                            d: p.d,
+                            stroke: p.stroke,
+                            'stroke-width': p.strokeWidth.toString(),
+                            id: p.id
+                          })
+                        );
+                        const whiteboardElement = xml('x', { xmlns: 'http://jabber.org/protocol/swb' }, whiteboardChildren);
+                        const wbMessage = xml('message', { type: messageType, to: jid }, whiteboardElement);
+                        await xmpp.send(wbMessage);
+                      }
+                    }
+                  }
+                  log.error(`GC_SEND: pre isGC=${isGroupChat} optType=${options?.type} jid=${jid} cleanTextLen=${cleanText.length} ready=${true}`);
+                  if (isGroupChat && !(options?.type === "chat")) {
+                    await xmpp.sendGroupchat(jid, cleanText);
+                    log.error(`GC_SEND: post groupchat success=true`);
+                  } else {
+                    await xmpp.send(jid, cleanText);
+                    log.error(`GC_SEND: post direct success=true`);
+                  }
+                  try {
+                    await messageStore.saveMessage({
+                      direction: 'outbound',
+                      type: (options?.type || 'chat') as 'chat' | 'groupchat',
+                      roomJid: options?.room || undefined,
+                      fromBareJid: jid,
+                      fromFullJid: `${config.jid}/openclaw`,
+                      to: config.jid,
+                      body: cleanText,
+                      timestamp: Date.now(),
+                      accountId: account.accountId
+                    });
+                  } catch (err) {
+                    log.error('[MessageStore] Failed to save outbound:', err);
+                  }
+                } catch (err) {
+                  log.error('XMPP SEND ERROR:', err);
+                }
+              },
+            });
+
+            dispatchSuccess = true;
+            this.queue.markAsProcessed(messageId);
+            log.info(`Dispatch SUCCESS for ${senderBareJid}`);
+          } catch (err) {
+            log.error("DISPATCH BLOCK FAILED:");
+            log.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
+            log.error(`  Stack: ${err instanceof Error ? err.stack : '(no stack)'}`);
+            log.error(`  Type: ${err?.constructor?.name || typeof err}`);
+            log.error(`  Full: ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`);
+            dispatchError = err;
+          }
         } else {
-          log.warn("all dispatch methods failed, message remains in queue", { error: dispatchError || "Unknown error" });
+          log.warn("runtime.channel not available, cannot dispatch", { error: dispatchError || "Unknown error" });
         }
       }, async (xmppClient) => {
         // Auto-join configured rooms when XMPP is online

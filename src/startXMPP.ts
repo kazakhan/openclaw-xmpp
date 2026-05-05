@@ -5,8 +5,10 @@ import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
 import { parseWhiteboardMessage } from "./whiteboard.js";
+import { parseSxeMessage, buildSxeXml, convertSxeToWhiteboardData, reconstructPathsFromState, buildSxePathEdits, sxeEditsToXml } from "./whiteboard.js";
+import { WhiteboardSessionManager } from "./whiteboard-session.js";
 import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_SIZE } from "./shared/index.js";
-import { Config } from "./config.js";
+import { Config, CapsInfo } from "./config.js";
 import { log } from "./lib/logger.js";
 import { child } from "./lib/logger.js";
 import { parseVCard } from "./lib/vcard-protocol.js";
@@ -15,13 +17,18 @@ import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFi
 // XEP-0199 Ping interval: 5 minutes
 const PING_INTERVAL_MS = 5 * 60 * 1000;
 
+// Reconnection constants
+const RECONNECT_BASE_MS = Config.RECONNECT_BASE_MS || 1000;
+const RECONNECT_MAX_MS = Config.RECONNECT_MAX_MS || 60000;
+const RECONNECT_BACKOFF_FACTOR = Config.RECONNECT_BACKOFF_FACTOR || 2;
+
 // We'll import @xmpp/client lazily when needed
 let xmppClientModule: any = null;
 let isRunning = false;
 
 const xmppLog = child("xmpp");
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string) => void) {
     // Helper to get default resource/nick from JID local part
     const getDefaultResource = () => {
       const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
@@ -72,6 +79,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         password: password,
          resource: getDefaultResource()
        });
+
+   // Increase connection timeout from 2s default to 30s to handle slower startups
+   xmpp.timeout = 30000;
 
    // Helper to resolve room JID - add conference domain if missing
     const resolveRoomJid = (room: string): string => {
@@ -206,11 +216,47 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     xmppLog.debug("reconnect delay set to 5000ms");
   }
 
+  // Reconnection state
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = 0;
+
+  function scheduleReconnect(): void {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+
+    const delay = Math.min(
+      RECONNECT_BASE_MS * Math.pow(RECONNECT_BACKOFF_FACTOR, reconnectAttempts),
+      RECONNECT_MAX_MS
+    );
+
+    xmppLog.warn(`Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts + 1})`);
+    log.warn(`XMPP: scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts + 1})`);
+
+    reconnectTimer = setTimeout(async () => {
+      xmppLog.debug("Attempting reconnect...");
+      reconnectAttempts++;
+      try {
+        // Reset connection state before attempting reconnect
+        try { await xmpp.stop(); } catch { /* ignore if already offline */ }
+        await xmpp.start();
+        xmppLog.debug("Reconnect initiated successfully");
+      } catch (err) {
+        xmppLog.error("Reconnect failed", err);
+        log.error("XMPP reconnect failed", err);
+        // Continue trying - schedule next attempt
+        scheduleReconnect();
+      }
+    }, delay);
+  }
+
   xmpp.on("offline", () => {
     log.warn("XMPP went offline, stopping ping timer");
     isRunning = false;
     if (ibbCleanupInterval) { clearInterval(ibbCleanupInterval); }
+    whiteboardSessionManager.stopCleanup();
+    whiteboardSessionManager.destroy();
     stopPingTimer();
+    // Schedule reconnection with exponential backoff
+    scheduleReconnect();
   });
 
   // XEP-0199 XMPP Ping keepalive timer
@@ -271,24 +317,38 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         xmppLog.debug("ping succeeded");
         schedulePing();
       } else {
-        xmppLog.warn("ping failed, reconnecting");
+        xmppLog.warn("ping failed, scheduling reconnect");
         stopPingTimer();
-        try { await xmpp.stop(); } catch { /* ignore */ }
-        try { await xmpp.start(); } catch (err) { log.error("ping-triggered reconnect failed", err); }
+        isRunning = false;
+        scheduleReconnect();
       }
     }, PING_INTERVAL_MS);
   }
 
 xmpp.on("online", async (address: any) => {
     log.info("XMPP online as", address.toString());
+    // Clear reconnect timer and reset attempts on successful connection
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnectAttempts = 0;
+    xmppLog.debug("Reconnect timer cleared, attempts reset");
     schedulePing();
     debugLog("XMPP connected successfully");
  
-      // Send initial presence to appear online
+      // Send initial presence with Entity Capabilities (XEP-0115)
       try {
-        const presence = xml("presence");
+        const presence = xml("presence", {},
+          xml("c", {
+            xmlns: CapsInfo.xmlns,
+            hash: CapsInfo.hash,
+            node: CapsInfo.node,
+            ver: CapsInfo.ver
+          })
+        );
         await xmpp.send(presence);
-        log.info("Presence sent");
+        log.info("Presence with XEP-0115 caps sent, ver=" + CapsInfo.ver);
       } catch (err) {
         xmppLog.error("presence failed", err);
         log.error("Failed to send presence", err);
@@ -342,12 +402,19 @@ xmpp.on("online", async (address: any) => {
        }
      };
 
-     // Run cleanup every minute
-     const ibbCleanupInterval = setInterval(cleanupIbbSessions, Config.IBB_CLEANUP_INTERVAL_MS);
+      // Run cleanup every minute
+      const ibbCleanupInterval = setInterval(cleanupIbbSessions, Config.IBB_CLEANUP_INTERVAL_MS);
 
-     // Local joined rooms tracking for MUC
-     const joinedRooms = new Set<string>();
-     const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
+      // Whiteboard session tracking
+      const whiteboardSessionManager = new WhiteboardSessionManager(Config.WHITEBOARD_SESSION_TIMEOUT_MS);
+      whiteboardSessionManager.startCleanup(Config.WHITEBOARD_CLEANUP_INTERVAL_MS);
+      
+      // Export for outbound message interception
+      (global as any).whiteboardSessionManager = whiteboardSessionManager;
+
+      // Local joined rooms tracking for MUC
+      const joinedRooms = new Set<string>();
+      const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
 
     // Initialize vCard with config defaults
     const vcard = new VCard(cfg.dataDir);
@@ -407,9 +474,16 @@ xmpp.on("online", async (address: any) => {
        // Handle presence probes
        if (type === "probe") {
          xmppLog.debug("presence", { type: "probe", from });
-         // Respond with available presence
+         // Respond with available presence including Entity Capabilities
          try {
-           const presence = xml("presence", { to: from });
+           const presence = xml("presence", { to: from },
+             xml("c", {
+               xmlns: CapsInfo.xmlns,
+               hash: CapsInfo.hash,
+               node: CapsInfo.node,
+               ver: CapsInfo.ver
+             })
+           );
            await xmpp.send(presence);
          } catch (err) {
            xmppLog.error("presence probe response failed", err);
@@ -710,18 +784,22 @@ xmpp.on("online", async (address: any) => {
         const queryElement = stanza.getChild("query", "http://jabber.org/protocol/disco#info");
         if (queryElement && type === "get") {
           const node = queryElement.attrs.node || "";
-          // Respond with our features
-          const discoResponse = xml("iq", { to: from, type: "result", id },
-            xml("query", { xmlns: "http://jabber.org/protocol/disco#info", node },
-              xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
-              xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
-              xml("feature", { var: "vcard-temp" }),
-              xml("feature", { var: "http://jabber.org/protocol/muc" }),
-              xml("feature", { var: "http://jabber.org/protocol/si/profile/file-transfer" }),
-              xml("feature", { var: "http://jabber.org/protocol/bytestreams" }),
-              xml("feature", { var: "http://jabber.org/protocol/ibb" })
-            )
-          );
+        // Respond with our features
+        const discoResponse = xml("iq", { to: from, type: "result", id },
+          xml("query", { xmlns: "http://jabber.org/protocol/disco#info", node },
+            xml("identity", { category: "client", type: "bot", name: "OpenClaw AI Assistant" }),
+            xml("feature", { var: "http://jabber.org/protocol/caps" }),
+            xml("feature", { var: "http://jabber.org/protocol/disco#info" }),
+            xml("feature", { var: "vcard-temp" }),
+            xml("feature", { var: "http://jabber.org/protocol/muc" }),
+            xml("feature", { var: "http://jabber.org/protocol/si/profile/file-transfer" }),
+            xml("feature", { var: "http://jabber.org/protocol/bytestreams" }),
+            xml("feature", { var: "http://jabber.org/protocol/ibb" }),
+            xml("feature", { var: "http://jabber.org/protocol/sxe" }),
+            xml("feature", { var: "http://jabber.org/protocol/swb" }),
+            xml("feature", { var: "http://www.w3.org/2000/svg" })
+          )
+        );
           await xmpp.send(discoResponse);
           xmppLog.debug("disco#info sent", { to: from });
           return;
@@ -882,64 +960,343 @@ xmpp.on("online", async (address: any) => {
            return;
          }
          
-          // Only process messages with body (invites are in body)
-          if (!body && mediaUrls.length === 0) return;
-        
-          // Check for jabber:x:conference invites in body (may be escaped)
-          if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
-            
-             // Extract invite attributes (handle both escaped and unescaped)
-            const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
-            const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
-            const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
-            
-            const room = jidMatch?.[1];
-            const password = passwordMatch?.[1];
-            const reason = reasonMatch?.[1] || 'No reason given';
-            
-if (room) {
-              if (!(await shouldAcceptInvite(inviter, room))) {
-                log.warn("Rejected body-parsed conference invite from non-admin", { from: inviter });
+           // Strip resource from sender JID for contact check (needed for SXE too)
+         const fromBareJid = from.split("/")[0];
+
+          // Check for SXE Whiteboard messages BEFORE body guard — PSI+ sends pure <message><sxe> with no <body>
+          const sxeElement = stanza.getChild('sxe', 'http://jabber.org/protocol/sxe');
+          if (sxeElement) {
+            try {
+              debugLog(`SXE raw stanza: ${stanza.toString().substring(0, 2000)}`);
+              const sxeData = parseSxeMessage(stanza);
+              debugLog(`SXE parsed: type=${sxeData.type}, session=${sxeData.sessionId}, elements=${sxeData.elements?.length || 0}`);
+              if (sxeData.elements && sxeData.elements.length > 0) {
+                debugLog(`SXE elements: ${JSON.stringify(sxeData.elements).substring(0, 2000)}`);
+              }
+              xmppLog.debug("SXE message received", { session: sxeData.sessionId, type: sxeData.type });
+              
+              let session = whiteboardSessionManager.getSession(fromBareJid);
+              if (!session) {
+                session = whiteboardSessionManager.createSession(fromBareJid, 'sxe', sxeData.sessionId);
+                xmppLog.info("SXE whiteboard session created", { jid: fromBareJid, session: sxeData.sessionId });
+              }
+              
+              if (sxeData.type === 'invitation') {
+                xmppLog.info("SXE invitation received, auto-accepting", { from: fromBareJid });
+                
+                const acceptResponse = buildSxeXml({
+                  sessionId: sxeData.sessionId,
+                  type: 'accept-invitation'
+                });
+                
+                const acceptMessage = xml('message', { type: messageType, to: from }, acceptResponse);
+                await xmpp.send(acceptMessage);
+                xmppLog.debug("SXE accept-invitation sent");
+                
                 return;
               }
-               // Auto-accept invite by joining the room
-              try {
-                const presence = xml("presence", { to: `${room}/${await getDefaultNick()}` },
-                  xml("x", { xmlns: "http://jabber.org/protocol/muc" },
-                    password ? xml("password", {}, password) : undefined,
-                    xml("history", { maxstanzas: "0" })
-                  )
-                );
-                await xmpp.send(presence);
-                joinedRooms.add(room);
-                roomNicks.set(room, await getDefaultNick());
-                log.info("autoJoin", { room });
-              } catch (err) {
-                xmppLog.error("body-parsed invite accept failed", err);
+              
+              if (sxeData.type === 'document-begin' || sxeData.type === 'accept-invitation') {
+                xmppLog.debug("SXE negotiation complete", { type: sxeData.type });
+                session.instructionsSent = true;
+                
+                const instructions = `[WHITEBOARD] SXE whiteboard session established with ${fromBareJid} (session: ${sxeData.sessionId}).\n\nHow to draw on the whiteboard:\nWrap SVG path commands in [WHITEBOARD_DRAW] tags. Each line inside is one complete SVG path.\n\nExample:\nI'll draw a house for you!\n\n[WHITEBOARD_DRAW]\nM100,200L200,100L300,200Z\nM120,200L120,150L180,150L180,200\nM145,150L145,120L175,120L175,150 with blue\n[/WHITEBOARD_DRAW]\n\nRules:\n- Each line inside tags = one SVG path (starts with M, uses L/H/V/C/S/Q/T/A/Z commands)\n- Add "with red/blue/green/black/#rrggbb" after a path for color\n- Add "width N" after a path for stroke width\n- Text outside the tags is sent as a normal chat message\n- You can mix drawing and text in one response\n\nCurrent whiteboard state:\n- ${session.paths.length} paths\n- ${session.moves.length} moves\n- ${session.deletes.length} deletes`;
+                onMessage(fromBareJid, instructions, { 
+                  type: messageType, 
+                  room: undefined, 
+                  nick: undefined, 
+                  botNick: undefined,
+                  isSystemMessage: true
+                });
+
+                if (sxeData.elements && sxeData.elements.length > 0) {
+                  const convertedData = convertSxeToWhiteboardData(sxeData);
+                  whiteboardSessionManager.updateSession(fromBareJid, {
+                    paths: convertedData.paths,
+                    moves: convertedData.moves,
+                    deletes: convertedData.deletes
+                  });
+                  xmppLog.debug("SXE document-begin contained embedded elements", { count: sxeData.elements.length });
+                }
+
+                return;
               }
-              return; // Don't dispatch invite to AI
+              
+              if (sxeData.type === 'left-session') {
+                xmppLog.info("SXE session ended", { from: fromBareJid });
+                whiteboardSessionManager.deleteSession(fromBareJid);
+                return;
+              }
+              
+              if (sxeData.type === 'new' || sxeData.type === 'set' || sxeData.type === 'remove') {
+                // Accumulate elements into session state across stanzas
+                // PSI+ sends path data as multiple separate stanzas:
+                //   1) <path> element + attrs (d="" stub)
+                //   2) <set> chdata chunk 1
+                //   3) <set> chdata chunk 2, etc.
+                // Path reconstruction happens in the timer callback after all chunks arrive
+                if (sxeData.elements) {
+                  for (const el of sxeData.elements) {
+                    if (el.type === 'element' || el.type === 'new') {
+                      if (el.name && el.parent !== undefined && el.rid) {
+                        session.sxeNodes[el.rid] = { name: el.name, parent: el.parent };
+                      }
+                    } else if (el.type === 'attr') {
+                      if (el.rid) {
+                        session.sxeAttrs[el.rid] = { parent: el.parent || '', name: el.name || '', chdata: el.chdata || '' };
+                      }
+                    } else if (el.type === 'set') {
+                      const targetRid = el.rid;
+                      if (targetRid && session.sxeAttrs[targetRid]) {
+                        const existing = session.sxeAttrs[targetRid];
+                        if (el.replacen !== undefined && el.replacefrom !== undefined && el.chdata !== undefined) {
+                          const from = parseInt(el.replacefrom, 10);
+                          const len = parseInt(el.replacen, 10);
+                          existing.chdata = existing.chdata.substring(0, from) + el.chdata + existing.chdata.substring(from + len);
+                        } else if (el.chdata !== undefined) {
+                          existing.chdata = el.chdata;
+                        }
+                      } else if (targetRid && el.chdata !== undefined) {
+                        session.sxeAttrs[targetRid] = { parent: el.parent || targetRid, name: el.name || '', chdata: el.chdata };
+                      }
+                    } else if (el.type === 'remove') {
+                      const rid = el.rid || el.id;
+                      if (rid) {
+                        delete session.sxeNodes[rid];
+                        delete session.sxeAttrs[rid];
+                        session.deletes.push({ id: rid });
+                      }
+                    }
+                  }
+                }
+                
+                debugLog(`SXE accumulated: nodes=${Object.keys(session.sxeNodes).length}, attrs=${Object.keys(session.sxeAttrs).length}`);
+                
+                whiteboardSessionManager.clearIncomingTimer(fromBareJid);
+                
+                whiteboardSessionManager.setIncomingTimer(fromBareJid, async () => {
+                  try {
+                  const currentSession = whiteboardSessionManager.getSession(fromBareJid);
+                  if (!currentSession) return;
+                  
+                  const reconstructedPaths = reconstructPathsFromState(currentSession);
+                  debugLog(`SXE reconstructed paths: ${reconstructedPaths.length}`);
+                  if (reconstructedPaths.length > 0) {
+                    debugLog(`SXE reconstructed: ${JSON.stringify(reconstructedPaths).substring(0, 1000)}`);
+                    debugLog(`SXE reconstructed d[0] length: ${reconstructedPaths[0]?.d?.length || 0}`);
+                  }
+                  
+                  currentSession.paths = reconstructedPaths;
+                  currentSession.lastActivity = Date.now();
+                  
+                  const pathDescriptions = reconstructedPaths.map((p: any, i: number) => 
+                    `Path ${i + 1}: d="${p.d?.substring(0, 80)}${p.d?.length > 80 ? '...' : ''}" stroke="${p.stroke || '#000'}"${p.fill ? ` fill="${p.fill}"` : ''}${p.strokeWidth && p.strokeWidth !== 1 ? ` stroke-width="${p.strokeWidth}"` : ''}`
+                  ).join('\n');
+                  
+                  const bodyText = `[WHITEBOARD UPDATE] User drew on whiteboard:\n${pathDescriptions || '(no parseable paths)'}\n\nTotal session state: ${currentSession.paths.length} paths, ${currentSession.moves.length} moves, ${currentSession.deletes.length} deletes.\n\nTo draw back, use [WHITEBOARD_DRAW] tags:\n[WHITEBOARD_DRAW]\nM100,200L300,200\n[/WHITEBOARD_DRAW]`;
+                  
+                  debugLog(`SXE timer: calling onMessage for ${fromBareJid}, type=${messageType}, bodyLen=${bodyText.length}`);
+                  await onMessage(fromBareJid, bodyText, { 
+                    type: messageType, 
+                    room: undefined, 
+                    nick: undefined, 
+                    botNick: undefined,
+                    whiteboardData: {
+                      type: 'path',
+                      paths: currentSession.paths,
+                      moves: currentSession.moves,
+                      deletes: currentSession.deletes
+                    }
+                  });
+                  debugLog(`SXE timer: onMessage completed for ${fromBareJid}`);
+                  
+                  // Auto-draw a small test circle on first whiteboard update to verify outbound SXE
+                  if (reconstructedPaths.length > 0 && !currentSession.autoDrawSent) {
+                    try {
+                      const autoPaths = [{ d: 'M200,200m-20,0a20,20 0 1,0 40,0a20,20 0 1,0 -40,0', stroke: '#ff0000', strokeWidth: 2, id: `auto${Date.now()}` }];
+                      const autoEdits = buildSxePathEdits(autoPaths);
+                      const autoStanzas = sxeEditsToXml(currentSession.sessionId!, autoEdits);
+                      for (const sxeEl of autoStanzas) {
+                        const autoMsg = xml('message', { type: messageType, to: from },
+                          xml('body', {}, ''),
+                          sxeEl
+                        );
+                        await xmpp.send(autoMsg);
+                      }
+                      currentSession.autoDrawSent = true;
+                      debugLog(`SXE auto-draw sent: ${autoStanzas.length} stanzas for circle`);
+                      xmppLog.info("SXE auto-draw test circle sent", { to: fromBareJid });
+                    } catch (autoErr: any) {
+                      debugLog(`SXE auto-draw failed: ${autoErr?.message || autoErr}`);
+                    }
+                  }
+                  
+                  xmppLog.debug("SXE whiteboard forwarded to agent", { 
+                    jid: fromBareJid, 
+                    paths: currentSession.paths.length,
+                    moves: currentSession.moves.length,
+                    deletes: currentSession.deletes.length
+                  });
+                  } catch (timerErr: any) {
+                    debugLog(`SXE timer callback FATAL: ${timerErr?.message || timerErr}`);
+                    debugLog(`SXE timer stack: ${timerErr?.stack?.substring(0, 500) || 'no stack'}`);
+                    xmppLog.error("SXE timer callback error", { message: timerErr?.message, stack: timerErr?.stack?.substring(0, 500) });
+                  }
+                }, Config.WHITEBOARD_FORWARD_DELAY_MS);
+                
+                return;
+              }
+              
+              xmppLog.debug("SXE unhandled message type", { type: sxeData.type, sessionId: sxeData.sessionId, rawXml: (sxeData.rawXml || '').substring(0, 500) });
+            } catch (sxeErr: any) {
+              xmppLog.error("SXE message handling error", { message: sxeErr?.message || String(sxeErr), stack: sxeErr?.stack?.substring(0, 500) || '', rawXml: stanza.toString().substring(0, 500) });
             }
+           }
+
+            // Only process messages with body (invites are in body)
+           if (!body && mediaUrls.length === 0) return;
+         
+           // Check for jabber:x:conference invites in body (may be escaped)
+           if (body && (body.includes('jabber:x:conference') || body.includes('&lt;x'))) {
+             
+              // Extract invite attributes (handle both escaped and unescaped)
+             const jidMatch = body.match(/jid=['"]([^'"]+)['"]/);
+             const passwordMatch = body.match(/password=['"]([^'"]+)['"]/);
+             const reasonMatch = body.match(/reason=['"]([^'"]+)['"]/);
+             
+             const room = jidMatch?.[1];
+             const password = passwordMatch?.[1];
+             const reason = reasonMatch?.[1] || 'No reason given';
+             
+if (room) {
+               if (!(await shouldAcceptInvite(inviter, room))) {
+                 log.warn("Rejected body-parsed conference invite from non-admin", { from: inviter });
+                 return;
+               }
+                // Auto-accept invite by joining the room
+               try {
+                 const presence = xml("presence", { to: `${room}/${await getDefaultNick()}` },
+                   xml("x", { xmlns: "http://jabber.org/protocol/muc" },
+                     password ? xml("password", {}, password) : undefined,
+                     xml("history", { maxstanzas: "0" })
+                   )
+                 );
+                 await xmpp.send(presence);
+                 joinedRooms.add(room);
+                 roomNicks.set(room, await getDefaultNick());
+                 log.info("autoJoin", { room });
+               } catch (err) {
+                 xmppLog.error("body-parsed invite accept failed", err);
+               }
+               return; // Don't dispatch invite to AI
+             }
+           }
+           
+           debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
+        
+        // Check for XEP-0113 Whiteboard messages (delayed forwarding to AI)
+        const whiteboardData = parseWhiteboardMessage(stanza);
+        if (whiteboardData) {
+          xmppLog.debug("whiteboard received", { type: whiteboardData.type, paths: whiteboardData.paths?.length || 0 });
+          
+          // Get or create session
+          let session = whiteboardSessionManager.getSession(fromBareJid);
+          if (!session) {
+            session = whiteboardSessionManager.createSession(fromBareJid);
+            xmppLog.info("whiteboard session created", { jid: fromBareJid });
           }
           
-          debugLog(`XMPP message: type=${messageType}, from=${from}, body=${body?.substring(0, 50)}`);
-        
-        // Strip resource from sender JID for contact check
-        const fromBareJid = from.split("/")[0];
-        
-        // Check for XEP-0113 Whiteboard messages (forward to AI)
-        const whiteboardData = parseWhiteboardMessage(stanza);
-          if (whiteboardData) {
-            xmppLog.debug("whiteboard", { type: whiteboardData.type, paths: whiteboardData.paths?.length || 0 });
-          onMessage(fromBareJid, body || '[Whiteboard]', { 
-            type: messageType, 
-            room: undefined, 
-            nick: undefined, 
-            botNick: undefined,
-            whiteboardData
+          // Update session with incoming data
+          whiteboardSessionManager.updateSession(fromBareJid, {
+            paths: whiteboardData.paths,
+            moves: whiteboardData.moves,
+            deletes: whiteboardData.deletes
           });
-          return;
+          
+          // Clear any existing timer (reset delay)
+          whiteboardSessionManager.clearIncomingTimer(fromBareJid);
+          
+          // Set timer to forward after delay (collects rapid drawing operations)
+          whiteboardSessionManager.setIncomingTimer(fromBareJid, async () => {
+            try {
+            const currentSession = whiteboardSessionManager.getSession(fromBareJid);
+            if (!currentSession) return;
+            
+            // Send AI instructions on first message
+            if (!currentSession.instructionsSent) {
+              const instructions = `[WHITEBOARD] Whiteboard session established with ${fromBareJid}.\n\nHow to draw on the whiteboard:\nWrap SVG path commands in [WHITEBOARD_DRAW] tags. Each line inside is one complete SVG path.\n\nExample:\nI'll draw a house for you!\n\n[WHITEBOARD_DRAW]\nM100,200L200,100L300,200Z\nM120,200L120,150L180,150L180,200\nM145,150L145,120L175,120L175,150 with blue\n[/WHITEBOARD_DRAW]\n\nRules:\n- Each line inside tags = one SVG path (starts with M, uses L/H/V/C/S/Q/T/A/Z commands)\n- Add "with red/blue/green/black/#rrggbb" after a path for color\n- Add "width N" after a path for stroke width\n- Text outside the tags is sent as a normal chat message\n- You can mix drawing and text in one response\n\nCurrent whiteboard state:\n- ${currentSession.paths.length} paths\n- ${currentSession.moves.length} moves\n- ${currentSession.deletes.length} deletes`;
+              await onMessage(fromBareJid, instructions, { 
+                type: messageType, 
+                room: undefined, 
+                nick: undefined, 
+                botNick: undefined,
+                isSystemMessage: true
+              });
+              
+              currentSession.instructionsSent = true;
+            }
+            
+            // Forward consolidated whiteboard data to agent
+            const consolidatedData = {
+              type: whiteboardData.type,
+              paths: currentSession.paths,
+              moves: currentSession.moves,
+              deletes: currentSession.deletes,
+              rawXml: whiteboardData.rawXml
+            };
+            
+            await onMessage(fromBareJid, `[WHITEBOARD UPDATE] Whiteboard update received.\nTo draw, use [WHITEBOARD_DRAW] tags:\n[WHITEBOARD_DRAW]\nM100,200L300,200\n[/WHITEBOARD_DRAW]`, { 
+              type: messageType, 
+              room: undefined, 
+              nick: undefined, 
+              botNick: undefined,
+              whiteboardData: consolidatedData
+            });
+            
+            // Auto-draw a small test circle on first whiteboard update
+            if (currentSession.paths.length > 0 && !currentSession.autoDrawSent) {
+              try {
+                const autoPaths = [{ d: 'M200,200m-20,0a20,20 0 1,0 40,0a20,20 0 1,0 -40,0', stroke: '#ff0000', strokeWidth: 2, id: `auto${Date.now()}` }];
+                if (currentSession.protocol === 'sxe' && currentSession.sessionId) {
+                  const autoEdits = buildSxePathEdits(autoPaths);
+                  const autoStanzas = sxeEditsToXml(currentSession.sessionId, autoEdits);
+                  for (const sxeEl of autoStanzas) {
+                    const autoMsg = xml('message', { type: messageType, to: from },
+                      xml('body', {}, ''),
+                      sxeEl
+                    );
+                    await xmpp.send(autoMsg);
+                  }
+                } else {
+                  const wbChildren = autoPaths.map(p =>
+                    xml('path', { d: p.d, stroke: p.stroke, 'stroke-width': String(p.strokeWidth), id: p.id })
+                  );
+                  const wbElement = xml('x', { xmlns: 'http://jabber.org/protocol/swb' }, wbChildren);
+                  const wbMsg = xml('message', { type: messageType, to: from }, wbElement);
+                  await xmpp.send(wbMsg);
+                }
+                currentSession.autoDrawSent = true;
+                debugLog(`Auto-draw test circle sent to ${fromBareJid}`);
+              } catch (autoErr: any) {
+                debugLog(`Auto-draw failed: ${autoErr?.message || autoErr}`);
+              }
+            }
+            
+            xmppLog.debug("whiteboard forwarded to agent", { 
+              jid: fromBareJid, 
+              paths: currentSession.paths.length,
+              moves: currentSession.moves.length,
+              deletes: currentSession.deletes.length
+            });
+            } catch (timerErr: any) {
+              debugLog(`SWB timer callback FATAL: ${timerErr?.message || timerErr}`);
+              xmppLog.error("SWB timer callback error", { message: timerErr?.message, stack: timerErr?.stack?.substring(0, 500) });
+            }
+          }, Config.WHITEBOARD_FORWARD_DELAY_MS);
+          
+          return; // Don't process further
         }
-         
+          
          // Check for slash commands (in both chat and groupchat)
         // Behavior:
         // - Groupchat: Only plugin commands are processed locally, others ignored (not forwarded to agents)
@@ -1944,6 +2301,9 @@ await sendReply(`Available commands (groupchat: only whoami, help):
   xmpp.start().catch((err: any) => {
     log.error("XMPP start failed", err);
     xmppLog.error("start failed", err);
+    // Trigger reconnection for initial connection failures (offline event may not fire)
+    isRunning = false;
+    scheduleReconnect();
   });
 
    // HTTP File Upload (XEP-0363) helpers -- delegated to upload-protocol.ts
@@ -2154,6 +2514,8 @@ await sendReply(`Available commands (groupchat: only whoami, help):
     log.info("XMPP shutting down gracefully");
     stopPingTimer();
     if (ibbCleanupInterval) clearInterval(ibbCleanupInterval);
+    whiteboardSessionManager.stopCleanup();
+    whiteboardSessionManager.destroy();
     try { await xmpp.send(xml("presence", { type: "unavailable" })); } catch {}
     try { await xmpp.stop(); } catch (err) { log.error("xmpp.stop error", err); }
     isRunning = false;

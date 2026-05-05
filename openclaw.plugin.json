@@ -50,5 +50,30 @@
         }
       }
     }
+  },
+  "channelConfigs": {
+    "xmpp": {
+      "schema": {
+        "type": "object"
+      },
+      "uiHints": {
+        "accounts": {
+          "label": "XMPP Accounts",
+          "items": {
+            "service": { "label": "Server address" },
+            "domain": { "label": "XMPP domain" },
+            "jid": { "label": "Full JID (user@domain)" },
+            "password": { "label": "Password", "sensitive": true },
+            "dataDir": { "label": "Data directory" },
+            "resource": { "label": "Resource identifier" },
+            "adminJid": { "label": "Admin JID" },
+            "nick": { "label": "Bot nickname" },
+            "dmPolicy": { "label": "DM policy" },
+            "allowFrom": { "label": "Allowed JIDs" },
+            "autoJoinRooms": { "label": "Auto-join rooms" }
+          }
+        }
+      }
+    }
   }
 }

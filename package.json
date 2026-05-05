@@ -28,7 +28,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "echo \"Linting not configured\"",
-    "typecheck": "npx tsc --noEmit index.ts --module es2020 --target es2020 --moduleResolution node"
+    "typecheck": "npx tsc --noEmit",
+    "build": "npx tsc"
   },
   "keywords": [
     "openclaw",
