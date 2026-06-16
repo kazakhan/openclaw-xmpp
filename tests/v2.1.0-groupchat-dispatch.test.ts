@@ -42,24 +42,25 @@ async function readSourceRaw(rel: string): Promise<string> {
 // =====================================================================
 
 describe('Fix v2.1.0: room subject change is marked isSystemMessage', () => {
-  it('startXMPP.ts:1011 — room subject onMessage call has isSystemMessage: true', async () => {
+  it('startXMPP.ts (room subject) — onMessage call has isSystemMessage: true', async () => {
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
-    const line1011 = lines[1010];
-    assert.ok(line1011, 'line 1011 must exist');
-    assert.match(
-      line1011,
-      /\[Room Subject:/,
-      'line 1011 should be the room subject onMessage call',
-    );
-    assert.match(
-      line1011,
-      /isSystemMessage:\s*true/,
-      'room subject onMessage call MUST set isSystemMessage: true so the gateway.ts:282 skip-dispatch guard fires',
-    );
+    let found = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/\[Room Subject:/.test(lines[i] || '')) {
+        assert.match(
+          lines[i],
+          /isSystemMessage:\s*true/,
+          'room subject onMessage call MUST set isSystemMessage: true so the gateway.ts:282 skip-dispatch guard fires',
+        );
+        found = true;
+        break;
+      }
+    }
+    assert.ok(found, 'room subject onMessage call not found in startXMPP.ts');
   });
 
-  it('startXMPP.ts:1056 — SXE whiteboard session instructions still set isSystemMessage: true', async () => {
+  it('startXMPP.ts (SXE) — whiteboard session instructions still set isSystemMessage: true', async () => {
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
     // Find the line that contains "SXE whiteboard session established" — the
@@ -86,7 +87,7 @@ describe('Fix v2.1.0: room subject change is marked isSystemMessage', () => {
     assert.ok(found, 'SXE whiteboard session instructions block not found');
   });
 
-  it('startXMPP.ts:1281 — whiteboard session instructions still set isSystemMessage: true', async () => {
+  it('startXMPP.ts (whiteboard) — session instructions still set isSystemMessage: true', async () => {
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
     let found = false;
@@ -112,41 +113,49 @@ describe('Fix v2.1.0: room subject change is marked isSystemMessage', () => {
 });
 
 describe('Fix v2.1.0: real user message paths do NOT set isSystemMessage', () => {
-  it('startXMPP.ts:2338 — groupchat user message is NOT marked isSystemMessage', async () => {
-    const src = await readSourceRaw('src/startXMPP.ts');
+  it('slash-commands.ts — groupchat user message is NOT marked isSystemMessage', async () => {
+    const src = await readSourceRaw('src/slash-commands.ts');
     const lines = src.split('\n');
-    const line = lines[2337];
-    assert.ok(line, 'line 2338 must exist');
-    assert.match(
-      line,
-      /onMessage\(roomJid/,
-      'line 2338 should be the groupchat onMessage call',
-    );
-    assert.doesNotMatch(
-      line,
-      /isSystemMessage/,
-      'real groupchat user messages must NOT be marked isSystemMessage',
-    );
+    let found = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/Forwarding non-plugin command/.test(lines[i] || '')) {
+        const callLine = lines[i + 1];
+        if (callLine && /onMessage\(fromBareJid/.test(callLine)) {
+          assert.doesNotMatch(
+            callLine,
+            /isSystemMessage/,
+            'real groupchat user messages must NOT be marked isSystemMessage',
+          );
+          found = true;
+          break;
+        }
+      }
+    }
+    assert.ok(found, 'non-plugin command forward onMessage not found in slash-commands.ts');
   });
 
-  it('startXMPP.ts:2345 — DM user message is NOT marked isSystemMessage', async () => {
-    const src = await readSourceRaw('src/startXMPP.ts');
+  it('slash-commands.ts — DM user message is NOT marked isSystemMessage', async () => {
+    const src = await readSourceRaw('src/slash-commands.ts');
     const lines = src.split('\n');
-    const line = lines[2344];
-    assert.ok(line, 'line 2345 must exist');
-    assert.match(
-      line,
-      /onMessage\(fromBareJid/,
-      'line 2345 should be the DM onMessage call',
-    );
-    assert.doesNotMatch(
-      line,
-      /isSystemMessage/,
-      'real DM user messages must NOT be marked isSystemMessage',
-    );
+    let found = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/Forwarding \/help to agent/.test(lines[i] || '')) {
+        const callLine = lines[i + 1];
+        if (callLine && /onMessage\(fromBareJid/.test(callLine)) {
+          assert.doesNotMatch(
+            callLine,
+            /isSystemMessage/,
+            'real DM user messages must NOT be marked isSystemMessage',
+          );
+          found = true;
+          break;
+        }
+      }
+    }
+    assert.ok(found, '/help forward to agent onMessage not found in slash-commands.ts');
   });
 
-  it('startXMPP.ts:1151 — SXE timer whiteboard update is a real user action (NOT marked isSystemMessage)', async () => {
+  it('startXMPP.ts (SXE timer) — whiteboard update is a real user action (NOT marked isSystemMessage)', async () => {
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
     let found = false;
@@ -174,7 +183,7 @@ describe('Fix v2.1.0: gateway.ts skip-dispatch guard remains in place', () => {
     const lines = src.split('\n');
     // Find the guard by pattern
     let found = false;
-    for (let i = 275; i < 295 && i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i++) {
       if (/isSystemMessage === true/.test(lines[i] || '')) {
         const block = lines.slice(i, i + 5).join('\n');
         assert.match(
@@ -195,13 +204,13 @@ describe('Fix v2.1.0: gateway.ts skip-dispatch guard remains in place', () => {
   });
 });
 
-describe('Fix v2.1.0: version bumped to 2.1.0', () => {
-  it('package.json version is 2.1.0', async () => {
+describe('Fix v2.1.5: version bumped to 2.1.5', () => {
+  it('package.json version is 2.1.5', async () => {
     const src = await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8');
     assert.match(
       src,
-      /"version":\s*"2\.1\.0"/,
-      'package.json version must be bumped to 2.1.0',
+      /"version":\s*"2\.1\.5"/,
+      'package.json version must be bumped to 2.1.5',
     );
   });
 });

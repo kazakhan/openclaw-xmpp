@@ -5,6 +5,16 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.5] - 2026-06-17
+
+**Refactor: split `startXMPP.ts` into three files.**
+
+- Extracted vCard server helpers → `src/vcard-server.ts` (184 lines).
+- Extracted slash-command dispatcher → `src/slash-commands.ts` (941 lines).
+- `src/startXMPP.ts` reduced from 2794 → 1596 lines (43% reduction).
+- Updated `tests/v2.1.0-groupchat-dispatch.test.ts` to use content-based scanning so future refactors don't break line-number assertions.
+- No behavior changes; `npx tsc --noEmit` passes with zero new errors.
+
 ## [2.1.4] - 2026-06-16
 
 **MUC rejoin conflict fix + groupchat "Dispatch SUCCESS

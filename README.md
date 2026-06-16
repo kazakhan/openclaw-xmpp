@@ -4,15 +4,15 @@ A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, mult
 FTP was added so the OpenClaw bot could upload to a server to have it's own webpage. I just wanted to see what they made, FTP was probably not the way to go...
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING
+## Status: ✅ WORKING (v2.1.5)
 
-Fully functional with shared sessions, memory continuity, SFTP file transfers, password encryption at rest, and enhanced file transfer security.
+Fully functional with shared sessions, memory continuity, SFTP file transfers, password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
 
 ## Installation
 
 ### Prerequisites
-- OpenClaw 2026.5+ (tested on 2026.5.3-2026.5.4)
-- Node.js >= 22
+- OpenClaw 2026.6+ (tested on 2026.6.1)
+- Node.js >= 16.0.0
 - npm
 
 ### Quick Install (recommended)
@@ -373,7 +373,7 @@ Your XMPP server's SSL certificate has expired. Renew it on the server, or use a
 xmpp/
 ├── index.ts                    # Plugin entry point (register function)
 ├── setup-entry.ts              # Setup entry (re-exports from index.ts)
-├── package.json                # Dependencies (@xmpp/client, ssh2)
+├── package.json                # Dependencies (@xmpp/client)
 ├── openclaw.plugin.json        # Plugin manifest (channel registration)
 ├── tsconfig.json               # TypeScript compiler configuration
 ├── install.sh                  # Linux install script
@@ -381,11 +381,15 @@ xmpp/
 ├── src/
 │   ├── gateway.ts            # Gateway lifecycle (start/stop account, message dispatch)
 │   ├── startXMPP.ts          # XMPP client setup, stanza handler, reconnection
+│   ├── slash-commands.ts     # In-chat slash command dispatcher (/help, /vcard, /join, etc.)
+│   ├── vcard-server.ts       # vCard query/update/avatar helpers
 │   ├── outbound.ts           # Outbound message sending
 │   ├── commands.ts           # CLI commands registration
 │   ├── contacts.ts           # Contact management
+│   ├── roster-store.ts       # Roster storage
 │   ├── whiteboard.ts         # Whiteboard (SXE/SWB) message parsing
 │   ├── whiteboard-session.ts # Whiteboard session manager
+│   ├── whiteboard-cli.ts     # Whiteboard CLI commands
 │   ├── messageStore.ts       # Message persistence
 │   ├── vcard.ts              # vCard handling
 │   ├── vcard-cli.ts          # vCard CLI commands
@@ -393,8 +397,14 @@ xmpp/
 │   ├── jsonStore.ts          # JSON storage utilities
 │   ├── types.ts              # TypeScript types
 │   ├── config.ts             # Plugin configuration constants
+│   ├── state.ts              # Runtime state
+│   ├── secret-contract.ts    # Secret store integration
+│   ├── setup-plugin.ts       # Plugin setup wizard
+│   ├── channel-plugin.ts     # Channel plugin descriptor
+│   ├── cli-metadata.ts       # CLI metadata builder
+│   ├── cli-encrypt.ts        # Password encryption CLI
+│   ├── queue-bridge.ts       # Message queue bridge
 │   ├── gateway-client.ts     # Gateway RPC client
-│   ├── sftp.ts               # SFTP client (SSH-based)
 │   └── security/
 │       ├── adapter.ts        # Security adapter for OpenClaw SDK
 │       ├── encryption.ts     # Password encryption (AES-256-GCM)
@@ -406,7 +416,11 @@ xmpp/
 │       ├── vcard-protocol.ts # vCard protocol helpers
 │       ├── persistent-queue.ts # Persistent message queue
 │       ├── contact-factory.ts # Contact factory
-│       └── config-loader.ts  # Config loader
+│       ├── config-loader.ts  # Config loader
+│       ├── xmpp-connect.ts   # XMPP client connection helpers
+│       └── xmpp-utils.ts     # XMPP stanza utility helpers
+│   └── shared/
+│       └── index.ts          # Shared types/constants
 ├── data/                     # Storage (per-install, DO NOT COPY between machines)
 │   ├── xmpp-contacts.json
 │   ├── xmpp-admins.json
