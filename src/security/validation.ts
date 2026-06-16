@@ -17,6 +17,13 @@ export const validators = {
     const sanitized = filename
       .replace(/[^a-zA-Z0-9._-]/g, '_')
       .replace(/\.\./g, '_')
+      // SECURITY (2.0.16): strip leading dots so we don't write
+      // dotfiles like .htaccess, .env, .git, .npmrc, etc. into
+      // the downloads directory.  The regex replaces the *run* of
+      // leading dots with a single underscore.  Applied after the
+      // `..` strip above so `..htaccess` becomes `_.htaccess` which
+      // then becomes `__htaccess` (still safe).
+      .replace(/^\.+/, '_')
       .substring(0, 255);
     return sanitized || 'unknown';
   },

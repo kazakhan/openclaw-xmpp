@@ -21,11 +21,23 @@ export async function discoverUploadService(xmpp: XmppClient, domain: string): P
 
   return new Promise((resolve) => {
     let resolved = false;
+    // SECURITY (2.0.17, M5): the 10-second timeout used to be left
+    // unhandled — if the disco resolved early the timer kept the
+    // event loop alive and fired 10s later to call xmpp.off() /
+    // resolve(null) on an already-settled promise.  We now store the
+    // handle and clearTimeout() on every path that resolves the
+    // promise.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
 
     const handler = (stanza: StanzaElement) => {
       if (stanza.attrs.id === iqId && stanza.attrs.type === 'result') {
         resolved = true;
         xmpp.off('stanza', handler);
+        cleanup();
 
         const query = stanza.getChild('query', 'http://jabber.org/protocol/disco#items');
         if (query) {
@@ -42,7 +54,13 @@ export async function discoverUploadService(xmpp: XmppClient, domain: string): P
       } else if (stanza.attrs.id === iqId && stanza.attrs.type === 'error') {
         resolved = true;
         xmpp.off('stanza', handler);
+        cleanup();
+        // SECURITY (2.0.17, M6): explicit return so the
+        // success-path's `jid.includes('upload')` loop above is
+        // clearly unreachable from here.  Was previously missing,
+        // which made the function harder to reason about.
         resolve(null);
+        return;
       }
     };
 
@@ -54,13 +72,16 @@ export async function discoverUploadService(xmpp: XmppClient, domain: string): P
 
     xmpp.send(discoStanza).catch(() => {
       if (!resolved) {
+        resolved = true;
         xmpp.off('stanza', handler);
+        cleanup();
         resolve(null);
       }
     });
 
-    setTimeout(() => {
+    timer = setTimeout(() => {
       if (!resolved) {
+        resolved = true;
         xmpp.off('stanza', handler);
         resolve(null);
       }
@@ -92,11 +113,21 @@ export async function requestUploadSlot(
 
   return new Promise((resolve, reject) => {
     let responseReceived = false;
+    // SECURITY (2.0.17, M5): the 30-second timeout used to leak
+    // the timer handle.  Store the handle and clearTimeout() on
+    // every resolve/reject path so the event loop can exit
+    // promptly when the gateway is otherwise idle.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
 
     const handler = (stanza: StanzaElement) => {
       if (stanza.attrs.id === iqId && stanza.attrs.type === 'result') {
         responseReceived = true;
         xmpp.off('stanza', handler);
+        cleanup();
 
         try {
           const slot = stanza.getChild("slot", "urn:xmpp:http:upload:0");
@@ -120,7 +151,7 @@ export async function requestUploadSlot(
             const headerElements = putElement.getChildren("header");
             for (const header of headerElements) {
               const name = header.attrs.name;
-              const value = header.getText();
+              const value = header.text();
               if (name && value) {
                 putHeaders[name] = value;
               }
@@ -135,6 +166,7 @@ export async function requestUploadSlot(
       } else if (stanza.attrs.id === iqId && stanza.attrs.type === 'error') {
         responseReceived = true;
         xmpp.off('stanza', handler);
+        cleanup();
         const errorEl = stanza.getChild('error');
         let errorDetails = 'Unknown error';
         if (errorEl) {
@@ -150,13 +182,16 @@ export async function requestUploadSlot(
 
     xmpp.send(requestStanza).catch((err: any) => {
       if (!responseReceived) {
+        responseReceived = true;
         xmpp.off('stanza', handler);
+        cleanup();
         reject(err);
       }
     });
 
-    setTimeout(() => {
+    timer = setTimeout(() => {
       if (!responseReceived) {
+        responseReceived = true;
         xmpp.off('stanza', handler);
         reject(new Error("Upload slot request timeout"));
       }
@@ -168,7 +203,13 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
   log.debug("file upload via HTTP starting");
 
   try {
-    const httpPutUrl = putUrl.replace(/^https:\/\//, 'http://');
+    // SECURITY: as of 2.0.15 we no longer rewrite https:// -> http://.  The
+    // previous rewrite sent avatar / file-upload bodies in cleartext over
+    // the network, even when the XEP-0363 upload slot advertised HTTPS.
+    // The slot URL is used as-is so that the operator's TLS guarantees
+    // are preserved end-to-end.  If the server returns an HTTP URL the
+    // upload will still go through plain HTTP (operator misconfiguration),
+    // but the plugin will never silently downgrade an HTTPS slot.
     const fileBuffer = await fs.promises.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     let contentType = 'application/octet-stream';
@@ -186,7 +227,7 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
       Object.assign(fetchHeaders, headers);
     }
 
-    const response = await fetch(httpPutUrl, {
+    const response = await fetch(putUrl, {
       method: 'PUT',
       headers: fetchHeaders,
       body: fileBuffer,

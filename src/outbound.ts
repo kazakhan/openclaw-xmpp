@@ -122,8 +122,14 @@ export async function sendText({ to, text, accountId }: { to: string; text: stri
   }
 }
 
-export async function sendMedia({ to, text, mediaUrl, accountId, deps, replyToId, ...other }: Record<string, unknown>) {
-  const xmpp = xmppClients.get(accountId || "default");
+export async function sendMedia(params: Record<string, unknown>): Promise<{ ok: boolean; channel?: string; error?: string }> {
+  const to = params.to as string || '';
+  const text = params.text as string | undefined;
+  const mediaUrl = params.mediaUrl as string | undefined;
+  const accountId = params.accountId as string || "default";
+  const deps = params.deps as { loadWebMedia?: (url: string) => Promise<{ path?: string; url?: string }> } | undefined;
+
+  const xmpp = xmppClients.get(accountId);
   
   if (!xmpp) {
     return { ok: false, error: "XMPP client not available" };
@@ -135,20 +141,20 @@ export async function sendMedia({ to, text, mediaUrl, accountId, deps, replyToId
     
     let localFilePath: string | null = null;
     
-    if (deps?.loadWebMedia) {
+    if (deps?.loadWebMedia && mediaUrl) {
       try {
-        const result = await (deps.loadWebMedia as (url: string) => Promise<{ path?: string; url?: string }>)(mediaUrl as string);
-        localFilePath = result.path || result.url || mediaUrl as string;
+        const result = await deps.loadWebMedia(mediaUrl);
+        localFilePath = result.path || result.url || mediaUrl;
       } catch (err) {
         log.error("loadWebMedia failed", err);
       }
     }
     
-    if (!localFilePath) {
-      if ((mediaUrl as string)?.startsWith('file://')) {
-        localFilePath = (mediaUrl as string).substring(7);
-      } else if ((mediaUrl as string)?.startsWith('/') || (mediaUrl as string)?.startsWith('~/') || (mediaUrl as string)?.startsWith('.') || path.isAbsolute(mediaUrl as string)) {
-        localFilePath = mediaUrl as string;
+    if (!localFilePath && mediaUrl) {
+      if (mediaUrl.startsWith('file://')) {
+        localFilePath = mediaUrl.substring(7);
+      } else if (mediaUrl.startsWith('/') || mediaUrl.startsWith('~/') || mediaUrl.startsWith('.') || path.isAbsolute(mediaUrl)) {
+        localFilePath = mediaUrl;
       }
     }
     
@@ -162,7 +168,7 @@ export async function sendMedia({ to, text, mediaUrl, accountId, deps, replyToId
       
       return { ok: true, channel: "xmpp" };
     } else {
-      const message = text ? `${text}\n${mediaUrl}` : mediaUrl;
+      const message = text ? `${text}\n${mediaUrl}` : (mediaUrl || '');
       
       if (isGroupChat && !isGroupchatPrivateMessage) {
         await xmpp.sendGroupchat(to.split('/')[0], message);

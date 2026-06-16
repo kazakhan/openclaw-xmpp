@@ -21,17 +21,6 @@ interface LifecycleServices {
   MessageStore: new (dataDir: string) => any;
 }
 
-interface LifecycleDeps {
-  xmppClients: Map<string, any>;
-  contactsStore: Map<string, any>;
-  getPluginRuntime: () => any;
-}
-
-interface LifecycleServices {
-  startXmpp: (config: any, contacts: any, logger: any, onMessage: any, onOnline?: any) => Promise<any>;
-  Contacts: new (dataDir: string) => any;
-}
-
 interface QueueFns {
   addToQueue(message: Omit<any, 'id' | 'timestamp' | 'processed'>, dataDir?: string): string;
   markAsProcessed(messageId: string, dataDir?: string): void;
@@ -79,17 +68,36 @@ export class GatewayLifecycle {
     const adminCount = (await contacts.listAdmins()).length;
     logger.info(`[${account.accountId}] Total admins: ${adminCount}`);
 
-    // Check for existing connection to prevent duplicate connections
-    const existingXmpp = this.deps.xmppClients.get(account.accountId);
-    if (existingXmpp) {
-      debugLog(`Existing XMPP client found for ${account.accountId}, stopping it first`);
-      try {
-        await existingXmpp.stop();
-      } catch (err) {
-        debugLog(`Error stopping existing client: ${err}`);
-      }
-      this.deps.xmppClients.delete(account.accountId);
-    }
+    // SECURITY (2.1.4): the v2.0.20 "refuse to start a
+    // second concurrent connection" guard was DELETED here
+    // because it relied on a `_lastInboundAt` field that
+    // the v2.1.3 liveness-manager removal had already
+    // stopped maintaining.  The 2.1.3 changelog (file
+    // `CHANGELOG.md` v2.1.3 entry) explained that the
+    // liveness manager was the root cause of the
+    // "stale-disconnect tears down the live connection"
+    // bug; with it gone, this guard reads `undefined`
+    // and `idleMs = +Infinity`, falling into the
+    // "stale, tear down" branch — which is exactly the
+    // bug the guard was meant to prevent.
+    //
+    // Concurrent-start protection is now provided by:
+    //
+    // 1. `stopAccount()` always removes the client from
+    //    `xmppClients` before returning (see below), so
+    //    the framework's "stop then start" sequence never
+    //    leaves a stale entry.
+    // 2. `startXmpp()` uses a unique resource per call
+    //    (see `getDefaultResource` in `src/startXMPP.ts`,
+    //    v2.1.4), so even if a concurrent start slipped
+    //    through, the XMPP server would not raise
+    //    `StreamError: conflict` because the two
+    //    connections have different full JIDs.
+    // 3. `xmppClient.stop()` now does a `socket.destroy()`
+    //    fast path (v2.1.4) so the framework's
+    //    auto-restart doesn't hang for 30s on a dead
+    //    socket, which was the precondition for the
+    //    previous conflict cycle.
 
     // Initialize message store for persistence
     const dataDir = config.dataDir || path.join(process.cwd(), 'data');
@@ -116,7 +124,7 @@ export class GatewayLifecycle {
         From: `xmpp:${senderBareJid}`,
         To: `xmpp:${config.jid}`,
         SessionKey: sessionKey,
-        AccountId: config.accountId,
+        AccountId: account.accountId,
         ChatType: "direct" as const,
         ConversationLabel: `XMPP: ${senderBareJid}`,
         SenderName: senderBareJid.split('@')[0],
@@ -138,25 +146,62 @@ export class GatewayLifecycle {
 
       if (runtime?.channel?.session?.recordInboundSession) {
         try {
-          const storePath = runtime.channel.session.resolveStorePath(ctx.cfg.session?.store, { agentId: "main" });
-          await runtime.channel.session.recordInboundSession({
+          const session = runtime.channel.session as { resolveStorePath: (store: any, opts: any) => string; recordInboundSession: (opts: any) => Promise<void> };
+          const storePath = session.resolveStorePath(ctx.cfg.session?.store, { agentId: "main" });
+          await session.recordInboundSession({
             storePath,
             sessionKey,
             ctx: ctxPayload,
-            updateLastRoute: { sessionKey, channel: "xmpp", to: `xmpp:${senderBareJid}`, accountId: config.accountId },
+            updateLastRoute: { sessionKey, channel: "xmpp", to: `xmpp:${senderBareJid}`, accountId: account.accountId },
           });
           log.debug("file notification forwarded to agent");
         } catch (err) {
           log.error("[FILE] Error forwarding file to agent:", err);
         }
+      } else {
+        // SECURITY (2.0.18, L10): the `recordInboundSession` path
+        // was previously silent — if the runtime channel session
+        // was unavailable, the file notification was simply not
+        // recorded and the operator had no way to know why.  Log
+        // a `warn` so the issue surfaces in the main log.
+        log.warn(`[${account.accountId}] file notification not recorded: runtime channel session.recordInboundSession is unavailable`);
       }
     };
 
-    const xmpp = await this.services.startXmpp(
-      config,
-      contacts,
-      logger,
-      async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => {
+    // SECURITY (2.0.17, M9): startXmpp() can hang on a broken
+    // server (TCP connect, TLS, SASL, resource binding, SM — each
+    // a place a server can hang silently).  Race the call against
+    // a 60s timeout so the gateway can surface the failure instead
+    // of holding the abort signal forever.  Also hook the caller's
+    // `abortSignal` so an early abort tears down the XMPP client.
+    const START_XMPP_TIMEOUT_MS = 60_000;
+    const startXmppTimer: { handle: ReturnType<typeof setTimeout> | null } = { handle: null };
+    const startXmppTimeoutPromise: Promise<never> = new Promise((_, reject) => {
+      startXmppTimer.handle = setTimeout(
+        () => reject(new Error(`startXmpp timed out after ${START_XMPP_TIMEOUT_MS}ms`)),
+        START_XMPP_TIMEOUT_MS
+      );
+    });
+    const startXmppAbortSignal: AbortSignal | undefined = (ctx as any)?.abortSignal;
+    let startXmppResult: Awaited<ReturnType<typeof this.services.startXmpp>> | undefined;
+    const onStartXmppAbort = () => {
+      try { startXmppResult?.stop?.(); } catch { /* swallow */ }
+    };
+    if (startXmppAbortSignal && typeof startXmppAbortSignal.addEventListener === "function") {
+      startXmppAbortSignal.addEventListener("abort", onStartXmppAbort);
+    }
+    const clearStartXmppGuards = () => {
+      if (startXmppTimer.handle !== null) { clearTimeout(startXmppTimer.handle); startXmppTimer.handle = null; }
+      if (startXmppAbortSignal && typeof startXmppAbortSignal.removeEventListener === "function") {
+        startXmppAbortSignal.removeEventListener("abort", onStartXmppAbort);
+      }
+    };
+    const startXmppPromise: Promise<Awaited<ReturnType<typeof this.services.startXmpp>>> =
+      this.services.startXmpp(
+        config,
+        contacts,
+        logger,
+        async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => {
         if (!isRunning) {
           debugLog("XMPP message ignored - plugin not running");
           return;
@@ -214,6 +259,17 @@ export class GatewayLifecycle {
           log.error('[MessageStore] Failed to persist message:', err);
         }
 
+        // SECURITY (2.0.16): whiteboard and other system messages
+        // (e.g. "[WHITEBOARD] SXE session established…") were
+        // triggering an AI turn in 2.0.15.  The intent is for the
+        // operator's tooling to see them, not the AI.  Skip the
+        // dispatch but keep the persisted record (above).
+        if (options?.isSystemMessage === true) {
+          log.debug("skipping AI dispatch for system message", { from: senderBareJid });
+          this.queue.markAsProcessed(messageId);
+          return;
+        }
+
         // Try to forward message using runtime channel methods
         if (runtime?.channel) {
           log.debug("dispatch inbound", { from: senderBareJid, type: options?.type, hasWhiteboardData: !!options?.whiteboardData, bodyLen: body?.length });
@@ -222,7 +278,7 @@ export class GatewayLifecycle {
           dispatchError = null;
 
           try {
-            log.error(`DISPATCH_ENTERED: from=${from} bodyLen=${(body||"").length} type=${options?.type} room=${options?.room} nick=${options?.nick}`);
+            log.debug(`DISPATCH_ENTERED: from=${from} bodyLen=${(body||"").length} type=${options?.type} room=${options?.room} nick=${options?.nick}`);
             const isGroupChat = options?.type === "groupchat";
             const roomJid = options?.room;
             const senderBareJid = from.split('/')[0];
@@ -274,6 +330,12 @@ export class GatewayLifecycle {
               MediaPaths: options?.mediaPaths || [],
               MediaUrl: options?.mediaUrls?.[0] || null,
               MediaPath: options?.mediaPaths?.[0] || null,
+              // SECURITY (2.0.16): pass the isSystemMessage flag
+              // through to downstream consumers.  Note the current
+              // dispatch is short-circuited above when this is true,
+              // so this only matters for consumers that wire up
+              // their own dispatch path.
+              IsSystemMessage: options?.isSystemMessage === true,
             });
             log.debug("Context finalized");
 
@@ -306,7 +368,7 @@ export class GatewayLifecycle {
                 }
                 const bareJid = jid.split('/')[0];
 
-                log.error(`GC_DELIVER: called=true payloadKeys=${Object.keys(payload||{}).join(",")} textLen=${(payload?.text||"").length} isGC=${isGroupChat} optType=${options?.type} roomJid=${roomJid} jid=${jid}`);
+                log.debug(`GC_DELIVER: called=true payloadKeys=${Object.keys(payload||{}).join(",")} textLen=${(payload?.text||"").length} isGC=${isGroupChat} optType=${options?.type} roomJid=${roomJid} jid=${jid}`);
 
                 try {
                   const sessionManager = (global as any).whiteboardSessionManager;
@@ -356,14 +418,15 @@ export class GatewayLifecycle {
                       }
                     }
                   }
-                  log.error(`GC_SEND: pre isGC=${isGroupChat} optType=${options?.type} jid=${jid} cleanTextLen=${cleanText.length} ready=${true}`);
+                  log.debug(`GC_SEND: pre isGC=${isGroupChat} optType=${options?.type} jid=${jid} cleanTextLen=${cleanText.length} ready=${true}`);
                   if (isGroupChat && !(options?.type === "chat")) {
                     await xmpp.sendGroupchat(jid, cleanText);
-                    log.error(`GC_SEND: post groupchat success=true`);
+                    log.debug(`GC_SEND: post groupchat success=true`);
                   } else {
                     await xmpp.send(jid, cleanText);
-                    log.error(`GC_SEND: post direct success=true`);
+                    log.debug(`GC_SEND: post direct success=true`);
                   }
+                  ctx.setStatus({ lastTransportActivityAt: Date.now() });
                   try {
                     await messageStore.saveMessage({
                       direction: 'outbound',
@@ -414,6 +477,16 @@ export class GatewayLifecycle {
         }
       }
     );
+    let xmpp: Awaited<ReturnType<typeof this.services.startXmpp>>;
+    try {
+      xmpp = await Promise.race([startXmppPromise, startXmppTimeoutPromise]);
+      startXmppResult = xmpp;
+      clearStartXmppGuards();
+    } catch (err) {
+      clearStartXmppGuards();
+      logger?.error?.(`[${account.accountId}] startXmpp failed:`, err);
+      throw err;
+    }
 
     // Store client globally by account ID
     this.deps.xmppClients.set(account.accountId, xmpp);
@@ -421,6 +494,8 @@ export class GatewayLifecycle {
     ctx.setStatus({
       accountId: account.accountId,
       running: true,
+      connected: true,
+      lastTransportActivityAt: Date.now(),
       lastStartAt: Date.now(),
     });
 
@@ -435,6 +510,7 @@ export class GatewayLifecycle {
         ctx.setStatus({
           accountId: account.accountId,
           running: false,
+          connected: false,
           lastStopAt: Date.now(),
         });
         resolve();
@@ -455,6 +531,7 @@ export class GatewayLifecycle {
     ctx.setStatus({
       accountId: ctx.accountId,
       running: false,
+      connected: false,
       lastStopAt: Date.now(),
     });
     ctx.log?.info("XMPP connection stopped");

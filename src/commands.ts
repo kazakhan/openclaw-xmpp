@@ -1,23 +1,88 @@
 import { xml } from "@xmpp/client";
-import { spawn, execSync } from "child_process";
-import { fileURLToPath } from "node:url";
-import path from "path";
+import { spawn } from "child_process";
 import { joinRoom, leaveRoom, getJoinedRooms, inviteToRoom, removeContact } from "./gateway-client.js";
 import { getContactsInstance } from "./lib/contact-factory.js";
+import { RosterStore } from "./roster-store.js";
 
-// Simple roster functions without fs-extra
-let roster: Record<string, { nick?: string }> = {};
+// Type for the spawn function so tests can inject a mock.  In production
+// this defaults to the real `child_process.spawn`.
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  options: {
+    detached: boolean;
+    stdio: "ignore" | "pipe" | "inherit";
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    windowsHide?: boolean;
+  }
+) => { pid?: number; unref: () => void; on: (event: string, cb: (err: Error) => void) => void };
 
-function getRoster() {
-  return roster;
+let _spawnOverride: SpawnFn | null = null;
+export function _setSpawnForTests(fn: SpawnFn | null): void { _spawnOverride = fn; }
+
+/**
+ * Start the OpenClaw gateway as a detached background process.
+ *
+ * SECURITY (2.0.15): the previous version called
+ *   spawn(process.execPath, [process.argv[0], "gateway"], …)
+ * which translates to `node.exe node.exe gateway …` because
+ * `process.execPath` is the path to the Node.js binary and
+ * `process.argv[0]` is the same binary.  The second `node.exe` was
+ * interpreted as a script name, which fails at startup.
+ *
+ * The new implementation spawns the `openclaw` CLI directly, with a
+ * `cmd.exe /c` wrapper on Windows so that PATH lookup works.  The
+ * function returns a result object (rather than throwing) so that
+ * the caller (the CLI action handler) can print a clean error and
+ * exit with a non-zero code if the spawn fails (e.g. `openclaw`
+ * not on PATH).
+ */
+export function startGateway(): { ok: true; pid?: number } | { ok: false; error: string } {
+  const isWin = process.platform === "win32";
+  const command = isWin ? "cmd.exe" : "openclaw";
+  const args = isWin ? ["/c", "openclaw", "gateway"] : ["gateway"];
+
+  const spawnOptions = {
+    detached: true,
+    stdio: "ignore" as const,
+    cwd: process.cwd(),
+    env: { ...process.env },
+    ...(isWin ? { windowsHide: true } : {}),
+  };
+
+  const doSpawn = _spawnOverride ?? (spawn as unknown as SpawnFn);
+  try {
+    const gatewayProcess = doSpawn(command, args, spawnOptions);
+    gatewayProcess.unref();
+    return { ok: true, pid: gatewayProcess.pid };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 }
 
-function setNick(jid: string, nick: string) {
-  roster[jid] = { nick };
+// SECURITY (2.0.17, M8): roster is now persisted to
+// `<dataDir>/xmpp-roster.json` via the `RosterStore` helper
+// (src/roster-store.ts).  The previous in-memory-only implementation
+// silently lost every `xmpp nick` invocation on restart.
+
+function getRosterStore(dataDir: string): RosterStore {
+  return new RosterStore(dataDir);
 }
 
-async function saveRoster() {
-  console.log("Roster saved (in-memory only)");
+// SECURITY (2.0.18, L12): extract the JID-shape check that
+// previously appeared inline at multiple subcommand sites.  The
+// check is intentionally permissive (just `jid.includes('@')`)
+// because some valid JIDs in this codebase use resource parts and
+// the validation is purely a "looks like a JID" sanity check, not
+// a full RFC-6122 parse.  For strict validation, callers can also
+// use `validators.isValidJid(jid)` from `src/security/validation.ts`.
+function requireJid(jid: string | undefined, usage: string): boolean {
+  if (!jid || !jid.includes('@')) {
+    console.error(`Invalid JID. ${usage}`);
+    return false;
+  }
+  return true;
 }
 
 
@@ -68,16 +133,13 @@ export function registerXmppCli({
     .action(() => {
       console.log("Starting OpenClaw gateway...");
 
-      const gatewayProcess = spawn(process.execPath, [process.argv[0], "gateway"], {
-        detached: true,
-        stdio: 'ignore',
-        cwd: process.cwd(),
-        env: { ...process.env }
-      });
+      const result = startGateway();
+      if (result.ok === false) {
+        console.error(`Failed to start gateway: ${result.error}`);
+        process.exit(1);
+      }
 
-      gatewayProcess.unref();
-
-      console.log("Gateway starting in background (pid:", gatewayProcess.pid + ")");
+      console.log("Gateway starting in background (pid:", (result.pid ?? "unknown") + ")");
       console.log("Waiting for gateway to initialize...");
       setTimeout(() => {
         console.log("Gateway should be ready. Try: openclaw xmpp status");
@@ -129,26 +191,29 @@ export function registerXmppCli({
   // Subcommand: roster
   xmpp
     .command("roster")
-    .description("Show roster (in-memory)")
-    .action(() => {
-      const rosterData = getRoster();
-      if (Object.keys(rosterData).length === 0) {
-        console.log("No roster entries (in-memory only)");
+    .description("Show roster (persisted to <dataDir>/xmpp-roster.json)")
+    .action(async () => {
+      const dataDir = process.env.OPENCLAW_DATA_DIR || process.cwd();
+      const store = getRosterStore(dataDir);
+      const entries = await store.list();
+      if (entries.length === 0) {
+        console.log("No roster entries");
       } else {
-        console.log("Roster (in-memory):");
-        Object.entries(rosterData).forEach(([jid, data]) => {
-          console.log(`  ${jid}: ${data.nick || 'no nick'}`);
-        });
+        console.log("Roster:");
+        for (const entry of entries) {
+          console.log(`  ${entry.jid}: ${entry.nick}`);
+        }
       }
     });
 
   // Subcommand: nick <jid> <name>
   xmpp
     .command("nick <jid> <name>")
-    .description("Set roster nickname (in-memory)")
+    .description("Set roster nickname (persisted)")
     .action(async (jid: string, name: string) => {
-      setNick(jid, name);
-      await saveRoster();
+      const dataDir = process.env.OPENCLAW_DATA_DIR || process.cwd();
+      const store = getRosterStore(dataDir);
+      await store.setNick(jid, name);
       console.log(`Nickname set for ${jid}: ${name}`);
     });
 
@@ -248,12 +313,8 @@ export function registerXmppCli({
     .command("add <jid> [name]")
     .description("Add contact to whitelist (required for bot responses)")
     .action(async (jid: string, name?: string) => {
-      // Basic JID validation
-      if (!jid || !jid.includes('@')) {
-        console.error("Invalid JID format. Expected: user@domain.com");
-        console.error("Usage: openclaw xmpp add <jid> [name]");
-        return;
-      }
+      // Basic JID validation (L12)
+      if (!requireJid(jid, "Usage: openclaw xmpp add <jid> [name]")) return;
 
       try {
         const contacts = getContacts?.();
@@ -294,11 +355,8 @@ export function registerXmppCli({
     .command("remove <jid>")
     .description("Remove contact from whitelist")
     .action(async (jid: string) => {
-      if (!jid || !jid.includes('@')) {
-        console.error("Invalid JID format. Expected: user@domain.com");
-        console.error("Usage: openclaw xmpp remove <jid>");
-        return;
-      }
+      // Basic JID validation (L12)
+      if (!requireJid(jid, "Usage: openclaw xmpp remove <jid>")) return;
 
       try {
         const contacts = getContacts?.();
@@ -745,126 +803,97 @@ Note: Commands connect directly to XMPP server.`);
     });
 
   // Subcommand: sftp <action> [args]
+  // REMOVED in 2.0.15 — SFTP was removed for security reasons (see CHANGELOG).
+  // We keep a stub that emits a clear error so that any script still invoking
+  // `openclaw xmpp sftp …` fails loudly instead of silently no-op'ing.
   xmpp
     .command("sftp <action> [args...]")
-    .description("SFTP file management (upload, download, list, delete)")
-    .action(async (action: string, args: string[]) => {
-      const { sftpUpload, sftpDownload, sftpList, sftpDelete, sftpHelp } = await import('./sftp.js');
-
-      if (action === 'help') {
-        console.log(sftpHelp());
-        return;
-      }
-
-      if (action === 'upload' && args.length >= 1) {
-        const localPath = args[0];
-        const remoteName = args[1];
-        console.log(`Uploading ${localPath}...`);
-        const result = await sftpUpload(localPath, remoteName);
-        if (result.ok) {
-          console.log(`Uploaded: ${result.data}`);
-        } else {
-          console.error(`Upload failed: ${result.error}`);
-        }
-        return;
-      }
-
-      if (action === 'download' && args.length >= 1) {
-        const remoteName = args[0];
-        const localPath = args[1];
-        console.log(`Downloading ${remoteName}...`);
-        const result = await sftpDownload(remoteName, localPath);
-        if (result.ok) {
-          console.log(`Downloaded: ${result.data}`);
-        } else {
-          console.error(`Download failed: ${result.error}`);
-        }
-        return;
-      }
-
-      if (action === 'ls') {
-        console.log('Listing files...');
-        const result = await sftpList();
-        if (result.ok && result.data) {
-          if (result.data.length === 0) {
-            console.log('No files in your folder');
-          } else {
-            result.data.forEach(f => console.log(`  ${f}`));
-          }
-        } else {
-          console.error(`List failed: ${result.error}`);
-        }
-        return;
-      }
-
-      if (action === 'rm' && args.length >= 1) {
-        const remoteName = args[0];
-        console.log(`Deleting ${remoteName}...`);
-        const result = await sftpDelete(remoteName);
-        if (result.ok) {
-          console.log('Deleted successfully');
-        } else {
-          console.error(`Delete failed: ${result.error}`);
-        }
-        return;
-      }
-
-      console.log(`Invalid SFTP command: ${action}`);
-      console.log('Use: openclaw xmpp sftp help');
+    .description("SFTP — REMOVED in 2.0.15 (security: SSH host key verification was disabled)")
+    .action((_action: string, _args: string[]) => {
+      console.error("The 'xmpp sftp' subcommand was removed in 2.0.15.");
+      console.error("Reason: the underlying SSH connection had host key verification");
+      console.error("disabled (`hostVerifier: () => true`), which made every SFTP");
+      console.error("connection vulnerable to a man-in-the-middle attack that could");
+      console.error("steal the XMPP account password.");
+      console.error("");
+      console.error("Use your server's native SFTP subsystem, or talk to your admin");
+      console.error("about re-enabling this once a proper known_hosts workflow exists.");
+      process.exit(1);
     });
 
   // Subcommand: encrypt-password
+  // SECURITY (2.0.16): the previous implementation used
+  // readline.createInterface() with output: process.stdout — the
+  // password was echoed character by character to the terminal.  It
+  // also used fs.readFileSync / fs.writeFileSync which is fragile.
+  // The new implementation reads the password from stdin (the
+  // argv path is kept for backward-compatibility but emits a
+  // deprecation warning) and delegates the actual encryption to
+  // the same helper that src/cli-encrypt.ts uses.
   xmpp
     .command("encrypt-password")
-    .description("Encrypt password in config file")
+    .description("Encrypt password in config file (reads from stdin)")
     .action(async () => {
-      const { encryptPasswordInConfig } = await import('./security/encryption.js');
-      const fs = await import('fs');
       const path = await import('path');
+      const { updateConfigWithEncryptedPassword } = await import('./security/encryption.js');
 
-      const configPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'openclaw.json');
-      let config: any = {};
-
-      if (fs.existsSync(configPath)) {
-        try {
-          config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        } catch (e) {
-          console.error('Failed to read config file:', e);
-          return;
+      // Parse --config / -c flag.
+      const args = process.argv.slice(2);
+      let configPath = path.join(
+        process.env.USERPROFILE || process.env.HOME || '',
+        '.openclaw',
+        'openclaw.json',
+      );
+      for (let i = 0; i < args.length; i++) {
+        if ((args[i] === '--config' || args[i] === '-c') && args[i + 1]) {
+          configPath = args[++i];
         }
+      }
+
+      // Skip the first two args: 'xmpp' (the program name) and
+      // 'encrypt-password' (the subcommand).  The next positional
+      // arg is the optional argv password (deprecated).
+      const positional = args.filter((a) => !a.startsWith('-') && a !== 'xmpp' && a !== 'encrypt-password');
+      let password = positional[0];
+
+      if (password) {
+        // SECURITY: warn that argv-passwords are visible in process
+        // listings and shell history.  Operators should switch to
+        // stdin.
+        process.stderr.write(
+          '[commands.ts] WARNING: passing the password on the command line ' +
+          'is deprecated.  Pipe via stdin instead.  (Removed in 2.1.0.)\n',
+        );
       } else {
-        console.error('Config file not found:', configPath);
-        return;
-      }
-
-      if (!config.channels?.xmpp?.accounts?.default) {
-        console.error('XMPP account config not found at channels.xmpp.accounts.default');
-        return;
-      }
-
-      console.log('Enter plaintext password (hidden): ');
-      
-      const readline = await import('readline');
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-      });
-
-      rl.question('', (password: string) => {
-        rl.close();
-        if (!password) {
-          console.error('Password cannot be empty');
-          return;
+        if (process.stdin.isTTY) {
+          console.error('No password provided on stdin and stdin is a TTY.');
+          console.error('Usage: echo "mypassword" | openclaw xmpp encrypt-password');
+          process.exit(1);
         }
+        const chunks: Buffer[] = [];
+        process.stdin.setEncoding('utf8');
+        for await (const chunk of process.stdin) {
+          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        }
+        password = Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '').trim();
+        if (!password) {
+          console.error('Empty password read from stdin.');
+          process.exit(1);
+        }
+      }
 
-        const updatedXmppConfig = encryptPasswordInConfig(config.channels.xmpp.accounts.default, password);
-        config.channels.xmpp.accounts.default = updatedXmppConfig;
-
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        console.log('Password encrypted successfully!');
-        console.log(`Config file: ${configPath}`);
-        console.log('Updated fields: encryptionKey, password (ENC:...)');
-      });
+      // Delegate to the same helper that src/cli-encrypt.ts uses.
+      // The helper reads the config file, encrypts the password,
+      // and writes the result back.  We use the result type
+      // ({ success, error }) to surface a clean error.
+      const result = updateConfigWithEncryptedPassword(configPath, password);
+      if (!result.success) {
+        console.error('Failed to encrypt password:', result.error || 'Unknown error');
+        process.exit(1);
+      }
+      console.log('Password encrypted successfully!');
+      console.log(`Config file: ${configPath}`);
+      console.log('Updated fields: encryptionKey, password (ENC:...)');
     });
 
 }

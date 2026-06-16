@@ -1,48 +1,63 @@
 # Dependencies
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Runtime data (per-install, not committed)
+# Runtime data
 data/downloads/
-data/messages/
-data/backup
-data/xmpp-admins.json
-data/xmpp-contacts.json
-data/xmpp-vcard.json
+*.log
+*.tmp
+# SECURITY (2.0.18, L15): explicit ignore for the cli-debug.log
+# file.  Although `*.log` already covers it, the explicit entry
+# documents the file's purpose and protects against future
+# `.gitignore` refactors that might (incorrectly) drop the
+# generic `*.log` rule.  The default `debugLog()` location has
+# moved to `~/.openclaw/extensions/xmpp/logs/cli-debug.log`
+# (see src/shared/index.ts) so this file should not normally be
+# created in the source tree, but we keep the ignore for
+# belt-and-braces.
+cli-debug.log
+src/cli-debug.log
 
-# Backups and trash (local only)
-_backups/
-_trash/
-*.backup_*
-*.bak
-*.zip
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# Build output
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript build output
 dist/
 build/
 *.js
 *.js.map
 *.d.ts
 
-# Logs
-*.log
-cli-debug.log
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Environment
+# Environment variables
 .env
 .env.local
 .env.*.local
 
-# Misc
-package-lock.json
-PLAN.md
+# Backups and trash
+_backups/
+_trash/
+*.backup-*
+*.bak
+
+# Tooling artifacts
+.opencode/
 nul
+
+# Lockfiles
+package-lock.json
+
+# Typecheck output
+typecheck-output.txt
+
+# Runtime data (messages, contacts, vcards)
+data/messages/
+

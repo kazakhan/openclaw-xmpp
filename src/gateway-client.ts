@@ -9,6 +9,23 @@ interface GatewayConfig {
   password?: string;
 }
 
+// SECURITY (2.0.15): warn exactly once per process when we have to put
+// the gateway auth secret on the spawned child's environment.  This is
+// the best we can do while `openclaw gateway call` does not accept
+// --stdin or env-var auth.  The warning is intentionally a one-time
+// `warn` (not `error`) so it does not flood the log on every RPC.
+let _gatewayAuthWarned = false;
+function warnGatewayAuthOnce(): void {
+  if (_gatewayAuthWarned) return;
+  _gatewayAuthWarned = true;
+  log.warn(
+    "[gateway-client] passing gateway auth via spawned-child env vars; " +
+    "this is visible to other local processes via /proc/<pid>/environ on " +
+    "Linux.  Upstream `openclaw` CLI is expected to add env-var auth in a " +
+    "future release to close this.  See CHANGELOG 2.0.15."
+  );
+}
+
 async function getGatewayConfig(): Promise<GatewayConfig> {
   const configPath = path.join(process.env.USERPROFILE || process.env.HOME || "", ".openclaw", "openclaw.json");
   const url = process.env.OPENCLAW_GATEWAY_URL || process.env.OPENCLAW_REMOTE_URL || "ws://127.0.0.1:18789";
@@ -61,6 +78,20 @@ export async function callGatewayRpc<T = any>(method: string, params?: Record<st
   const config = await getGatewayConfig();
   const isWindows = process.platform === "win32";
 
+  // SECURITY (2.0.15): the previous implementation appended
+  //   --token <token>   or   --password <password>
+  // to the spawned argv.  Command-line arguments are visible to any
+  // local process via `wmic process get commandline` (Windows),
+  // `ps aux` (Linux), `/proc/<pid>/cmdline` (Linux), or Task Manager
+  // (Windows, Details column).  Any other process on the same host
+  // could read the gateway auth token in plaintext.
+  //
+  // The new implementation never puts the token or password on argv.
+  // They are passed through the spawn's environment so that the
+  // OpenClaw CLI may pick them up (current versions of `openclaw
+  // gateway call` do not, but the env-var path is the correct
+  // direction and avoids the argv leak).  See CHANGELOG 2.0.15 for
+  // the rollout plan.
   const args = ["gateway", "call", method];
   if (params) {
     args.push("--params", JSON.stringify(params));
@@ -68,10 +99,18 @@ export async function callGatewayRpc<T = any>(method: string, params?: Record<st
   if (config.url && config.url !== "ws://127.0.0.1:18789") {
     args.push("--url", config.url);
   }
+
+  // We do NOT pass --token or --password.  We do, however, set them
+  // as env vars on the spawned process so that any future CLI version
+  // that supports env-var auth will receive them.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
   if (config.token) {
-    args.push("--token", config.token);
-  } else if (config.password) {
-    args.push("--password", config.password);
+    childEnv.OPENCLAW_GATEWAY_TOKEN = config.token;
+    warnGatewayAuthOnce();
+  }
+  if (config.password) {
+    childEnv.OPENCLAW_GATEWAY_PASSWORD = config.password;
+    warnGatewayAuthOnce();
   }
 
   return new Promise((resolve) => {
@@ -80,12 +119,14 @@ export async function callGatewayRpc<T = any>(method: string, params?: Record<st
       proc = spawn("cmd.exe", ["/c", "openclaw", ...args], {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
-        windowsHide: true
+        windowsHide: true,
+        env: childEnv,
       });
     } else {
       proc = spawn("openclaw", args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false
+        detached: false,
+        env: childEnv,
       });
     }
 

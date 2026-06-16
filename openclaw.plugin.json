@@ -1,9 +1,25 @@
 {
   "id": "xmpp",
-  "kind": "channel",
-  "channels": ["xmpp"],
   "name": "XMPP",
   "description": "XMPP/Jabber messaging channel plugin with file transfer and whiteboard support",
+  "commandAliases": [{ "name": "xmpp" }],
+  "activation": {
+    "onStartup": true,
+    "onCommands": ["xmpp"]
+  },
+  "channels": ["xmpp"],
+  "channelEnvVars": {
+    "xmpp": [
+      "XMPP_SERVICE",
+      "XMPP_DOMAIN",
+      "XMPP_JID",
+      "XMPP_PASSWORD",
+      "XMPP_DATADIR",
+      "XMPP_RESOURCE",
+      "XMPP_ADMIN_JID",
+      "XMPP_NICK"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -54,7 +70,8 @@
   "channelConfigs": {
     "xmpp": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "additionalProperties": true
       },
       "uiHints": {
         "accounts": {

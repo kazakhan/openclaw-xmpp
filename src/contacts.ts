@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { JsonStore } from "./jsonStore.js";
 import { Contact, ContactsData } from "./types.js";
+import { validators } from "./security/validation.js";
 
 interface ContactEntry {
   jid: string;
@@ -44,9 +45,18 @@ export class Contacts {
   
   async add(jid: string, name?: string): Promise<boolean> {
     const bareJid = jid.split('/')[0];
+    // SECURITY (2.0.17, M7): reject typo'd / malformed JIDs (e.g.
+    // `alice@@example.com` or `bob@example`) at the entry point so
+    // the JSON store never contains entries that downstream routing
+    // code would later fail to deliver to.  `validators.isValidJid`
+    // uses the same EMAIL_REGEX the rest of the codebase trusts
+    // (see `src/security/validation.ts`).
+    if (!validators.isValidJid(bareJid)) {
+      return false;
+    }
     const contacts = await this.contactsStore.get();
     const existingIndex = contacts.findIndex(c => c.jid === bareJid);
-    
+
     if (existingIndex >= 0) {
       const updatedContacts = [...contacts];
       updatedContacts[existingIndex].name = name || updatedContacts[existingIndex].name || bareJid.split('@')[0];

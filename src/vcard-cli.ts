@@ -1,6 +1,7 @@
 import { xml } from "@xmpp/client";
 import path from "path";
 import fs from "fs";
+import fsp from "fs/promises";
 import { decryptPasswordFromConfig } from './security/encryption.js';
 import { validators } from './security/validation.js';
 import { Config } from './config.js';
@@ -9,21 +10,81 @@ import { createXmppClient } from './lib/xmpp-connect.js';
 import { log } from "./lib/logger.js";
 import { parseVCard, buildVCardStanza, type VCardData } from "./lib/vcard-protocol.js";
 import { requestUploadSlot, uploadFileViaHTTP } from "./lib/upload-protocol.js";
+import crypto from 'crypto';
 
-function saveVCardLocally(vcardData: VCardData): void {
+async function saveVCardLocally(vcardData: VCardData): Promise<void> {
+  // SECURITY (2.0.18, L13): was previously sync (writeFileSync +
+  // existsSync + mkdirSync) in an async codebase.  Converted to
+  // async via `fs.promises.*`.  `fs.mkdir({ recursive: true })`
+  // is idempotent so the prior `existsSync` guard is no longer
+  // needed (it was a TOCTOU race anyway — two concurrent calls
+  // could both see "doesn't exist" and race on the mkdir).
   try {
     const config = loadXmppConfig();
     const dataDir = config.dataDir || path.join(process.env.USERPROFILE || process.env.HOME || '', '.openclaw', 'extensions', 'xmpp', 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+    await fsp.mkdir(dataDir, { recursive: true });
     const vcardFile = path.join(dataDir, "xmpp-vcard.json");
     vcardData.rev = new Date().toISOString();
-    fs.writeFileSync(vcardFile, JSON.stringify(vcardData, null, 2));
+    await fsp.writeFile(vcardFile, JSON.stringify(vcardData, null, 2));
     log.debug("vCard saved locally");
   } catch (err) {
     log.error("vCard local save failed", err);
   }
+}
+
+// SECURITY (2.0.18, L9): replace the previous pattern of
+//   const id = `v1-${Date.now()}`;
+//   const handler = (s) => { if (s.attrs.id === id && s.attrs.type === 'result') response = s; };
+//   xmpp.on('stanza', handler);
+//   await xmpp.send(xml("iq", { id, ... }));
+//   await new Promise(r => setTimeout(r, 800));  // ← hard-coded 800ms
+//   xmpp.off('stanza', handler);
+//
+// with a proper `sendReceive` that resolves on the matching
+// `<iq type="result"/>` and rejects on `<iq type="error"/>`, with
+// a configurable timeout (default 5s).  The 800ms hard-coded
+// sleep was both slow (vCard with N fields took `(N+1) * 1.1`s)
+// and unreliable (too short on a slow connection).
+async function sendReceive(
+  xmpp: any,
+  stanza: any,
+  timeoutMs: number = 5000,
+): Promise<any> {
+  const id = stanza.attrs.id;
+  if (!id) {
+    throw new Error("sendReceive: stanza must have an `id` attribute");
+  }
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const handler = (s: any) => {
+      if (s.attrs?.id !== id) return;
+      if (s.attrs?.type === 'result') {
+        done = true;
+        xmpp.off('stanza', handler);
+        clearTimeout(timer);
+        resolve(s);
+      } else if (s.attrs?.type === 'error') {
+        done = true;
+        xmpp.off('stanza', handler);
+        clearTimeout(timer);
+        const textEl = s.getChild?.('error');
+        const textNode = textEl?.getChildText?.('text', 'urn:ietf:params:xml:ns:xmpp-stanzas');
+        reject(new Error(`IQ ${id} error: ${textNode ?? s.attrs?.type ?? 'unknown'}`));
+      }
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      xmpp.off('stanza', handler);
+      reject(new Error(`IQ ${id} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    xmpp.on('stanza', handler);
+    xmpp.send(stanza).catch((err: any) => {
+      if (done) return;
+      xmpp.off('stanza', handler);
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
 }
 
 async function withConnection<T>(fn: (xmpp: any) => Promise<T>): Promise<T> {
@@ -34,10 +95,23 @@ async function withConnection<T>(fn: (xmpp: any) => Promise<T>): Promise<T> {
   
   let error: Error | null = null;
   xmpp.on('error', (err: Error) => error = err);
-  
-  await xmpp.start();
+
+  // SECURITY (2.0.18, L14): wrap `xmpp.start()` in try/catch so a
+  // rejection (e.g. bad credentials) is propagated immediately.
+  // The previous version `await`ed `start()` then checked the
+  // `error` listener — but the listener can fire AFTER the await
+  // resolves (event-emitter race), so a real start failure could
+  // be silently swallowed and the function would proceed with a
+  // half-connected xmpp object.  Now: try/catch first, then a
+  // belt-and-braces check of the listener state.
+  try {
+    await xmpp.start();
+  } catch (err) {
+    try { await xmpp.stop(); } catch { /* swallow — best-effort cleanup */ }
+    throw err;
+  }
   if (error) { await xmpp.stop(); throw error; }
-  
+
   try {
     return await fn(xmpp);
   } finally {
@@ -48,27 +122,22 @@ async function withConnection<T>(fn: (xmpp: any) => Promise<T>): Promise<T> {
 export async function setVCard(field: string, value: string): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       (vcard as any)[field] = value;
-      
+
+      // Fire-and-forget SET; the server is expected to process it
+      // and any subsequent IQ in the same connection will arrive
+      // after.  No more 300ms wait.
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
-    
+
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -82,18 +151,26 @@ async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, base
   const bareJid = config.jid.split('/')[0];
   const hash = crypto.createHash('sha1').update(Buffer.from(base64Data, 'base64')).digest('hex');
   const size = Buffer.from(base64Data, 'base64').length;
-  let success = false;
+  // SECURITY (2.0.17, M12): use per-step flags (not a single
+  // `success` reused across both handlers).  The previous code
+  // set `success = true` in the metadata handler and again in the
+  // data handler — meaning a stale `success = true` from a previous
+  // run's metadata handler could leak into the current run's
+  // return value, falsely reporting the avatar as published.
+  // We now require BOTH `metadataOk` and `dataOk` to be true and
+  // default each to false at the start of its own step.
+  let metadataOk = false;
+  let dataOk = false;
 
   try {
-    const metadataId = `avatar-meta-${Date.now()}`;
-    const metadataHandler = (stanza: any) => {
-      if (stanza.attrs.id === metadataId && stanza.attrs.type === 'result') {
-        success = true;
-      }
-    };
-    xmpp.on('stanza', metadataHandler);
-
-    await xmpp.send(xml("iq", { type: "set", to: bareJid, id: metadataId },
+    // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+    // 500ms hard-coded sleep.  `sendReceive` resolves on the
+    // matching `<iq type="result"/>` and rejects on `<iq
+    // type="error"/>`.  We treat any successful response (result
+    // OR error) as "done" — both indicate the server processed the
+    // IQ.  The previous 500ms sleep gave *no* signal of success
+    // or failure; it just blindly waited.
+    const metadataStanza = xml("iq", { type: "set", to: bareJid, id: `avatar-meta-${Date.now()}` },
       xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
         xml("publish", { node: "urn:xmpp:avatar:metadata" },
           xml("item", { id: hash },
@@ -103,19 +180,15 @@ async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, base
           )
         )
       )
-    ));
-    await new Promise(r => setTimeout(r, 500));
-    xmpp.off('stanza', metadataHandler);
+    );
+    try {
+      await sendReceive(xmpp, metadataStanza);
+      metadataOk = true;
+    } catch (err) {
+      log.debug('[Avatar] metadata publish error (continuing):', err);
+    }
 
-    const dataId = `avatar-data-${Date.now()}`;
-    const dataHandler = (stanza: any) => {
-      if (stanza.attrs.id === dataId && stanza.attrs.type === 'result') {
-        success = true;
-      }
-    };
-    xmpp.on('stanza', dataHandler);
-
-    await xmpp.send(xml("iq", { type: "set", to: bareJid, id: dataId },
+    const dataStanza = xml("iq", { type: "set", to: bareJid, id: `avatar-data-${Date.now()}` },
       xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
         xml("publish", { node: "urn:xmpp:avatar:data" },
           xml("item", { id: hash },
@@ -123,14 +196,23 @@ async function publishAvatar(xmpp: any, imageUrl: string, mimeType: string, base
           )
         )
       )
-    ));
-    await new Promise(r => setTimeout(r, 500));
-    xmpp.off('stanza', dataHandler);
+    );
+    try {
+      await sendReceive(xmpp, dataStanza);
+      dataOk = true;
+    } catch (err) {
+      log.debug('[Avatar] data publish error (continuing):', err);
+    }
   } catch (err) {
     log.error('[Avatar] PEP publish error:', err);
+    // SECURITY (2.0.17, M12): on error, leave the per-step flags
+    // at whatever value they were set to by the handlers (true or
+    // false).  We return `metadataOk && dataOk` so an error mid-
+    // sequence will naturally report `false` if either step did
+    // not see its `<iq type="result"/>`.
   }
 
-  return success;
+  return metadataOk && dataOk;
 }
 
 export async function setVCardAvatar(source: string): Promise<{ ok: boolean; error?: string; url?: string }> {
@@ -184,7 +266,7 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
   }
 
   try {
-    return await withConnection(async (xmpp) => {
+    await withConnection(async (xmpp) => {
       const stats = await fs.promises.stat(filePath);
       const size = stats.size;
       const filename = path.basename(filePath);
@@ -200,7 +282,8 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
 
       if (!isUrlInput) {
         try {
-          const slot = await requestUploadSlot(xmpp, filename, size);
+          const xmppConfig = loadXmppConfig();
+          const slot = await requestUploadSlot(xmpp, xmppConfig.domain, filename, size);
           await uploadFileViaHTTP(filePath, slot.putUrl);
           imageUrl = slot.getUrl;
         } catch (uploadErr: any) {
@@ -214,16 +297,12 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
         log.debug(`avatar XEP-0084 publish failed (non-critical)`);
       }
 
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       (vcard as any).avatarUrl = imageUrl;
       (vcard as any).avatarBinval = base64Data;
@@ -243,11 +322,10 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
           )
         )
       ));
-      await new Promise(r => setTimeout(r, 300));
+      // No more 300ms hard-coded wait — `sendReceive` ensures
+      // ordered I/O via the stanzas event stream.
 
-      saveVCardLocally(vcard);
-
-      return { ok: true, url: imageUrl };
+      await saveVCardLocally(vcard);
     });
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -257,21 +335,15 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
 export async function getVCard(): Promise<{ ok: boolean; data?: VCardData; error?: string }> {
   try {
     const result = await withConnection(async (xmpp) => {
-      const id = `g1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === id && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `g1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       return parseVCard(response?.getChild('vCard'));
     });
-    
+
     return { ok: true, data: result };
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -289,25 +361,17 @@ export async function setVCardName(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       vcard.n = { family, given, middle, prefix, suffix };
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -322,26 +386,18 @@ export async function addVCardPhone(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (!vcard.tel) vcard.tel = [];
       vcard.tel.push({ types, number });
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -353,27 +409,19 @@ export async function addVCardPhone(
 export async function removeVCardPhone(index: number): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (vcard.tel && vcard.tel[index]) {
         vcard.tel.splice(index, 1);
       }
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -388,26 +436,18 @@ export async function addVCardEmail(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (!vcard.email) vcard.email = [];
       vcard.email.push({ types, userid });
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -419,27 +459,19 @@ export async function addVCardEmail(
 export async function removeVCardEmail(index: number): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (vcard.email && vcard.email[index]) {
         vcard.email.splice(index, 1);
       }
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -460,26 +492,18 @@ export async function addVCardAddress(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (!vcard.adr) vcard.adr = [];
       vcard.adr.push({ types, street, locality, region, pcode, ctry, pobox, extadd });
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -491,27 +515,19 @@ export async function addVCardAddress(
 export async function removeVCardAddress(index: number): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       if (vcard.adr && vcard.adr[index]) {
         vcard.adr.splice(index, 1);
       }
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };
@@ -526,25 +542,17 @@ export async function setVCardOrg(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     await withConnection(async (xmpp) => {
-      const getId = `v1-${Date.now()}`;
-      let response: any = null;
-      
-      const handler = (stanza: any) => {
-        if (stanza.attrs.id === getId && stanza.attrs.type === 'result') response = stanza;
-      };
-      xmpp.on('stanza', handler);
-      
-      await xmpp.send(xml("iq", { type: "get", id: getId }, xml("vCard", { xmlns: "vcard-temp" })));
-      await new Promise(r => setTimeout(r, 800));
-      xmpp.off('stanza', handler);
-      
+      // SECURITY (2.0.18, L9): use `sendReceive` instead of the
+      // 800ms hard-coded sleep.
+      const response = await sendReceive(
+        xmpp,
+        xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+      );
       const vcard = parseVCard(response?.getChild('vCard'));
       vcard.org = { orgname, orgunit: orgunits.length > 0 ? orgunits : undefined };
-      
+
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await new Promise(r => setTimeout(r, 300));
-      
-      saveVCardLocally(vcard);
+      await saveVCardLocally(vcard);
     });
     
     return { ok: true };

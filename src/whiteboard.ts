@@ -1,9 +1,13 @@
 import { xml } from "@xmpp/client";
+import { log } from "./lib/logger.js";
 
 export interface WhiteboardPath {
   d: string;
   stroke?: string;
   strokeWidth?: number;
+  fill?: string;
+  elementType?: string;
+  elementAttrs?: Record<string, string>;
   id?: string;
 }
 
@@ -634,7 +638,6 @@ export function convertSxeToWhiteboardData(sxeData: SxeData): {
   paths?: WhiteboardPath[];
   moves?: WhiteboardMove[];
   deletes?: WhiteboardDelete[];
-  rawPaths?: string[];
 } {
   if (!sxeData.elements || sxeData.elements.length === 0) {
     return { type: 'path', paths: [], moves: [], deletes: [] };
@@ -679,15 +682,23 @@ export function convertSxeToWhiteboardData(sxeData: SxeData): {
         existingAttr.chdata = set.chdata;
       }
     } else if (set.chdata !== undefined) {
-      // <set> targeting a rid not in our attrEdits — might be updating a previously seen attr
-      // Store as a new attr edit for the target
-      attrEdits.push({
+      // SECURITY (2.0.18, L6): compute the new attr first, then push.
+      // The previous inline `attrEdits.push({ ... })` mutated the
+      // array inside the `for (const set of setEdits)` loop.  This
+      // was actually safe (Array.find() is not affected by
+      // Array.push() — the search starts from index 0 and looks
+      // for an existing entry) but the pattern was hard to read.
+      // Extracting the entry to a `const` makes the data flow
+      // explicit and removes the visual coupling between the
+      // iteration variable and the array being pushed to.
+      const newAttr = {
         rid: targetRid,
-        type: 'attr',
+        type: 'attr' as const,
         parent: set.parent || targetRid,
         name: set.name,
-        chdata: set.chdata
-      });
+        chdata: set.chdata,
+      };
+      attrEdits.push(newAttr);
     }
   }
   
@@ -730,16 +741,18 @@ export function convertSxeToWhiteboardData(sxeData: SxeData): {
       }
     }
   }
-  
-  const standalonePaths: string[] = [];
-  for (const el of sxeData.elements) {
-    if ((el.type === 'new' || el.type === 'set' || !el.type) && el.name === 'd' && el.chdata) {
-      standalonePaths.push(el.chdata);
-    }
-  }
-  
+
+  // SECURITY (2.0.18, L7): the previous version of this function
+  // collected a `standalonePaths: string[]` of raw `<d>` element
+  // chdata values and returned it on the `WhiteboardData` shape
+  // as `rawPaths?: string[]`.  No consumer of `WhiteboardData`
+  // (in this codebase or downstream) ever read `rawPaths` — a
+  // `grep` across the repository confirms zero readers.  The
+  // collection loop and the field are dead code, removed in 2.0.18
+  // to keep the public type honest about what it actually returns.
+
   if (paths.length > 0) {
-    return { type: 'path', paths, moves, deletes, rawPaths: standalonePaths.length > 0 ? standalonePaths : undefined };
+    return { type: 'path', paths, moves, deletes };
   }
   if (deletes.length > 0) {
     return { type: 'delete', paths, moves, deletes };
@@ -747,8 +760,8 @@ export function convertSxeToWhiteboardData(sxeData: SxeData): {
   if (moves.length > 0) {
     return { type: 'move', paths, moves, deletes };
   }
-  
-  return { type: 'path', paths, moves, deletes, rawPaths: standalonePaths.length > 0 ? standalonePaths : undefined };
+
+  return { type: 'path', paths, moves, deletes };
 }
 
 export function reconstructPathsFromState(session: { sxeNodes: Record<string, { name: string; parent: string }>; sxeAttrs: Record<string, { parent: string; name: string; chdata: string }>; deletes: any[] }): WhiteboardPath[] {

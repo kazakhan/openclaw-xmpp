@@ -3,6 +3,18 @@ import { loadXmppConfig } from './lib/config-loader.js';
 import { createXmppClient } from './lib/xmpp-connect.js';
 import { log } from "./lib/logger.js";
 
+// SECURITY (2.0.15): escape user-controlled values before they are
+// interpolated into SVG attribute values.  Used by parseSvgPath and
+// sendWhiteboardMessage.  Defined at module scope so both callers
+// can share the same implementation.
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 interface SxeConfig {
   sessionId: string;
   target: string;
@@ -77,51 +89,47 @@ function buildRemoveElement(id: string): any {
 function parseSvgPath(pathData: string): string {
   const svgElements: string[] = [];
   const commands = pathData.match(/[MLHVCSQTAZ][^MLHVCSQTAZ]*/gi) || [];
-  
-  let currentX = 0;
-  let currentY = 0;
-  
+
+  // SECURITY (2.0.15): escape attribute values before interpolating into
+  // the SVG <path> element.  The previous version interpolated `cmd`
+  // directly, which allowed a payload like
+  //   M10,10" onclick="alert(1)" x="M0,0
+  // to inject arbitrary attributes (XSS) into the resulting SVG fragment.
+  // The receiving XMPP client renders these fragments inline, so the
+  // injected attributes are interpreted by the renderer's HTML/SVG
+  // parser.  The escape function below neutralises the four characters
+  // that matter in attribute context: &, ", <, >.
   for (const cmd of commands) {
     const type = cmd[0].toUpperCase();
     const args = cmd.slice(1).trim().split(/[\s,]+/).filter(s => s).map(Number);
-    
+
     switch (type) {
       case 'M':
-        currentX = args[0];
-        currentY = args[1];
-        svgElements.push(`<path d="${cmd}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="${escapeAttr(cmd)}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'L':
-        currentX = args[0];
-        currentY = args[1];
-        svgElements.push(`<path d="${cmd}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="${escapeAttr(cmd)}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'H':
-        currentX += args[0];
-        svgElements.push(`<path d="H${args[0]}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="H${escapeAttr(String(args[0]))}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'V':
-        currentY += args[0];
-        svgElements.push(`<path d="V${args[0]}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="V${escapeAttr(String(args[0]))}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'C':
-        currentX = args[4];
-        currentY = args[5];
-        svgElements.push(`<path d="${cmd}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="${escapeAttr(cmd)}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'Q':
-        currentX = args[2];
-        currentY = args[3];
-        svgElements.push(`<path d="${cmd}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="${escapeAttr(cmd)}" fill="none" stroke="#000" stroke-width="1"/>`);
         break;
       case 'Z':
         svgElements.push('<path d="Z" fill="none" stroke="#000" stroke-width="1"/>');
         break;
       default:
-        svgElements.push(`<path d="${cmd}" fill="none" stroke="#000" stroke-width="1"/>`);
+        svgElements.push(`<path d="${escapeAttr(cmd)}" fill="none" stroke="#000" stroke-width="1"/>`);
     }
   }
-  
+
   return svgElements.join('');
 }
 
@@ -160,8 +168,13 @@ export async function sendWhiteboardMessage(to: string, pathData: string, option
       const strokeWidth = options?.strokeWidth || 1;
       const isGroupChat = options?.isGroupChat || false;
       const messageType = isGroupChat ? 'groupchat' : 'chat';
-      
-      const svgContent = `<path d="${pathData}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"/>`;
+
+      // SECURITY (2.0.15): same fix as parseSvgPath — user-controlled
+      // pathData, stroke, and strokeWidth are escaped before being
+      // interpolated into the SVG <path> element so an XMPP client
+      // that renders the SVG cannot be tricked into executing
+      // injected attributes (XSS).
+      const svgContent = `<path d="${escapeAttr(pathData)}" fill="none" stroke="${escapeAttr(stroke)}" stroke-width="${escapeAttr(String(strokeWidth))}"/>`;
       const newElement = buildNewElement(pathId, svgContent);
       
       const body = `[Whiteboard] Drawing: ${pathData}`;

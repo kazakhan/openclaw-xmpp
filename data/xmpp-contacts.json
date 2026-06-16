@@ -1,0 +1,42 @@
+[
+  {
+    "jid": "sarah@kazakhan.com",
+    "name": "sarah"
+  },
+  {
+    "jid": "jamie@kazakhan.com",
+    "name": "jamie"
+  },
+  {
+    "jid": "amaya@kazakhan.com",
+    "name": "amaya"
+  },
+  {
+    "jid": "abot@kazakhan.com",
+    "name": "abot"
+  },
+  {
+    "jid": "stockee@kazakhan.com",
+    "name": "stockee"
+  },
+  {
+    "jid": "angrybot@kazakhan.com",
+    "name": "angrybot"
+  },
+  {
+    "jid": "jbot@kazakhan.com",
+    "name": "jbot"
+  },
+  {
+    "jid": "uranus@kazakhan.com",
+    "name": "uranus"
+  },
+  {
+    "jid": "angus@kazakhan.com",
+    "name": "angus"
+  },
+  {
+    "jid": "security@conference.kazakhan.com",
+    "name": "security"
+  }
+]

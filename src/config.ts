@@ -69,6 +69,11 @@ export const Config = {
   MAX_MESSAGE_BODY_SIZE: 64 * 1024,  // 64KB max inbound message body
 
   // Reconnection
+  // SECURITY (2.1.3): these are kept for the custom scheduleReconnect
+  // fallback in xmppClient.stop() and the gateway.  Primary
+  // reconnection is handled by @xmpp/reconnect (delay 5000ms, set in
+  // startXMPP.ts).  The OLD design from D:\Downloads\xmppOLD used
+  // exactly these values.
   RECONNECT_BASE_MS: 1000,
   RECONNECT_MAX_MS: 60000,
   RECONNECT_BACKOFF_FACTOR: 2,

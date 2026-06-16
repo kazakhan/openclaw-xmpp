@@ -11,8 +11,17 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "noEmitOnError": false
   },
-  "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "index.ts",
+    "setup-entry.ts",
+    "channel-plugin-api.ts",
+    "runtime-setter-api.ts",
+    "secret-contract-api.ts",
+    "setup-plugin-api.ts",
+    "src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "_backups", "_trash", "tests"]
 }

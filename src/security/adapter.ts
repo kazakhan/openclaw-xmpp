@@ -1,4 +1,13 @@
-import type { ChannelSecurityAdapter } from "openclaw/plugin-sdk";
+interface ChannelSecurityAdapter {
+  collectWarnings(ctx: XmppSecurityContext): string[];
+  collectAuditFindings(ctx: XmppSecurityContext & { sourceConfig?: any }): Array<{
+    checkId: string;
+    severity: string;
+    title: string;
+    detail: string;
+    remediation?: string;
+  }>;
+}
 
 export interface XmppSecurityContext {
   accountId?: string | null;

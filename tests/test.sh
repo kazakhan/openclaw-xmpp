@@ -268,67 +268,23 @@ else
 fi
 
 #========================================
-# TEST 6: SFTP
+# TEST 6: (REMOVED in 2.0.15)
+# SFTP subcommand was removed in 2.0.15 (security: SSH host key
+# verification was disabled).  The stub still exists and emits a
+# clear error; we verify that here.
 #========================================
-section_header "TEST 6: SFTP File Management"
+section_header "TEST 6: SFTP removal verification (2.0.15)"
 
-# Test 6.1: List files
-log "INFO" "Test 6.1: Listing SFTP files..."
-SFTP_LS=$(run_command "openclaw xmpp sftp ls" 60)
-assert_output "SFTP ls" "$SFTP_LS" "file|listing|directory|total|\."
-
-# Test 6.2: Upload file
-log "INFO" "Test 6.2: Uploading test file..."
-TIMESTAMP=$(get_timestamp)
-TEST_FILENAME="xmpp-test-$TIMESTAMP.txt"
-TEST_CONTENT="This is a test file for XMPP plugin automated testing.
-Timestamp: $(date)
-Purpose: Verify SFTP functionality
-DO NOT DELETE: Test file will be removed by cleanup"
-TEST_FILEPATH=$(create_test_file "$TEST_FILENAME" "$TEST_CONTENT")
-
-SFTP_UPLOAD=$(run_command "openclaw xmpp sftp upload '$TEST_FILEPATH'" 60)
-assert_output "SFTP upload" "$SFTP_UPLOAD" "uploaded|upload|success|ok|sent|transfer"
-
-# Test 6.3: Download file
-log "INFO" "Test 6.3: Downloading test file..."
-DOWNLOAD_PATH="$TEST_FILES_DIR/downloaded-$TIMESTAMP.txt"
-SFTP_DOWNLOAD=$(run_command "openclaw xmpp sftp download '$TEST_FILENAME' '$DOWNLOAD_PATH'" 60)
-assert_output "SFTP download" "$SFTP_DOWNLOAD" "downloaded|download|success|ok|received|transfer"
-
-if [ -f "$DOWNLOAD_PATH" ]; then
-    assert "Downloaded file exists" "true" "file" "exists"
-    if grep -q "This is a test file" "$DOWNLOAD_PATH"; then
-        assert "Downloaded file content matches" "true" "content" "matched"
-    else
-        assert "Downloaded file content matches" "false" "content" "mismatch"
-    fi
-else
-    assert "Downloaded file exists" "false" "file" "missing"
-fi
-
-# Test 6.4: Delete file
-log "INFO" "Test 6.4: Deleting test file..."
-SFTP_DELETE=$(run_command "openclaw xmpp sftp rm '$TEST_FILENAME'" 30)
-assert_output "SFTP delete" "$SFTP_DELETE" "deleted|remove|success|ok|gone"
+log "INFO" "Test 6.0: 'xmpp sftp ls' must now fail with the removal message..."
+SFTP_REMOVED=$(run_command "openclaw xmpp sftp ls" 30 2>&1)
+assert_output "SFTP subcommand removed" "$SFTP_REMOVED" "removed in 2.0.15|host key verification"
 
 #========================================
-# TEST 7: FILE TRANSFER SECURITY
+# TEST 7: (REMOVED in 2.0.15)
+# file-transfer-security was never wired up to a CLI handler; the
+# block was guarded by `probe_command_exists` and always skipped.
+# It is removed now for symmetry with the SFTP removal.
 #========================================
-section_header "TEST 7: File Transfer Security"
-
-if probe_command_exists "openclaw xmpp file-transfer-security status"; then
-    log "INFO" "Test 7.1: Checking file transfer security status..."
-    FTS_STATUS=$(run_command "openclaw xmpp file-transfer-security status" 30)
-    assert_output "File transfer security status" "$FTS_STATUS" "status|security|quota|enabled|disabled"
-
-    log "INFO" "Test 7.2: Checking user quota..."
-    QUOTA=$(run_command "openclaw xmpp file-transfer-security quota $BOT_JID" 30)
-    assert_output "Quota check" "$QUOTA" "quota|usage|bytes|limit|allowed"
-else
-    skip_test "File transfer security status" "CLI command 'file-transfer-security' not registered (module exists but no CLI handler in commands.ts)"
-    skip_test "Quota check" "CLI command 'file-transfer-security' not registered (module exists but no CLI handler in commands.ts)"
-fi
 
 #========================================
 # TEST 8: AUDIT LOGGING

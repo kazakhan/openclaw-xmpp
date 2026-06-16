@@ -6,11 +6,13 @@ export interface XmppConfig {
   resource?: string;
   dataDir?: string;
   adminJid?: string;
-  sftpPort?: number;
   autoJoinRooms?: string[];
   rooms?: string[];
   nick?: string;
   vcard?: VCardConfig;
+  enabled?: boolean;
+  accountId?: string;
+  session?: Record<string, unknown>;
 }
 
 export interface VCardConfig {
@@ -123,6 +125,9 @@ export interface WhiteboardPath {
   d: string;
   stroke?: string;
   strokeWidth?: number;
+  fill?: string;
+  elementType?: string;
+  elementAttrs?: Record<string, string>;
   id?: string;
 }
 
@@ -208,7 +213,7 @@ export interface StanzaElement {
   name: string;
   attrs: Record<string, string>;
   children: StanzaElement[];
-  getText(): string;
+  text(): string;
   getChild(name: string, xmlns?: string): StanzaElement | null;
   getChildText(name: string, xmlns?: string): string;
   getChildren(name: string): StanzaElement[];
@@ -251,8 +256,10 @@ export interface AccountSnapshot {
   configured: boolean;
   tokenSource: string;
   running?: boolean;
-  lastStartAt?: string | null;
-  lastStopAt?: string | null;
+  connected?: boolean;
+  lastTransportActivityAt?: number;
+  lastStartAt?: number | string | null;
+  lastStopAt?: number | string | null;
   lastError?: string | null;
 }
 

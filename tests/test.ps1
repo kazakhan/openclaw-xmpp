@@ -301,71 +301,22 @@ if ($vcardProbe -match "configuration not found|cannot load|no such file") {
 }
 
 #========================================
-# TEST 6: SFTP
+# TEST 6: (REMOVED in 2.0.15)
+# SFTP subcommand was removed in 2.0.15 (security: SSH host key
+# verification was disabled).  We verify the removal-stub here.
 #========================================
-Write-SectionHeader -Title "TEST 6: SFTP File Management"
+Write-SectionHeader -Title "TEST 6: SFTP removal verification (2.0.15)"
 
-# Test 6.1: List files
-Write-TestLog -Level "INFO" -Message "Test 6.1 - Listing SFTP files..."
-$sftpLs = Run-CommandOutput "openclaw xmpp sftp ls"
-Assert-Output -TestName "SFTP ls" -Output $sftpLs -Pattern "file|listing|directory|total"
-
-# Test 6.2: Upload file
-Write-TestLog -Level "INFO" -Message "Test 6.2 - Uploading test file..."
-$ts = Get-Timestamp
-$testFilename = "xmpp-test-$ts.txt"
-$testContent = @'
-This is a test file for XMPP plugin automated testing.
-Timestamp: PLACEHOLDER_DATE
-Purpose: Verify SFTP functionality
-NOTE: Test file will be removed by cleanup
-'@ -replace 'PLACEHOLDER_DATE', (Get-Date)
-
-$testFilePath = Create-TestFile -Content $testContent -Extension ".txt"
-
-$sftpUpload = Run-CommandOutput "openclaw xmpp sftp upload '$testFilePath'"
-Assert-Output -TestName "SFTP upload" -Output $sftpUpload -Pattern "uploaded|upload|success|ok|sent|transfer"
-
-# Test 6.3: Download file
-Write-TestLog -Level "INFO" -Message "Test 6.3 - Downloading test file..."
-$downloadPath = "$TEST_FILES_DIR\downloaded-$ts.txt"
-$sftpDownload = Run-CommandOutput "openclaw xmpp sftp download '$testFilename' '$downloadPath'"
-Assert-Output -TestName "SFTP download" -Output $sftpDownload -Pattern "downloaded|download|success|ok|received|transfer"
-
-if (Test-Path $downloadPath) {
-    Assert-Test -TestName "Downloaded file exists" -Condition $true -Expected "file" -Actual "exists"
-    $fileContent = Get-Content $downloadPath -Raw
-    if ($fileContent -match "This is a test file") {
-        Assert-Test -TestName "Downloaded file content matches" -Condition $true -Expected "content" -Actual "matched"
-    } else {
-        Assert-Test -TestName "Downloaded file content matches" -Condition $false -Expected "content" -Actual "mismatch"
-    }
-} else {
-    Assert-Test -TestName "Downloaded file exists" -Condition $false -Expected "file" -Actual "missing"
-}
-
-# Test 6.4: Delete file
-Write-TestLog -Level "INFO" -Message "Test 6.4 - Deleting test file..."
-$deleteOutput = Run-CommandOutput "openclaw xmpp sftp rm '$testFilename'"
-Assert-Output -TestName "SFTP delete" -Output $deleteOutput -Pattern "deleted|remove|success|ok|gone"
+Write-TestLog -Level "INFO" -Message "Test 6.0 - 'xmpp sftp ls' must now fail with the removal message..."
+$sftpRemoved = Run-CommandOutput "openclaw xmpp sftp ls"
+Assert-Output -TestName "SFTP subcommand removed" -Output $sftpRemoved -Pattern "removed in 2.0.15|host key verification"
 
 #========================================
-# TEST 7: FILE TRANSFER SECURITY
+# TEST 7: (REMOVED in 2.0.15)
+# file-transfer-security was never wired up to a CLI handler; the
+# block was guarded by `Probe-CommandExists` and always skipped.
+# It is removed now for symmetry with the SFTP removal.
 #========================================
-Write-SectionHeader -Title "TEST 7: File Transfer Security"
-
-if (Probe-CommandExists "openclaw xmpp file-transfer-security status") {
-    Write-TestLog -Level "INFO" -Message "Test 7.1 - Checking file transfer security status..."
-    $ftsStatus = Run-CommandOutput "openclaw xmpp file-transfer-security status"
-    Assert-Output -TestName "File transfer security status" -Output $ftsStatus -Pattern "status|security|quota|enabled|disabled"
-
-    Write-TestLog -Level "INFO" -Message "Test 7.2 - Checking user quota..."
-    $quota = Run-CommandOutput "openclaw xmpp file-transfer-security quota $BOT_JID"
-    Assert-Output -TestName "Quota check" -Output $quota -Pattern "quota|usage|bytes|limit|allowed"
-} else {
-    Skip-Test -TestName "File transfer security status" -Reason "CLI command 'file-transfer-security' not registered (module exists but no CLI handler in commands.ts)"
-    Skip-Test -TestName "Quota check" -Reason "CLI command 'file-transfer-security' not registered (module exists but no CLI handler in commands.ts)"
-}
 
 #========================================
 # TEST 8: AUDIT LOGGING

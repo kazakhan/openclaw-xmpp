@@ -41,12 +41,11 @@ bash test.sh
 3. **Contact Management** - Add/remove contacts, nicknames
 4. **Subscriptions** - Pending subscription management
 5. **vCard** - Get/set vCard fields (backed up and restored!)
-6. **SFTP** - Upload/download files (NEVER overwrites index.html)
-7. **File Transfer Security** - Status checks
-8. **Audit Logging** - Status and event listing
-9. **Rate Limiting** - Commands blocked after limit
-10. **MUC Invites** - Auto-accept behavior
-11. **Slash Commands** - In-chat command handling
+6. **SFTP removal verification** - asserts the `xmpp sftp` subcommand is gone (removed in 2.0.15 for security)
+7. **Audit Logging** - Status and event listing
+8. **Rate Limiting** - Commands blocked after limit
+9. **MUC Invites** - Auto-accept behavior
+10. **Slash Commands** - In-chat command handling
 
 ## Safety Features
 

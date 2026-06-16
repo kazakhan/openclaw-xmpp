@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import os from "os";
 
 export interface FileTransferConfig {
   maxFileSizeMB: number;
@@ -54,10 +55,17 @@ const DEFAULT_CONFIG: FileTransferConfig = {
     'video/mp4',
     'video/webm'
   ],
-  quarantineDir: './quarantine',
+  // SECURITY (2.0.18, L4): defaults are now absolute paths under the
+  // user's home directory, NOT CWD-relative.  The previous defaults
+  // (`./quarantine`, `./temp`) depended on the process's CWD which
+  // varies by deployment (systemd unit, terminal session, Docker
+  // container) and could end up creating `quarantine/` directories
+  // next to the source tree.  Operators can still override via the
+  // FileTransferConfig.
+  quarantineDir: path.join(os.homedir(), '.openclaw', 'extensions', 'xmpp', 'data', 'quarantine'),
   enableVirusScan: false,
   userQuotaMB: 100,
-  tempDir: './temp'
+  tempDir: path.join(os.homedir(), '.openclaw', 'extensions', 'xmpp', 'data', 'temp')
 };
 
 const MIME_TYPE_MAP: Record<string, string[]> = {
@@ -161,7 +169,16 @@ export class SecureFileTransfer {
       return { valid: false, error: 'Invalid filename' };
     }
 
-    const dangerousExtensions = ['.exe', '.bat', '.cmd', '.sh', '.php', '.js', '.py', '.pif', '.msi', '.dll', '.scr', '.jar'];
+    const dangerousExtensions = [
+      // Native code / script vectors
+      '.exe', '.bat', '.cmd', '.sh', '.php', '.js', '.py', '.pif',
+      '.msi', '.dll', '.scr', '.jar', '.com', '.vbs', '.wsf', '.ps1',
+      '.bash', '.ksh', '.csh',
+      // XSS / scripting vectors when rendered by an XMPP client
+      // (Gajim, Dino, Conversations etc. inline-render these):
+      '.html', '.htm', '.xhtml', '.svg', '.xml', '.xsl', '.xslt',
+      '.swf', '.jnlp',
+    ];
     const ext = this.getFileExtension(filename);
     if (dangerousExtensions.includes(ext)) {
       return { valid: false, error: `Dangerous file extension not allowed: ${ext}` };
@@ -332,6 +349,14 @@ export class SecureFileTransfer {
   }
 
   async secureDeleteFile(filePath: string): Promise<boolean> {
+    // SECURITY (2.0.18, L5): caveat — this function is best-effort
+    // only.  On SSD with wear-leveling and on journaling filesystems
+    // (ext4, NTFS, APFS), the original blocks may be retained
+    // indefinitely even after we overwrite the file with zeros.
+    // Software-based secure-delete is inherently limited on these
+    // storage technologies.  For high-security use cases, encrypt
+    // the volume at rest (LUKS / FileVault / BitLocker) and rely on
+    // the encryption key destruction for actual unrecoverability.
     try {
       if (!fs.existsSync(filePath)) {
         return true;

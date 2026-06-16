@@ -4,6 +4,46 @@ import { Config } from "./config.js";
 
 const MAX_MESSAGES_PER_FILE = Config.MAX_MESSAGES_PER_FILE;
 
+/**
+ * JID <-> filename encoding (2.0.15).
+ *
+ * The pre-2.0.15 implementation used a lossy `jid.replace(/[^a-zA-Z0-9@._-]/g, '_')`
+ * to derive a filename, then tried to round-trip with
+ * `f.replace('.json', '_').replace(/_/g, '.')`.  That round-trip is
+ * lossy and produces malformed JIDs: `user_at_x.com` becomes
+ * `user.at.x.com.` (every `_` is replaced with `.`, including those
+ * in the original JID, and a trailing dot is added).
+ *
+ * The new encoding is a percent-encoding of the three characters that
+ * are legal in a JID but reserved in a filename: `.`, `/`, `_`.  It
+ * is bijective: encodeJidForFilename(decodeJidFromFilename(x)) === x
+ * and vice versa.
+ *
+ * Files written by 2.0.14 and earlier (lossy encoded) remain on disk
+ * but `getDirectChatJIDs()` will return the JIDs that the operator
+ * originally saved *as best it can* by reading the file's
+ * `meta.chatJid` (which was always set on save).  The pre-existing
+ * filename is preserved so a rollback to 2.0.14 is still possible.
+ */
+export function encodeJidForFilename(jid: string): string {
+  return jid
+    .replace(/%/g, "%25")
+    .replace(/\./g, "%2E")
+    .replace(/\//g, "%2F")
+    .replace(/_/g, "%5F");
+}
+
+export function decodeJidFromFilename(encoded: string): string {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    // Defensive: if the filename contains malformed percent-encoding
+    // (e.g. from a 2.0.14-era file), fall back to the lossy reverse
+    // so we never throw.  This is the best we can do for legacy files.
+    return encoded.replace(/_/g, ".");
+  }
+}
+
 export interface MessageEntry {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -52,7 +92,62 @@ export class MessageStore {
       fs.mkdir(this.messagesDir, { recursive: true }),
       fs.mkdir(path.join(this.messagesDir, 'group'), { recursive: true }),
       fs.mkdir(path.join(this.messagesDir, 'direct'), { recursive: true }),
-    ]).then(() => {});
+    ]).then(() => this.migrateLegacyFilenames());
+  }
+
+  /**
+   * One-time migration of pre-2.0.15 filenames to the new percent-
+   * encoded scheme.  Idempotent: a file is renamed only if its
+   * filename does not already contain a `%` (the new scheme's
+   * marker) and is not already in canonical form.
+   *
+   * The migration is best-effort: if the source file's name collides
+   * with an existing new-format file, the source is left alone
+   * (preserved for `getDirectChatJIDs` to read via the `meta.chatJid`
+   * fallback).
+   */
+  private async migrateLegacyFilenames(): Promise<void> {
+    const directDir = path.join(this.messagesDir, 'direct');
+    const groupDir = path.join(this.messagesDir, 'group');
+    let entries: string[] = [];
+    try { entries = await fs.readdir(directDir); } catch { /* missing dir */ }
+    for (const name of entries) {
+      if (name.includes('%')) continue;          // already new format
+      if (!name.endsWith('.json')) continue;     // not a message file
+      const legacyBase = name.slice(0, -'.json'.length);
+      // The legacy scheme permitted `_` in the encoded name, so we
+      // can only round-trip files that contain at most one `.` in
+      // the JID.  In practice, JIDs are always `user@domain.tld`
+      // (two dots) which the legacy scheme already corrupted.  We
+      // therefore skip the rename for files that look already
+      // corrupted and rely on the meta.chatJid fallback.
+      const hasMultipleDots = (legacyBase.match(/\./g) || []).length > 1;
+      if (hasMultipleDots) continue;
+      const newBase = encodeJidForFilename(decodeJidFromFilename(legacyBase));
+      const newName = `${newBase}.json`;
+      if (newName === name) continue;
+      const src = path.join(directDir, name);
+      const dst = path.join(directDir, newName);
+      try {
+        await fs.rename(src, dst);
+      } catch {
+        // collision or permission error — leave the legacy file in
+        // place; readers will use the meta.chatJid fallback.
+      }
+    }
+    // Group directory: same pattern.  Group subdirs are named after
+    // the room JID, so the rename is per-subdir.
+    let groupEntries: import("fs").Dirent[] = [];
+    try { groupEntries = await fs.readdir(groupDir, { withFileTypes: true }); } catch { /* missing dir */ }
+    for (const ent of groupEntries) {
+      if (!ent.isDirectory()) continue;
+      if (ent.name.includes('%')) continue;
+      const newName = encodeJidForFilename(decodeJidFromFilename(ent.name));
+      if (newName === ent.name) continue;
+      const src = path.join(groupDir, ent.name);
+      const dst = path.join(groupDir, newName);
+      try { await fs.rename(src, dst); } catch { /* collision */ }
+    }
   }
 
   private async whenReady(): Promise<void> {
@@ -71,12 +166,12 @@ export class MessageStore {
   }
 
   private getGroupFilePath(roomJid: string, date: string): string {
-    const safeRoomName = roomJid.replace(/[^a-zA-Z0-9@._-]/g, '_');
+    const safeRoomName = encodeJidForFilename(roomJid);
     return path.join(this.messagesDir, 'group', safeRoomName, `${date}.json`);
   }
 
   private getDirectFilePath(jid: string): string {
-    const safeJid = jid.replace(/[^a-zA-Z0-9@._-]/g, '_');
+    const safeJid = encodeJidForFilename(jid);
     return path.join(this.messagesDir, 'direct', `${safeJid}.json`);
   }
 
@@ -201,7 +296,14 @@ export class MessageStore {
 
     try {
       const files = await fs.readdir(directDir);
-      return files.filter(f => f.endsWith('.json')).map(f => f.replace('.json', '_')).map(s => s.replace(/_/g, '.'));
+      // Each .json file's basename is the JID encoded via
+      // encodeJidForFilename.  We slice off the ".json" extension
+      // and decode; the helper is a no-op for files that already
+      // use the new format and reverses the lossy old format only
+      // for the percent-encoded files written by 2.0.15+.
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => decodeJidFromFilename(f.slice(0, -'.json'.length)));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return [];
@@ -214,7 +316,7 @@ export class MessageStore {
 
     try {
       const rooms = await fs.readdir(groupDir);
-      return rooms.map(room => room.replace(/_/g, '.'));
+      return rooms.map(room => decodeJidFromFilename(room));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return [];

@@ -1,6 +1,7 @@
 import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
+import os from "os";
 import { validators } from "../security/validation.js";
 import { Config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -56,9 +57,17 @@ export function setDebugLogDir(dir: string | undefined): void {
 
 export function debugLog(msg: string): void {
   const sanitizedMsg = sanitize(msg);
+  // SECURITY (2.0.18, L15): default log file location is now
+  // `~/.openclaw/extensions/xmpp/logs/cli-debug.log` (created on
+  // first write).  The previous default was `process.cwd()/cli-debug.log`
+  // which polluted the source tree when the plugin was launched
+  // from the project root.  Operators can still override the
+  // location by calling `setDebugLogDir(dir)`.  Falls back to
+  // `os.tmpdir()` if the homedir path can't be created, so the
+  // logger never throws on append.
   const logFile = debugLogDir
     ? path.join(debugLogDir, 'cli-debug.log')
-    : path.join(process.cwd(), 'cli-debug.log');
+    : path.join(os.homedir(), '.openclaw', 'extensions', 'xmpp', 'logs', 'cli-debug.log');
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${sanitizedMsg}\n`;
   fsp.appendFile(logFile, line).catch(() => {});
@@ -72,15 +81,71 @@ export interface RateLimitEntry {
 export const RATE_LIMIT_MAX_REQUESTS = Config.RATE_LIMIT_MAX_REQUESTS;
 export const RATE_LIMIT_WINDOW_MS = Config.RATE_LIMIT_WINDOW_MS;
 
+// SECURITY (2.0.16): the rate-limit map previously grew unboundedly.
+// An attacker who flooded the bot with requests from N different
+// JIDs could fill the map indefinitely (the only eviction was
+// triggered by a fresh request for the same JID, see the old
+// checkRateLimit() body).  Two defences are added here:
+//
+//  1. A periodic eviction timer started lazily on the first
+//     checkRateLimit() call.  The interval is `.unref()`'d so it
+//     does not keep the event loop alive.
+//
+//  2. A hard cap on the map size.  When the cap is exceeded the
+//     oldest 1,000 entries (in Map insertion order) are dropped.
+const RATE_LIMIT_MAP_CAP = 10_000;
+const RATE_LIMIT_EVICT_INTERVAL_MS = 60_000;
+const RATE_LIMIT_EVICT_DROP_BATCH = 1_000;
+
 const rateLimitMap = new Map<string, RateLimitEntry>();
+let rateLimitEvictionStarted = false;
+
+function ensureRateLimitEvictionStarted(): void {
+  if (rateLimitEvictionStarted) return;
+  rateLimitEvictionStarted = true;
+  const interval = setInterval(() => {
+    try {
+      evictStaleRateLimits();
+    } catch {
+      // Never let the eviction timer throw.
+    }
+  }, RATE_LIMIT_EVICT_INTERVAL_MS);
+  // SECURITY: unref() so the timer does not keep the event loop
+  // alive (e.g. when the only thing running is the gateway that
+  // already exited but the rate-limit map still has entries).
+  if (typeof interval.unref === "function") {
+    interval.unref();
+  }
+}
+
+function enforceRateLimitMapCap(): void {
+  if (rateLimitMap.size <= RATE_LIMIT_MAP_CAP) return;
+  const dropCount = Math.min(
+    RATE_LIMIT_EVICT_DROP_BATCH,
+    rateLimitMap.size - RATE_LIMIT_MAP_CAP,
+  );
+  let i = 0;
+  for (const key of rateLimitMap.keys()) {
+    if (i >= dropCount) break;
+    rateLimitMap.delete(key);
+    i++;
+  }
+  log.warn("rate-limit map exceeded cap; dropped oldest entries", {
+    dropped: dropCount,
+    cap: RATE_LIMIT_MAP_CAP,
+  });
+}
 
 export function checkRateLimit(jid: string): boolean {
+  ensureRateLimitEvictionStarted();
   const now = Date.now();
   const entry = rateLimitMap.get(jid);
 
   if (entry && now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 10) {
     rateLimitMap.delete(jid);
   }
+
+  enforceRateLimitMapCap();
 
   const fresh = rateLimitMap.get(jid);
   if (!fresh || now - fresh.windowStart > RATE_LIMIT_WINDOW_MS) {

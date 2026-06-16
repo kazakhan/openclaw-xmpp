@@ -13,26 +13,67 @@ import { log } from "./lib/logger.js";
 import { child } from "./lib/logger.js";
 import { parseVCard } from "./lib/vcard-protocol.js";
 import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFileWithHTTPUpload, discoverUploadService } from "./lib/upload-protocol.js";
-
-// XEP-0199 Ping interval: 5 minutes
-const PING_INTERVAL_MS = 5 * 60 * 1000;
+import { safeSend, findUnderlyingSocket } from "./lib/xmpp-utils.js";
 
 // Reconnection constants
 const RECONNECT_BASE_MS = Config.RECONNECT_BASE_MS || 1000;
-const RECONNECT_MAX_MS = Config.RECONNECT_MAX_MS || 60000;
+const RECONNECT_MAX_MS = Config.RECONNECT_MAX_MS || 15000;
 const RECONNECT_BACKOFF_FACTOR = Config.RECONNECT_BACKOFF_FACTOR || 2;
 
-// We'll import @xmpp/client lazily when needed
-let xmppClientModule: any = null;
-let isRunning = false;
+  // SECURITY (2.0.18, L1): removed module-level `let xmppClientModule`.
+// The import is now done at the top of `startXmpp()` (below).  Node's
+// module cache makes the second `startXmpp()` invocation's import a
+// no-op, so the per-invocation import has no meaningful cost.  The
+// old module-level binding was technically safe (modules are
+// immutable after load) but the wider scope was unnecessary and
+// easy to misread.
 
 const xmppLog = child("xmpp");
 
+// SECURITY (2.1.3, restore-old-design): isRunning flag for the
+// offline handler.  The OLD design from D:\Downloads\xmppOLD had
+// this as a module-level let (line 27 of that file).  When set
+// false, the offline handler clears intervals and destroys the
+// whiteboard session manager.  The flag is only cleared on the
+// offline event (deliberate xmpp.stop()) and is never read by
+// other code in this file (the gateway manages its own
+// isRunning via runtime.channel).  Kept here for parity with
+// the OLD design.
+let isRunning = true;
+
+// Catch-and-log unhandled rejections to diagnose gateway crashes
+// Without this handler, Node.js v15+ terminates with exit code 1 on unhandled rejections
+process.on('unhandledRejection', (reason: any, promise: any) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : '(no stack)';
+  log.error(`[UNHANDLED REJECTION] ${msg}`);
+  log.error(`[UNHANDLED REJECTION] Stack: ${stack}`);
+});
+
 export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string) => void) {
+    // SECURITY (2.0.18, L1): per-invocation import of @xmpp/client.
+    // Node caches the module so the second call is a no-op.  See
+    // the comment on the (now-removed) module-level binding.
+    const xmppClientModule = await import("@xmpp/client");
+    const { client, xml } = xmppClientModule;
     // Helper to get default resource/nick from JID local part
+    // SECURITY (2.1.4): the previous default (`cfg?.jid?.split("@")[0]`)
+    // was a STABLE resource, which combined with the
+    // `startXmpp()` reconnect path caused the
+    // `StreamError { condition: 'conflict', text: 'Replaced by
+    // new connection' }` cycle on networks where the XMPP
+    // server hadn't noticed the old TCP socket was dead yet
+    // (e.g. NAT idle-timeout).  We now generate a
+    // stable-prefix + 6-hex-char random suffix per
+    // `startXmpp()` call.  16M possible values; collision
+    // requires two connections from the same JID in the same
+    // millisecond, which is effectively zero.  Operators who
+    // supply `cfg.resource` explicitly are honoured verbatim
+    // (e.g. for operators who filter their active-sessions
+    // list by resource).
     const getDefaultResource = () => {
-      const result = cfg?.resource || cfg?.jid?.split("@")[0] || "openclaw";
-      return result;
+      if (cfg?.resource) return cfg.resource;
+      return `openclaw-${crypto.randomBytes(3).toString("hex")}`;
     };
     
      const getDefaultNick = async () => {
@@ -54,17 +95,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      
      debugLog(`Starting XMPP connection to ${cfg?.service}`);
     debugLog(`XMPP config: jid=${cfg?.jid}, domain=${cfg?.domain}`);
-   
-   // Lazy load @xmpp/client module
-   if (!xmppClientModule) {
-     debugLog("Loading @xmpp/client module...");
-     xmppClientModule = await import("@xmpp/client");
-     debugLog("XMPP client module loaded");
-   }
-   
-    const { client, xml } = xmppClientModule;
-    
-    let password: string;
+
+     let password: string;
     try {
       password = decryptPasswordFromConfig(cfg || {});
     } catch (err) {
@@ -80,10 +112,35 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          resource: getDefaultResource()
        });
 
-   // Increase connection timeout from 2s default to 30s to handle slower startups
-   xmpp.timeout = 30000;
+    // Increase connection timeout from 2s default to 30s to handle slower startups
+    xmpp.timeout = 30000;
 
-   // Helper to resolve room JID - add conference domain if missing
+    // SECURITY (2.1.3, restore-old-design): re-enable the built-in
+    // @xmpp/reconnect with a 5-second delay.  The OLD design from
+    // D:\Downloads\xmppOLD used this exact setting.  The 2.0.16-era
+    // code disabled @xmpp/reconnect and added a custom disconnect
+    // handler that triggered reconnection; that handler tore down
+    // the LIVE connection when a stale socket's disconnect event
+    // fired after the new connection was online.  Restoring
+    // @xmpp/reconnect gives us library-tested reconnection logic
+    // with a sensible default delay.
+    if ((xmpp as any).reconnect) {
+      (xmpp as any).reconnect.delay = 5000;
+      xmppLog.debug("reconnect delay set to 5000ms (using @xmpp/reconnect built-in)");
+    }
+
+    // Register handler for Prosody server XEP-0199 ping requests so the server
+    // knows the client is alive (server pings every 5 min per ping_interval config)
+    if ((xmpp as any).iqCallee) {
+      (xmpp as any).iqCallee.get("urn:xmpp:ping", "ping", async (ctx: any) => {
+        const from = ctx?.stanza?.attrs?.from || "unknown";
+        debugLog(`PING: received ping request from ${from}, responding`);
+        xmppLog.debug(`responding to ping from ${from}`);
+        return xml("ping", { xmlns: "urn:xmpp:ping" });
+      });
+    }
+
+    // Helper to resolve room JID - add conference domain if missing
     const resolveRoomJid = (room: string): string => {
       if (room.includes('@')) {
         return room;
@@ -115,7 +172,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           iqAttrs.to = targetJid;
         }
         debugLog(`Querying vCard from ${targetJid || 'self'} with id ${id}`);
-        await xmpp.send(xml("iq", iqAttrs, xml("vCard", { xmlns: "vcard-temp" })));
+        await safeXmppSend(xmpp,xml("iq", iqAttrs, xml("vCard", { xmlns: "vcard-temp" })));
         // Wait for response
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (err) {
@@ -183,7 +240,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       
       try {
         xmppLog.debug("vCard update sending", { id: vcardId });
-        await xmpp.send(vcardSet);
+        await safeXmppSend(xmpp,vcardSet);
         
         // Wait for response with timeout
         let waited = 0;
@@ -205,138 +262,175 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       }
     };
 
+    // SECURITY (2.1.4): MUC room tracking hoisted here so
+    // the error / offline handlers below can clean up
+    // `pendingJoins` (and the join-timeout timers) before
+    // the rest of the function body runs.
+    //
+    // `joinedRooms`     — set of MUC room JIDs the server
+    //                     has confirmed the bot is in
+    //                     (via XEP-0045 self-presence,
+    //                     status code 110).  Outbound
+    //                     groupchat messages for these
+    //                     rooms are accepted by the server.
+    // `roomNicks`       — the bot's nick per room JID.
+    // `pendingJoins`    — `joinRoom()` Promise registry
+    //                     keyed by room JID.  Resolves on
+    //                     status 110, rejects on
+    //                     `<presence type="error">` or
+    //                     5s timeout.  This is what
+    //                     closes the "Dispatch SUCCESS
+    //                     for stockee@conference but no
+    //                     reply" race: the wrapper's
+    //                     `joinRoom()` now awaits
+    //                     confirmation, and outbound
+    //                     groupchat messages are not
+    //                     sent until the server says
+    //                     we're a participant.
+    const joinedRooms = new Set<string>();
+    const roomNicks = new Map<string, string>();
+    const pendingJoins = new Map<string, {
+      resolve: () => void;
+      reject: (err: Error) => void;
+      nick: string;
+      timer: ReturnType<typeof setTimeout>;
+    }>();
+
   xmpp.on("error", (err: any) => {
     log.error("XMPP error", err);
     xmppLog.error("connection error", err);
+    // SECURITY (2.1.3, restore-old-design): no liveness manager,
+    // no setLastError.  The OLD design from D:\Downloads\xmppOLD
+    // just logged errors and let @xmpp/reconnect handle the
+    // recovery.  No need to capture the error for R3 fast-fail
+    // because there is no R3 fast-fail.
   });
 
-  // Use built-in reconnect with longer delay (1s default -> 5s)
-  if ((xmpp as any).reconnect) {
-    (xmpp as any).reconnect.delay = 5000;
-    xmppLog.debug("reconnect delay set to 5000ms");
-  }
+  // SECURITY (2.1.3, restore-old-design): no liveness manager, no
+  // custom disconnect handler, no custom reconnection.  Primary
+  // reconnection is handled by @xmpp/reconnect (delay 5000ms, set
+  // above).  This restores the proven OLD design from
+  // D:\Downloads\xmppOLD that the operator confirmed works on
+  // Windows 11 and Linux for days/weeks.
 
-  // Reconnection state
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let reconnectAttempts = 0;
+  // SECURITY (2.1.3, restore-old-design): no custom reconnect
+  // timer / attempts counter.  The OLD design from
+  // D:\Downloads\xmppOLD relied on @xmpp/reconnect (set to
+  // 5000ms delay above) for primary reconnection.  We do not
+  // track reconnectAttempts here.
 
-  function scheduleReconnect(): void {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
+  // SECURITY (2.0.16): mutable holder for the public client object.
+  // Declared up here so the 'online' event handler (registered
+  // further down) closes over a defined binding; the real object
+  // is assigned at the bottom of startXmpp once the timers,
+  // schedulers, and shutdown hooks are all in place.  This
+  // replaces the 2.0.15 `typeof (xmppClient as any) === "undefined"`
+  // guard, which masked a temporal-dead-zone pattern.
+  let xmppClient: any = null;
 
-    const delay = Math.min(
-      RECONNECT_BASE_MS * Math.pow(RECONNECT_BACKOFF_FACTOR, reconnectAttempts),
-      RECONNECT_MAX_MS
-    );
+  // SECURITY (2.1.3, restore-old-design): `safeSend` is now
+  // imported from `./lib/xmpp-utils.js` (extracted from the
+  // deleted liveness.ts).  `safeXmppSend` is the canonical way
+  // to send stanzas; the 42+ call sites use it.
+  const safeXmppSend = safeSend;
 
-    xmppLog.warn(`Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts + 1})`);
-    log.warn(`XMPP: scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts + 1})`);
+  // SECURITY (2.1.3, restore-old-design): no `stopLivenessTimers`
+  // helper (the liveness manager is gone).  Code that previously
+  // called `stopLivenessTimers(reason)` was for the old liveness
+  // manager's interval cleanup; with @xmpp/reconnect, there's
+  // nothing to clean up here.
+  const stopLivenessTimers = (_reason: string): void => {
+    /* no-op — liveness manager removed in 2.1.3 */
+  };
 
-    reconnectTimer = setTimeout(async () => {
-      xmppLog.debug("Attempting reconnect...");
-      reconnectAttempts++;
-      try {
-        // Reset connection state before attempting reconnect
-        try { await xmpp.stop(); } catch { /* ignore if already offline */ }
-        await xmpp.start();
-        xmppLog.debug("Reconnect initiated successfully");
-      } catch (err) {
-        xmppLog.error("Reconnect failed", err);
-        log.error("XMPP reconnect failed", err);
-        // Continue trying - schedule next attempt
-        scheduleReconnect();
-      }
-    }, delay);
-  }
+  // SECURITY (2.1.3, restore-old-design): NO `xmpp.on("disconnect", ...)`
+  // handler that triggers reconnection.  The OLD design from
+  // D:\Downloads\xmppOLD deliberately did NOT have one — the
+  // 2.0.16-era disconnect handler was the source of the
+  // "stale-disconnect tears down the live connection" bug the
+  // operator was hitting on every reconnect.  @xmpp/reconnect
+  // (delay 5000ms, set above) listens for disconnect internally
+  // and handles reconnection.  We do NOT double-handle it.
 
+  // SECURITY (2.1.3, restore-old-design): keep the `xmpp.on("offline", ...)`
+  // handler from the OLD design.  The @xmpp/client 0.13.x library
+  // only emits `offline` after an explicit `xmpp.stop()`.  This
+  // handler is a defensive cleanup (clear intervals, destroy
+  // whiteboard sessions) for the deliberate-stop path.  It does
+  // NOT trigger reconnection.
   xmpp.on("offline", () => {
-    log.warn("XMPP went offline, stopping ping timer");
+    log.warn("XMPP went offline");
     isRunning = false;
     if (ibbCleanupInterval) { clearInterval(ibbCleanupInterval); }
     whiteboardSessionManager.stopCleanup();
     whiteboardSessionManager.destroy();
-    stopPingTimer();
-    // Schedule reconnection with exponential backoff
-    scheduleReconnect();
+    // SECURITY (2.1.4): reject any in-flight MUC join
+    // promises so callers awaiting `joinRoom()` see the
+    // stop instead of waiting for a 5-second timeout.
+    // This avoids a race where a caller is awaiting a
+    // join that will never resolve (because we're
+    // stopping).
+    for (const [room, pending] of pendingJoins.entries()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(`xmpp went offline; pending join for ${room} cancelled`));
+    }
+    pendingJoins.clear();
+    joinedRooms.clear();
+    roomNicks.clear();
   });
 
-  // XEP-0199 XMPP Ping keepalive timer
-  const PING_TIMEOUT_MS = 30 * 1000;       // 30s to respond
-  let pingTimer: ReturnType<typeof setTimeout> | null = null;
-  let pingOutstanding = false;
-
-  function stopPingTimer(): void {
-    if (pingTimer) { clearTimeout(pingTimer); pingTimer = null; }
-    pingOutstanding = false;
-  }
-
-  async function sendPing(): Promise<boolean> {
-    if (!isRunning || pingOutstanding) return false;
-    const id = `ping-${Date.now()}`;
-    let responseReceived = false;
-
-    const handler = (stanza: any) => {
-      if (stanza.attrs.id === id && stanza.attrs.type === "result") {
-        responseReceived = true;
-        pingOutstanding = false;
-        xmpp.off("stanza", handler);
-      }
-    };
-
-    xmpp.on("stanza", handler);
-
+  // SECURITY (2.1.3, restore-old-design): no SM (XEP-0198) keepalive.
+  // The OLD design from D:\Downloads\xmppOLD did not have SM
+  // keepalive (no <r/> every 25s).  The 2.0.16-era code added it
+  // and the liveness manager tracked smNegotiated.  Restoring the
+  // OLD design means we just observe SM features (for visibility)
+  // but don't act on them — @xmpp/stream-management's middleware
+  // (already attached by the library) handles the actual <r/>/<a/>
+  // exchange if SM is negotiated.
+  xmpp.on("nonza", (el: any) => {
     try {
-      await xmpp.send(xml("iq", { type: "get", id }, xml("ping", { xmlns: "urn:xmpp:ping" })));
-
-      // Wait for response with timeout
-      let waited = 0;
-      while (!responseReceived && waited < PING_TIMEOUT_MS) {
-        await new Promise((r) => setTimeout(r, 100));
-        waited += 100;
+      // SECURITY (2.0.16, H3): only treat <sm>/<enabled>/<failed> as
+      // SM negotiation signals if they are direct children of the
+      // stream-features stanza (i.e. el.parent === xmpp.root).  The
+      // previous version matched ANY element in the SM namespace,
+      // which would silently flip smNegotiated=true if a server
+      // happened to send an <sm> reply (e.g. inside an unrelated
+      // IQ).  With the parent check, embedded <sm> elements are
+      // ignored.
+      if (el?.parent !== xmpp.root) return;
+      // SECURITY (2.1.3): the liveness manager is gone, so we no
+      // longer call setSmNegotiated().  We just log the SM feature
+      // observations for diagnostic purposes.  The actual <r/>/<a/>
+      // exchange is handled by @xmpp/stream-management.
+      if (el?.is?.("sm", "urn:xmpp:sm:3")) {
+        xmppLog.debug("sm: <sm/> feature observed in stream features");
+        debugLog("sm: <sm/> feature observed in stream features");
+      } else if (el?.is?.("enabled", "urn:xmpp:sm:3")) {
+        xmppLog.debug("sm: <enabled/> observed, SM active");
+        debugLog("sm: <enabled/> observed, SM active");
+      } else if (el?.is?.("failed", "urn:xmpp:sm:3")) {
+        xmppLog.warn("sm: <failed/> observed, SM NOT active");
+        debugLog("sm: <failed/> observed, SM NOT active");
       }
-
-      if (!responseReceived) {
-        xmpp.off("stanza", handler);
-        pingOutstanding = false;
-        return false;
-      }
-      return true;
-    } catch {
-      xmpp.off("stanza", handler);
-      pingOutstanding = false;
-      return false;
+    } catch (e) {
+      // SECURITY (2.0.16, H3): surface the error instead of silently
+      // swallowing it.  A parse error here is a real bug worth
+      // seeing, not something to hide.
+      xmppLog.error("nonza listener parse error", e);
     }
-  }
+  });
 
-  function schedulePing(): void {
-    if (pingTimer) clearTimeout(pingTimer);
-    pingTimer = setTimeout(async () => {
-      if (!isRunning) return;
-      pingOutstanding = true;
-      const ok = await sendPing();
-      if (ok) {
-        xmppLog.debug("ping succeeded");
-        schedulePing();
-      } else {
-        xmppLog.warn("ping failed, scheduling reconnect");
-        stopPingTimer();
-        isRunning = false;
-        scheduleReconnect();
-      }
-    }, PING_INTERVAL_MS);
-  }
-
-xmpp.on("online", async (address: any) => {
+  xmpp.on("online", async (address: any) => {
     log.info("XMPP online as", address.toString());
-    // Clear reconnect timer and reset attempts on successful connection
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    reconnectAttempts = 0;
-    xmppLog.debug("Reconnect timer cleared, attempts reset");
-    schedulePing();
+    // SECURITY (2.1.3, restore-old-design): no liveness manager,
+    // no keepalive setup, no reconnect-timer reset.  The OLD
+    // design from D:\Downloads\xmppOLD just logs "online" and
+    // proceeds to send presence + vCard.  @xmpp/reconnect
+    // (delay 5000ms, set above) handles reconnects via its own
+    // internal disconnect listener.
+    xmppLog.debug("XMPP online (reconnect handled by @xmpp/reconnect)");
     debugLog("XMPP connected successfully");
- 
+
       // Send initial presence with Entity Capabilities (XEP-0115)
       try {
         const presence = xml("presence", {},
@@ -347,13 +441,13 @@ xmpp.on("online", async (address: any) => {
             ver: CapsInfo.ver
           })
         );
-        await xmpp.send(presence);
+        await safeXmppSend(xmpp, presence);
         log.info("Presence with XEP-0115 caps sent, ver=" + CapsInfo.ver);
       } catch (err) {
         xmppLog.error("presence failed", err);
         log.error("Failed to send presence", err);
       }
- 
+
       // Register vCard with the XMPP server so clients can query it
       try {
        const vcardData = await vcard.getData();
@@ -372,7 +466,7 @@ xmpp.on("online", async (address: any) => {
          )
        );
 
-        await xmpp.send(vcardSet);
+        await safeXmppSend(xmpp,vcardSet);
          log.info("vCard registered with server");
       } catch (err) {
         xmppLog.error("vCard register failed", err);
@@ -381,12 +475,25 @@ xmpp.on("online", async (address: any) => {
 
       if (onOnline) {
         try {
-          onOnline(xmppClient);
+          // SECURITY (2.0.16): xmppClient is now a `let` declarado
+          // near the top of startXmpp and assigned at the bottom.
+          // The `typeof` guard is replaced with a `==null` check
+          // (the binding is initialised to `null` so a `==null`
+          // comparison works at every point in the lifecycle).  The
+          // guard is now dead code in practice (the binding is set
+          // to the real object by the time the online event fires)
+          // but is retained for belt-and-braces defence-in-depth.
+          if (xmppClient == null) {
+            xmppLog.error("online callback: xmppClient not yet initialized; skipping onOnline");
+          } else {
+            onOnline(xmppClient);
+          }
         } catch (err) {
           xmppLog.error("online callback error", err);
           log.error("Error in onOnline callback", err);
         }
       }
+
    });
 
      const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
@@ -413,8 +520,16 @@ xmpp.on("online", async (address: any) => {
       (global as any).whiteboardSessionManager = whiteboardSessionManager;
 
       // Local joined rooms tracking for MUC
-      const joinedRooms = new Set<string>();
-      const roomNicks = new Map<string, string>(); // room JID -> nick used by bot
+      // SECURITY (2.1.4): these are hoisted to before the
+      // `xmpp.on("error" | "offline" | ...)` registrations
+      // so the offline handler can clean up
+      // `pendingJoins` (and so the join-timeout timers
+      // don't leak across a deliberate stop).  Declared
+      // here, used by the stanza handler and the
+      // wrapper's `joinRoom`/`leaveRoom` below.
+      // (The actual declarations are hoisted to before
+      // `xmpp.on("error", ...)` so the offline handler
+      // can clean them up.  See lines around 290.)
 
     // Initialize vCard with config defaults
     const vcard = new VCard(cfg.dataDir);
@@ -447,11 +562,11 @@ xmpp.on("online", async (address: any) => {
           const bareFrom = from.split('/')[0];
           if (await contacts.isAdmin(bareFrom)) {
             const subscribed = xml("presence", { to: from, type: "subscribed" });
-            await xmpp.send(subscribed);
+            await safeXmppSend(xmpp,subscribed);
             xmppLog.debug("presence", { type: "subscribed-auto-admin", from: bareFrom });
           } else {
             const unsubscribed = xml("presence", { to: from, type: "unsubscribed" });
-            await xmpp.send(unsubscribed);
+            await safeXmppSend(xmpp,unsubscribed);
             xmppLog.warn("subscription rejected (non-admin)", { from: bareFrom });
           }
           return;
@@ -484,7 +599,7 @@ xmpp.on("online", async (address: any) => {
                ver: CapsInfo.ver
              })
            );
-           await xmpp.send(presence);
+           await safeXmppSend(xmpp,presence);
          } catch (err) {
            xmppLog.error("presence probe response failed", err);
          }
@@ -509,7 +624,42 @@ xmpp.on("online", async (address: any) => {
             roomsPendingConfig.add(room);
           } else if (code === "110") {
             roomsPendingConfig.delete(room);
+            // SECURITY (2.1.4): server has confirmed our
+            // MUC presence (XEP-0045 self-presence).  This
+            // is the canonical signal that the bot is now
+            // a participant in the room and outbound
+            // groupchat messages will be accepted.  Resolve
+            // any pending join promise for this room.
+            if (pendingJoins.has(room)) {
+              const pending = pendingJoins.get(room)!;
+              clearTimeout(pending.timer);
+              pendingJoins.delete(room);
+              joinedRooms.add(room);
+              roomNicks.set(room, pending.nick);
+              xmppLog.info("muc self-presence (110): room joined", { room, nick: pending.nick });
+              pending.resolve();
+            }
           }
+        }
+      }
+      
+      // SECURITY (2.1.4): MUC join error.  When the server
+      // rejects a MUC presence (nick conflict, room not
+      // found, banned, etc.) it sends back
+      // `<presence type="error">` to the full JID we
+      // joined with.  Reject the pending join promise so
+      // the wrapper's `joinRoom()` caller knows the join
+      // failed and `joinedRooms` stays empty for this
+      // room.
+      if (type === "error") {
+        const pending = pendingJoins.get(room);
+        if (pending) {
+          const errorEl = stanza.getChild('error');
+          const errorCondition = errorEl ? errorEl.children?.[0]?.name || 'unknown' : 'unknown';
+          xmppLog.warn("muc join rejected by server", { room, nick, errorCondition });
+          clearTimeout(pending.timer);
+          pendingJoins.delete(room);
+          pending.reject(new Error(`MUC join rejected for ${room} (nick=${nick}): ${errorCondition}`));
         }
       }
       
@@ -570,7 +720,7 @@ xmpp.on("online", async (address: any) => {
                     xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp:stanzas" }, `File exceeds maximum size of ${MAX_FILE_SIZE} bytes`)
                   )
                 );
-                await xmpp.send(errorIq);
+                await safeXmppSend(xmpp,errorIq);
                 return;
               }
               // Capture session ID from SI element
@@ -583,7 +733,7 @@ xmpp.on("online", async (address: any) => {
                     xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }, "Missing SID")
                   )
                 );
-                await xmpp.send(errorIq);
+                await safeXmppSend(xmpp,errorIq);
                 return;
               }
               
@@ -601,7 +751,7 @@ xmpp.on("online", async (address: any) => {
               
               // Accept the SI request
               const acceptIq = xml("iq", { to: from, type: "result", id });
-              await xmpp.send(acceptIq);
+              await safeXmppSend(xmpp,acceptIq);
               xmppLog.debug("fileTransfer", { action: "si-accepted", sid, filename });
             } else {
               // No supported method, reject
@@ -612,7 +762,7 @@ xmpp.on("online", async (address: any) => {
                   xml("text", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" }, "No supported stream method")
                 )
               );
-              await xmpp.send(errorIq);
+              await safeXmppSend(xmpp,errorIq);
             }
             return;
           }
@@ -630,12 +780,12 @@ xmpp.on("online", async (address: any) => {
                xml("item-not-found", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
              )
            );
-           await xmpp.send(errorIq);
+           await safeXmppSend(xmpp,errorIq);
            return;
          }
          // Accept open
          const resultIq = xml("iq", { to: from, type: "result", id });
-          await xmpp.send(resultIq);
+          await safeXmppSend(xmpp,resultIq);
           xmppLog.debug("ibb", { action: "opened", sid, filename: session.filename });
          return;
        }
@@ -651,7 +801,7 @@ xmpp.on("online", async (address: any) => {
                xml("item-not-found", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
              )
            );
-           await xmpp.send(errorIq);
+           await safeXmppSend(xmpp,errorIq);
            return;
          }
          const base64Data = ibbData.getText();
@@ -662,7 +812,7 @@ xmpp.on("online", async (address: any) => {
             xmppLog.debug("ibb", { sid, received: session.received, total: session.size });
            // Acknowledge data
            const resultIq = xml("iq", { to: from, type: "result", id });
-           await xmpp.send(resultIq);
+           await safeXmppSend(xmpp,resultIq);
            
              // If we've received all data, close session and process file
               if (session.size > 0 && session.received >= session.size) {
@@ -694,7 +844,7 @@ xmpp.on("online", async (address: any) => {
                xml("bad-request", { xmlns: "urn:ietf:params:xml:ns:xmpp-stanzas" })
              )
            );
-           await xmpp.send(errorIq);
+           await safeXmppSend(xmpp,errorIq);
          }
          return;
        }
@@ -728,7 +878,7 @@ xmpp.on("online", async (address: any) => {
               ibbSessions.delete(sid);
            }
            const resultIq = xml("iq", { to: from, type: "result", id });
-           await xmpp.send(resultIq);
+           await safeXmppSend(xmpp,resultIq);
            return;
          }
          
@@ -760,13 +910,13 @@ xmpp.on("online", async (address: any) => {
                     xml("DESC", {}, desc)
                   )
                 );
-                await xmpp.send(vcardResponse);
+                await safeXmppSend(xmpp,vcardResponse);
                 xmppLog.debug("vCard response sent", { to: from });
               } else {
                 // Forward request to server for user vCard
                  xmppLog.debug("vCard forward", { target: targetJid });
                 const forwardIq = xml("iq", { to: targetJid, type: "get", id }, stanza.children);
-                await xmpp.send(forwardIq);
+                await safeXmppSend(xmpp,forwardIq);
               }
               return;
             } else if (type === "set") {
@@ -775,7 +925,7 @@ xmpp.on("online", async (address: any) => {
               // But if it comes to us, we just acknowledge it (we don't store user vCards)
                xmppLog.debug("vCard set ignored", { from });
               const resultIq = xml("iq", { to: from, type: "result", id });
-              await xmpp.send(resultIq);
+              await safeXmppSend(xmpp,resultIq);
               return;
             }
           }
@@ -800,7 +950,7 @@ xmpp.on("online", async (address: any) => {
             xml("feature", { var: "http://www.w3.org/2000/svg" })
           )
         );
-          await xmpp.send(discoResponse);
+          await safeXmppSend(xmpp,discoResponse);
           xmppLog.debug("disco#info sent", { to: from });
           return;
         }
@@ -833,7 +983,7 @@ xmpp.on("online", async (address: any) => {
                 xml("history", { maxstanzas: "0" })
               )
             );
-            await xmpp.send(presence);
+            await safeXmppSend(xmpp,presence);
             joinedRooms.add(room);
             roomNicks.set(room, await getDefaultNick());
             log.info("autoJoin", { room });
@@ -866,7 +1016,7 @@ xmpp.on("online", async (address: any) => {
                 xml("history", { maxstanzas: "0" })
               )
             );
-            await xmpp.send(presence);
+            await safeXmppSend(xmpp,presence);
             joinedRooms.add(room);
             roomNicks.set(room, await getDefaultNick());
             log.info("autoJoin", { room });
@@ -906,7 +1056,7 @@ xmpp.on("online", async (address: any) => {
                 submittedForm
               )
             );
-            await xmpp.send(configMessage);
+            await safeXmppSend(xmpp,configMessage);
             roomsPendingConfig.delete(from.split('/')[0]);
           } catch (err) {
             xmppLog.error("room config failed", err);
@@ -956,7 +1106,7 @@ xmpp.on("online", async (address: any) => {
             xmppLog.debug("room subject", { subject });
            // Forward subject as a special message to the agent
            const botNick = roomNicks.get(from.split('/')[0]);
-           onMessage(from.split('/')[0], `[Room Subject: ${subject}]`, { type: messageType, room: from.split('/')[0], nick: '', botNick, roomSubject: subject, mediaUrls: [], mediaPaths: [] });
+            onMessage(from.split('/')[0], `[Room Subject: ${subject}]`, { type: messageType, room: from.split('/')[0], nick: '', botNick, roomSubject: subject, mediaUrls: [], mediaPaths: [], isSystemMessage: true });
            return;
          }
          
@@ -990,7 +1140,7 @@ xmpp.on("online", async (address: any) => {
                 });
                 
                 const acceptMessage = xml('message', { type: messageType, to: from }, acceptResponse);
-                await xmpp.send(acceptMessage);
+                await safeXmppSend(xmpp,acceptMessage);
                 xmppLog.debug("SXE accept-invitation sent");
                 
                 return;
@@ -1121,7 +1271,7 @@ xmpp.on("online", async (address: any) => {
                           xml('body', {}, ''),
                           sxeEl
                         );
-                        await xmpp.send(autoMsg);
+                        await safeXmppSend(xmpp,autoMsg);
                       }
                       currentSession.autoDrawSent = true;
                       debugLog(`SXE auto-draw sent: ${autoStanzas.length} stanzas for circle`);
@@ -1168,9 +1318,10 @@ xmpp.on("online", async (address: any) => {
              const password = passwordMatch?.[1];
              const reason = reasonMatch?.[1] || 'No reason given';
              
-if (room) {
-               if (!(await shouldAcceptInvite(inviter, room))) {
-                 log.warn("Rejected body-parsed conference invite from non-admin", { from: inviter });
+            if (room) {
+                const inviter = from;
+                if (!(await shouldAcceptInvite(inviter, room))) {
+                  log.warn("Rejected body-parsed conference invite from non-admin", { from: inviter });
                  return;
                }
                 // Auto-accept invite by joining the room
@@ -1181,7 +1332,7 @@ if (room) {
                      xml("history", { maxstanzas: "0" })
                    )
                  );
-                 await xmpp.send(presence);
+                 await safeXmppSend(xmpp,presence);
                  joinedRooms.add(room);
                  roomNicks.set(room, await getDefaultNick());
                  log.info("autoJoin", { room });
@@ -1265,7 +1416,7 @@ if (room) {
                       xml('body', {}, ''),
                       sxeEl
                     );
-                    await xmpp.send(autoMsg);
+                    await safeXmppSend(xmpp,autoMsg);
                   }
                 } else {
                   const wbChildren = autoPaths.map(p =>
@@ -1273,7 +1424,7 @@ if (room) {
                   );
                   const wbElement = xml('x', { xmlns: 'http://jabber.org/protocol/swb' }, wbChildren);
                   const wbMsg = xml('message', { type: messageType, to: from }, wbElement);
-                  await xmpp.send(wbMsg);
+                  await safeXmppSend(xmpp,wbMsg);
                 }
                 currentSession.autoDrawSent = true;
                 debugLog(`Auto-draw test circle sent to ${fromBareJid}`);
@@ -1330,7 +1481,7 @@ if (room) {
               }
               xmppLog.debug("command reply", { to: toAddress, type: messageType, replyLength: replyText?.length });
               const message = xml("message", { type: messageType, to: toAddress }, xml("body", {}, replyText));
-              await xmpp.send(message);
+              await safeXmppSend(xmpp,message);
             } catch (err) {
               xmppLog.error("command reply send failed", err);
             }
@@ -1445,7 +1596,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                  // Send subscription request to new contact
                  try {
                     const subscribe = xml("presence", { to: jidToAdd, type: "subscribe" });
-                    await xmpp.send(subscribe);
+                    await safeXmppSend(xmpp,subscribe);
                   } catch (err) {
                     xmppLog.error("subscription send failed", err);
                  }
@@ -1530,7 +1681,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                     xml("history", { maxstanzas: "0" })
                   )
                 );
-                await xmpp.send(presence);
+                await safeXmppSend(xmpp,presence);
                 joinedRooms.add(room);
                 roomNicks.set(room, nick);
                 log.info("room joined", { room, nick });
@@ -1575,7 +1726,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                 const room = resolveRoomJid(roomRaw);
                 const nick = await getDefaultNick();
                 const presence = xml("presence", { to: `${room}/${nick}`, type: "unavailable" });
-                await xmpp.send(presence);
+                await safeXmppSend(xmpp,presence);
                 joinedRooms.delete(room);
                 roomNicks.delete(room);
                 log.info("room left", { room });
@@ -1920,7 +2071,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
                         )
                       );
                       
-                      await xmpp.send(vcardSet);
+                      await safeXmppSend(xmpp,vcardSet);
                       let waited = 0;
                       while (!responseReceived && waited < 5000) {
                         await new Promise(r => setTimeout(r, 100));
@@ -2247,7 +2398,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
              if (messageType === "groupchat" && roomJid) {
                toAddress = roomJid;
              }
-             await xmpp.send(xml("message", { type: messageType, to: toAddress }, xml("body", {}, "❌ Error processing command.")));
+             await safeXmppSend(xmpp,xml("message", { type: messageType, to: toAddress }, xml("body", {}, "❌ Error processing command.")));
            } catch {}
         }
         
@@ -2301,9 +2452,13 @@ await sendReply(`Available commands (groupchat: only whoami, help):
   xmpp.start().catch((err: any) => {
     log.error("XMPP start failed", err);
     xmppLog.error("start failed", err);
-    // Trigger reconnection for initial connection failures (offline event may not fire)
-    isRunning = false;
-    scheduleReconnect();
+    // SECURITY (2.1.3, restore-old-design): no liveness manager,
+    // no forceReconnect.  The OLD design from D:\Downloads\xmppOLD
+    // just logged the initial-start failure.  @xmpp/reconnect
+    // (delay 5000ms, set above) handles reconnects via its own
+    // internal disconnect listener; if the initial start fails
+    // outright (e.g. bad credentials), @xmpp/reconnect will also
+    // see the error and attempt to reconnect.
   });
 
    // HTTP File Upload (XEP-0363) helpers -- delegated to upload-protocol.ts
@@ -2341,7 +2496,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
          const message = `[File: ${filename}] ${text || ''}`;
          const msgEl = xml("message", { type: isGroupChat ? "groupchat" : "chat", to }, xml("body", {}, message));
-         await xmpp.send(msgEl);
+         await safeXmppSend(xmpp,msgEl);
       };
 
     // XEP-0084: User Avatar helpers
@@ -2392,7 +2547,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           )
         );
         
-        await xmpp.send(metadataStanza);
+        await safeXmppSend(xmpp,metadataStanza);
          
          // Also publish the actual avatar data for clients that support XEP-0084 natively
         const dataId = `avatar-data-${Date.now()}`;
@@ -2407,7 +2562,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           )
         );
         
-        await xmpp.send(dataStanza);
+        await safeXmppSend(xmpp,dataStanza);
          
          return true;
       } catch (err) {
@@ -2418,11 +2573,19 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
  
 
-    const xmppClient: any = {
+    xmppClient = {
       // Access to raw XMPP connection for status and low-level operations
       get xmpp() { return xmpp; },
       get status() { return xmpp?.status; },
-      
+      // SECURITY (2.1.3, restore-old-design): no `_lastInboundAt`
+      // on the wrapper.  The OLD design from D:\Downloads\xmppOLD
+      // didn't have a gateway de-dup (the gateway simply called
+      // startXmpp once per account, and @xmpp/reconnect handled
+      // reconnects internally on the same xmpp instance).  With
+      // @xmpp/reconnect as the primary reconnection mechanism,
+      // there's no need to track last-inbound time on the
+      // wrapper.
+
       send: (to: string, body: string) => {
         const message = xml("message", { type: "chat", to }, xml("body", {}, body));
         return xmpp.send(message);
@@ -2435,7 +2598,43 @@ await sendReply(`Available commands (groupchat: only whoami, help):
         const resolvedRoomJid = resolveRoomJid(roomJid);
         const actualNick = nick || await getDefaultNick();
         const fullJid = `${resolvedRoomJid}/${actualNick}`;
-        
+
+        // SECURITY (2.1.4): race protection.  If a previous
+        // `joinRoom()` for the same room is still in flight
+        // (waiting for self-presence), reject it before
+        // starting a new one.  The previous Promise is
+        // rejected with a benign reason; the caller of the
+        // new `joinRoom()` then proceeds.
+        if (pendingJoins.has(resolvedRoomJid)) {
+          const stale = pendingJoins.get(resolvedRoomJid)!;
+          clearTimeout(stale.timer);
+          pendingJoins.delete(resolvedRoomJid);
+          stale.reject(new Error(`joinRoom superseded for ${resolvedRoomJid}`));
+        }
+
+        // SECURITY (2.1.4): register the pending-join
+        // Promise BEFORE sending the presence so the
+        // presence-stanza handler (which fires async, on
+        // the same tick after `safeXmppSend` resolves) can
+        // find the Promise.  The Promise resolves when the
+        // server sends self-presence (status code 110)
+        // back, and rejects on `<presence type="error">`.
+        // A 5-second timeout covers slow MUC servers; if
+        // the server hasn't responded in 5s, we treat the
+        // join as still-pending and warn the operator.  We
+        // do NOT mark the room as joined in that case
+        // (the bot might not be a participant).
+        const joinPromise = new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (pendingJoins.has(resolvedRoomJid)) {
+              pendingJoins.delete(resolvedRoomJid);
+              xmppLog.warn("muc join timed out (no status 110 within 5s)", { room: resolvedRoomJid, nick: actualNick });
+              reject(new Error(`MUC join timed out for ${resolvedRoomJid}`));
+            }
+          }, 5000);
+          pendingJoins.set(resolvedRoomJid, { resolve, reject, nick: actualNick, timer });
+        });
+
         // MUC protocol presence with muc namespace and optional history
         const presence = xml("presence", { to: fullJid },
           xml("x", { xmlns: "http://jabber.org/protocol/muc" },
@@ -2443,21 +2642,52 @@ await sendReply(`Available commands (groupchat: only whoami, help):
           )
         );
         try {
-          await xmpp.send(presence);
-          joinedRooms.add(resolvedRoomJid);
-          roomNicks.set(resolvedRoomJid, actualNick);
-          log.info("room joined", { room: resolvedRoomJid, nick: actualNick });
+          await safeXmppSend(xmpp, presence);
         } catch (err) {
+          // Presence send failed.  Clean up the pending
+          // entry and propagate the error so the caller
+          // knows the join did not happen.
+          const pending = pendingJoins.get(resolvedRoomJid);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingJoins.delete(resolvedRoomJid);
+            pending.reject(err instanceof Error ? err : new Error(String(err)));
+          }
           xmppLog.error("join room failed", err);
           throw err;
         }
+        // SECURITY (2.1.4): wait for the server's self-
+        // presence (status 110) or error response.  The
+        // presence-stanza handler resolves/rejects the
+        // pending Promise; we just await it.  When the
+        // Promise resolves, `joinedRooms`/`roomNicks` are
+        // already populated by the status-110 handler.
+        try {
+          await joinPromise;
+        } catch (joinErr) {
+          xmppLog.error("join room: server did not confirm presence", joinErr);
+          throw joinErr;
+        }
+        log.info("room joined", { room: resolvedRoomJid, nick: actualNick });
       },
       leaveRoom: async (roomJid: string, nick?: string) => {
         const resolvedRoomJid = resolveRoomJid(roomJid);
         const fullJid = nick ? `${resolvedRoomJid}/${nick}` : `${resolvedRoomJid}/${await getDefaultNick()}`;
+        // SECURITY (2.1.4): if there is a pending join for
+        // this room, cancel it before we send the
+        // unavailable presence.  This avoids a race where
+        // the server's self-presence arrives after we've
+        // already left and incorrectly marks the room as
+        // joined.
+        const pending = pendingJoins.get(resolvedRoomJid);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingJoins.delete(resolvedRoomJid);
+          pending.reject(new Error(`leaveRoom superseded pending join for ${resolvedRoomJid}`));
+        }
         const presence = xml("presence", { to: fullJid, type: "unavailable" });
         try {
-          await xmpp.send(presence);
+          await safeXmppSend(xmpp,presence);
           joinedRooms.delete(resolvedRoomJid);
           roomNicks.delete(resolvedRoomJid);
           log.info("room left", { room: resolvedRoomJid });
@@ -2481,7 +2711,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
          xmppLog.debug("fileTransfer", { action: "send", to, file: filePath });
          try {
            // First try HTTP Upload
-           await sendFileWithHTTPUpload(to, filePath, text, isGroupChat);
+            await sendFileWithHTTPUpload(xmpp, to, filePath, cfg.domain, text, isGroupChat);
            return true;
           } catch (httpErr) {
             xmppLog.debug("fileTransfer", { action: "fallback-to-si" });
@@ -2504,7 +2734,7 @@ await sendReply(`Available commands (groupchat: only whoami, help):
            xml("x", { xmlns: "jabber:x:conference", ...inviteAttrs })
          );
          
-           await xmpp.send(message);
+           await safeXmppSend(xmpp,message);
         }
       };
 
@@ -2512,13 +2742,44 @@ await sendReply(`Available commands (groupchat: only whoami, help):
 
   xmppClient.stop = async () => {
     log.info("XMPP shutting down gracefully");
-    stopPingTimer();
     if (ibbCleanupInterval) clearInterval(ibbCleanupInterval);
     whiteboardSessionManager.stopCleanup();
     whiteboardSessionManager.destroy();
-    try { await xmpp.send(xml("presence", { type: "unavailable" })); } catch {}
+    try { await safeXmppSend(xmpp, xml("presence", { type: "unavailable" })); } catch {}
+    // SECURITY (2.1.4): on a dead or half-dead TCP socket,
+    // `xmpp.stop()` -> `disconnect(timeout=30000)` hangs for
+    // up to 30 seconds waiting for `socket.end()`'s FIN to be
+    // ACKed.  When the framework's health-monitor is the
+    // caller (auto-restart after a stale-socket detection),
+    // this 30s hang delays the new `startAccount` call long
+    // enough that the XMPP server's old session is still
+    // alive, and the new connection comes up with the same
+    // full JID -> `StreamError: conflict, 'Replaced by new
+    // connection'` cycle.  We break the hang with a
+    // `socket.destroy()` fast path.  This is safe: the
+    // stream-close stanza is best-effort and the framework
+    // has already decided to stop the plugin.
+    try {
+      const sock = findUnderlyingSocket(xmpp);
+      if (sock && typeof sock.destroy === "function" && !sock.destroyed) {
+        xmppLog.debug("stop: socket.destroy() fast path");
+        sock.destroy();
+      }
+    } catch (destroyErr) {
+      xmppLog.debug("stop: socket.destroy() fast path failed (ignored)", destroyErr);
+    }
+    // SECURITY (2.1.3, restore-old-design): no liveness manager
+    // to clean up, no setUserInitiatedStop flag to set.  The
+    // OLD design from D:\Downloads\xmppOLD just called
+    // xmpp.stop() and let @xmpp/reconnect / the offline handler
+    // do their thing.  The xmpp.stop() call is what triggers the
+    // @xmpp/client 0.13.x library to emit the `offline` event
+    // (which our offline handler above uses for cleanup).
+    // @xmpp/reconnect's internal listener also fires on the
+    // socket close, but since we're deliberately stopping it
+    // doesn't try to reconnect (its `entity.status` check sees
+    // we're closing).
     try { await xmpp.stop(); } catch (err) { log.error("xmpp.stop error", err); }
-    isRunning = false;
   };
 
   const shutdownSignals = ['SIGTERM', 'SIGINT', 'SIGUSR2'] as const;

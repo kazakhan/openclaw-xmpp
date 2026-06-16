@@ -234,18 +234,11 @@ function Cleanup-TestFiles {
     $global:_CLEANUP_DONE = $true
     
     Write-TestLog -Level "INFO" -Message "Cleaning up test files..."
-    
-    $sftpList = Run-CommandOutput "openclaw xmpp sftp ls 2>&1"
-    $lines = $sftpList | Select-String "xmpp-test"
-    foreach ($line in $lines) {
-        $filename = ($line -split '\s+')[-1]
-        if ($filename -and $filename -notmatch "^\." -and $filename -match "xmpp-test") {
-            Run-Command "openclaw xmpp sftp rm '$filename' 2>&1" | Out-Null
-        }
-    }
-    
+
+    # SFTP was removed in 2.0.15 — no remote cleanup needed.
+
     Remove-Item -Path "$TEST_FILES_DIR\*" -ErrorAction SilentlyContinue | Out-Null
-    
+
     Write-TestLog -Level "INFO" -Message "Test files cleaned up"
 }
 

@@ -164,16 +164,10 @@ cleanup_test_files() {
     _CLEANUP_DONE=1
 
     log "INFO" "Cleaning up test files..."
-    
-    run_command "openclaw xmpp sftp ls" 2>/dev/null | grep "xmpp-test" | while read line; do
-        local filename=$(echo "$line" | awk '{print $2}')
-        if [ -n "$filename" ]; then
-            run_command "openclaw xmpp sftp rm '$filename'" >/dev/null 2>&1
-        fi
-    done
-    
+
+    # SFTP was removed in 2.0.15 — no remote cleanup needed.
     rm -rf "$TEST_FILES_DIR"/* 2>/dev/null || true
-    
+
     log "INFO" "Test files cleaned up"
 }
 
