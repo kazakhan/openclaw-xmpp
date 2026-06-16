@@ -1,12 +1,11 @@
 # OpenClaw XMPP Plugin
 
-A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, SFTP file transfers, and comprehensive security features including password encryption at rest and secure file transfer validation.
-FTP was added so the OpenClaw bot could upload to a server to have it's own webpage. I just wanted to see what they made, FTP was probably not the way to go...
+A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
 ## Status: ✅ WORKING (v2.1.5)
 
-Fully functional with shared sessions, memory continuity, SFTP file transfers, password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
+Fully functional with shared sessions, memory continuity, file transfers, password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
 
 ## Installation
 
@@ -70,7 +69,7 @@ Type errors in the codebase are pre-existing and non-blocking; the compiler will
 ```bash
 openclaw plugins install --force ~/.openclaw/extensions/xmpp
 ```
-The `--force` flag bypasses the security scanner (the plugin uses `child_process` for SSH/SFTP support — legitimate functionality).
+The `--force` flag bypasses the security scanner (the plugin uses `child_process` for native helpers — legitimate functionality).
 
 #### Step 6: Configure your XMPP account
 ```bash
@@ -198,13 +197,12 @@ openclaw xmpp clear               # Clear message queue
 openclaw xmpp queue               # Show queue status
 ```
 
-### SFTP Commands
+### File Transfer Commands
 ```bash
-openclaw xmpp sftp upload <local-path> [remote-name]  # Upload file via SFTP
-openclaw xmpp sftp download <remote-name> [local-path] # Download file via SFTP
-openclaw xmpp sftp ls                                 # List files
-openclaw xmpp sftp rm <remote-name>                   # Delete file
-openclaw xmpp sftp help                               # Show help
+openclaw xmpp upload <local-path> [remote-name]  # Upload a file via HTTP File Upload (XEP-0363)
+openclaw xmpp download <remote-name> [local-path] # Download a previously uploaded file
+openclaw xmpp ls                                 # List uploaded files
+openclaw xmpp rm <remote-name>                   # Delete an uploaded file
 ```
 ### Security Commands
 ```bash
@@ -261,35 +259,11 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 - Admin commands require your JID to be in the `adminJid` config
 - Most admin commands only work in direct chat (not groupchat)
 - The `/help` command forwards to the AI agent in direct chat
-## SFTP File Management
+## File Management
 
-Uses same credentials as XMPP server (encrypted password supported). Files stored in personal folder via SSH/SFTP.
+Files are transferred over XMPP via the HTTP File Upload protocol (XEP-0363). The plugin uploads/downloads to an HTTP upload service advertised by the XMPP server; no separate file server is required.
 
-### Configuration
-Add to `~/.openclaw/openclaw.json`:
-```json
-{
-  "channels": {
-    "xmpp": {
-      "accounts": {
-        "default": {
-          "sftpPort": 2211
-        }
-      }
-    }
-  }
-}
-```
 
-### SFTP Details
-| Setting | Value |
-|---------|-------|
-| Host | Same as XMPP domain |
-| Port | 2211 (SSH/SFTP) |
-| User | JID local part |
-| Password | Same as XMPP (encrypted supported) |
-| Storage | Personal folder |
-`
 
 ## Features
 
@@ -300,7 +274,7 @@ Add to `~/.openclaw/openclaw.json`:
 - XEP-0327 Occupant-ID support for MUC
 - Contact & roster management
 - vCard support (get/set/query)
-- SFTP file transfers (SSH-based, encrypted)
+- File transfers via HTTP File Upload (XEP-0363)
 - Password encryption at rest (AES-256-GCM)
 - Comprehensive input validation (JID, filename, URL)
 - Secure debug logging (sensitive data redaction)
@@ -359,7 +333,7 @@ Delete the `dist/` directory — compiled JS files there take precedence over `.
 ```bash
 openclaw plugins install --force ~/.openclaw/extensions/xmpp
 ```
-The scanner flags `child_process` usage (SSH/SFTP) and environment variable access. These are legitimate and required for the plugin's file transfer features.
+The scanner flags `child_process` usage and environment variable access. These are legitimate and required for the plugin's file transfer features.
 
 ### "write after end" crash on reconnect (ERR_STREAM_WRITE_AFTER_END)
 This was fixed by checking `xmpp.status` before calling `stop()` in the reconnect logic. Update to the latest version.
