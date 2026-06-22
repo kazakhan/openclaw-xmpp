@@ -102,9 +102,12 @@ export async function requestUploadSlot(
   let targetJid = cachedServiceJid;
   if (!targetJid) {
     targetJid = await discoverUploadService(xmpp, domain);
+    if (!targetJid) {
+      throw new Error("No HTTP Upload service available");
+    }
   }
 
-  const finalTarget = targetJid || domain;
+  const finalTarget = targetJid;
 
   const iqId = `upload-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   const requestStanza = xml("iq", { type: "get", to: finalTarget, id: iqId },
@@ -151,7 +154,7 @@ export async function requestUploadSlot(
             const headerElements = putElement.getChildren("header");
             for (const header of headerElements) {
               const name = header.attrs.name;
-              const value = header.text();
+              const value = header.text()?.trim();
               if (name && value) {
                 putHeaders[name] = value;
               }
@@ -220,13 +223,17 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
 
     const fetchHeaders: Record<string, string> = {
       'Content-Type': contentType,
-      'Content-Length': fileBuffer.length.toString(),
     };
 
     if (headers) {
       Object.assign(fetchHeaders, headers);
     }
 
+    log.warn("HTTP upload URL: " + putUrl);
+    log.warn("HTTP upload headers: " + JSON.stringify(fetchHeaders));
+    try { new URL(putUrl); } catch (urlErr: any) {
+      log.error("Invalid putUrl: " + (urlErr?.message || String(urlErr)));
+    }
     const response = await fetch(putUrl, {
       method: 'PUT',
       headers: fetchHeaders,
@@ -238,8 +245,9 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
     }
 
     log.debug("file uploaded successfully");
-  } catch (err) {
-    log.error("File upload failed", err);
+  } catch (err: any) {
+    const details = { message: err?.message, code: err?.code, cause: err?.cause };
+    log.error("File upload failed: " + JSON.stringify(details));
     throw err;
   }
 }
@@ -284,7 +292,7 @@ export async function sendFileWithHTTPUpload(
     await xmpp.send(message);
     log.debug("file sent via HTTP upload", { to });
   } catch (err) {
-    log.error("Failed to send file via HTTP Upload", err);
+    log.error("Failed to send file via HTTP Upload: " + (err?.message || String(err)));
     throw err;
   }
 }

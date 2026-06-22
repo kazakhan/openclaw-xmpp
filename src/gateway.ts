@@ -1,10 +1,12 @@
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import { log } from "./lib/logger.js";
 import { debugLog } from "./shared/index.js";
 import { MessageStore } from "./messageStore.js";
 import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml } from "./whiteboard.js";
 import { xml } from "@xmpp/client";
+
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
 
 export { type GatewayContext } from "./types.js";
@@ -16,7 +18,7 @@ interface LifecycleDeps {
 }
 
 interface LifecycleServices {
-  startXmpp: (config: any, contacts: any, logger: any, onMessage: any, onOnline?: any) => Promise<XmppClient>;
+  startXmpp: (config: any, contacts: any, logger: any, onMessage: any, onOnline?: any, onFileReceived?: any) => Promise<XmppClient>;
   Contacts: new (dataDir: string) => any;
   MessageStore: new (dataDir: string) => any;
 }
@@ -109,62 +111,166 @@ export class GatewayLifecycle {
     const runtime = this.deps.getPluginRuntime();
     debugLog("Using pluginRuntime in startAccount");
 
-    // Handle incoming file - forward to agent
-    const handleIncomingFile = async (filePath: string, filename: string, fromJid: string) => {
+    // Handle agent /sendfile command in response text
+    const handleAgentSendFile = async (text: string, to: string, sendXmpp: any, isGroupChat: boolean, messageType: string): Promise<boolean> => {
+      if (!text || !text.trim().startsWith('/sendfile')) return false;
+
+      const cmdText = text.trim().substring('/sendfile'.length).trim();
+      if (!cmdText) return false;
+
+      // Quote-aware argument parser
+      const args: string[] = [];
+      let current = '';
+      let quoteChar = '';
+      for (const char of cmdText) {
+        if (quoteChar) {
+          if (char === quoteChar) quoteChar = '';
+          else current += char;
+        } else if (char === '"' || char === "'") {
+          quoteChar = char;
+        } else if (char === ' ') {
+          if (current) { args.push(current); current = ''; }
+        } else {
+          current += char;
+        }
+      }
+      if (current) args.push(current);
+
+      const filename = args[0];
+      const description = args.slice(1).join(' ');
+      if (!filename) return false;
+
+      const uploadsDir = path.join(dataDir, 'uploads');
+
+      let resolvedPath = '';
+      if (path.isAbsolute(filename) && fs.existsSync(filename)) {
+        resolvedPath = filename;
+      } else {
+        const uploadsCandidate = path.join(uploadsDir, filename);
+        if (fs.existsSync(uploadsCandidate)) {
+          resolvedPath = uploadsCandidate;
+        }
+      }
+
+      if (!resolvedPath) {
+        log.error("sendfile: file not found", { filename, searched: uploadsDir });
+        const msgEl = xml("message", { type: "chat", to }, xml("body", {}, `File not found: ${filename}`));
+        await sendXmpp.send(msgEl).catch(() => {});
+        return true;
+      }
+
+      try {
+        if (isGroupChat) {
+          const msgText = `[File: ${filename}]${description ? ' ' + description : ''}`;
+          const msgEl = xml("message", { type: messageType, to }, xml("body", {}, msgText));
+          await sendXmpp.send(msgEl);
+        } else {
+          if (description) {
+            const descEl = xml("message", { type: "chat", to }, xml("body", {}, description));
+            await sendXmpp.send(descEl);
+          }
+          await sendXmpp.sendFile(to, resolvedPath);
+        }
+        debugLog("sendfile success");
+      } catch (err) {
+        log.error("sendfile failed: " + (err?.message || String(err)));
+      }
+      return true;
+    };
+
+    // Handle incoming file - notify agent via standard dispatch pipeline
+    const handleIncomingFile = async (filePath: string, filename: string, fromJid: string, description?: string) => {
+      let fileMessage = `[File received] ${filename}`;
+      if (description) {
+        fileMessage += `\nDescription: ${description}`;
+      }
+      fileMessage += `\nSaved to: ${filePath}`;
+
       const fromJidStr = typeof fromJid === 'string' ? fromJid : String(fromJid);
       const senderBareJid = fromJidStr.split('/')[0];
+      debugLog("incoming file notification");
 
-      const fileMessage = `[File received] ${filename}\nSaved to: ${filePath}`;
-      const sessionKey = `xmpp:${senderBareJid}`;
+      // Queue the notification for polling
+      const messageId = this.queue.addToQueue({
+        from: fromJidStr,
+        body: fileMessage,
+        accountId: account.accountId,
+      });
 
-      const ctxPayload = {
-        Body: fileMessage,
-        RawBody: fileMessage,
-        CommandBody: fileMessage,
-        From: `xmpp:${senderBareJid}`,
-        To: `xmpp:${config.jid}`,
-        SessionKey: sessionKey,
-        AccountId: account.accountId,
-        ChatType: "direct" as const,
-        ConversationLabel: `XMPP: ${senderBareJid}`,
-        SenderName: senderBareJid.split('@')[0],
-        SenderId: senderBareJid,
-        Provider: "xmpp" as const,
-        Surface: "xmpp" as const,
-        WasMentioned: false,
-        MessageSid: `xmpp-file-${Date.now()}`,
-        Timestamp: Date.now(),
-        CommandAuthorized: true,
-        CommandSource: "text" as const,
-        OriginatingChannel: "xmpp" as const,
-        OriginatingTo: `xmpp:${config.jid}`,
-        MediaUrls: [],
-        MediaPaths: [filePath],
-        MediaUrl: null,
-        MediaPath: filePath,
-      };
-
-      if (runtime?.channel?.session?.recordInboundSession) {
+      // Dispatch through the runtime pipeline
+      if (runtime?.channel) {
         try {
-          const session = runtime.channel.session as { resolveStorePath: (store: any, opts: any) => string; recordInboundSession: (opts: any) => Promise<void> };
-          const storePath = session.resolveStorePath(ctx.cfg.session?.store, { agentId: "main" });
-          await session.recordInboundSession({
-            storePath,
-            sessionKey,
-            ctx: ctxPayload,
-            updateLastRoute: { sessionKey, channel: "xmpp", to: `xmpp:${senderBareJid}`, accountId: account.accountId },
+          const channelRuntime = runtime.channel as any;
+          const route = await channelRuntime.routing.resolveAgentRoute({
+            cfg: ctx.cfg,
+            channel: "xmpp",
+            accountId: account.accountId,
+            peer: { kind: "direct", id: senderBareJid },
           });
-          log.debug("file notification forwarded to agent");
+          const storePath = channelRuntime.session.resolveStorePath(
+            ctx.cfg.session?.store,
+            { agentId: route.agentId }
+          );
+          const ctxPayload = channelRuntime.reply.finalizeInboundContext({
+            Body: fileMessage,
+            RawBody: fileMessage,
+            CommandBody: fileMessage,
+            From: `xmpp:${senderBareJid}`,
+            To: `xmpp:${senderBareJid}`,
+            SessionKey: route.sessionKey,
+            AccountId: route.accountId,
+            ChatType: "direct",
+            ConversationLabel: `XMPP: ${senderBareJid}`,
+            SenderName: fromJidStr.split('@')[0],
+            SenderId: senderBareJid,
+            Provider: "xmpp",
+            Surface: "xmpp",
+            WasMentioned: false,
+            CommandAuthorized: true,
+            CommandSource: "text",
+            OriginatingChannel: "xmpp",
+            OriginatingTo: `xmpp:${senderBareJid}`,
+            MessageSid: `xmpp-file-${Date.now()}`,
+            Timestamp: Date.now(),
+            MediaUrls: [],
+            MediaPaths: [filePath],
+            MediaUrl: null,
+            MediaPath: filePath,
+          });
+          const mod = await import("openclaw/plugin-sdk/inbound-reply-dispatch");
+          await mod.dispatchInboundReplyWithBase({
+            cfg: ctx.cfg,
+            channel: "xmpp",
+            accountId: account.accountId,
+            route,
+            storePath,
+            ctxPayload,
+            core: { channel: channelRuntime },
+            onRecordError: (err: any) => {
+              log.error("Session record error:", err?.message ?? err);
+            },
+            onDispatchError: (err: any, info: { kind: string }) => {
+              log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
+            },
+            deliver: async (payload: any) => {
+              const text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+              if (text && xmpp) {
+                if (await handleAgentSendFile(text, fromJidStr, xmpp, false, "chat")) return;
+                try {
+                  await xmpp.send(fromJidStr, text);
+                } catch (err) {
+                  log.error("Failed to send file transfer response:", err);
+                }
+              }
+            },
+          });
+          this.queue.markAsProcessed(messageId);
+          log.debug("file notification dispatched to agent");
         } catch (err) {
-          log.error("[FILE] Error forwarding file to agent:", err);
+          log.error("[FILE] Error dispatching file notification:", err);
         }
       } else {
-        // SECURITY (2.0.18, L10): the `recordInboundSession` path
-        // was previously silent — if the runtime channel session
-        // was unavailable, the file notification was simply not
-        // recorded and the operator had no way to know why.  Log
-        // a `warn` so the issue surfaces in the main log.
-        log.warn(`[${account.accountId}] file notification not recorded: runtime channel session.recordInboundSession is unavailable`);
+        log.warn(`[${account.accountId}] file notification not dispatched: runtime.channel unavailable`);
       }
     };
 
@@ -359,7 +465,8 @@ export class GatewayLifecycle {
               },
               deliver: async (payload: any) => {
                 const text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
-                let jid = roomJid || senderBareJid;
+                let jid = roomJid || from;
+                if (await handleAgentSendFile(text, jid, xmpp, isGroupChat, options?.type || "chat")) return;
                 let cleanText = text;
                 const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;
                 const match = text.match(thinkingRegex);
@@ -475,7 +582,8 @@ export class GatewayLifecycle {
             }
           }
         }
-      }
+      },
+      handleIncomingFile
     );
     let xmpp: Awaited<ReturnType<typeof this.services.startXmpp>>;
     try {

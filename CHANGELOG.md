@@ -5,6 +5,964 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.4] - 2026-06-22
+
+**Fix: populate fullJidMap from presence stanzas so bare-JID /sendfile works immediately after restart.**
+
+### Changed
+
+- `src/startXMPP.ts` presence handler: populates `fullJidMap` from presence stanzas,
+  so the user's full JID (with resource) is known before any `/sendfile` command.
+  Previously the map was only populated from message stanzas, which left it empty
+  on first interaction after restart.
+
+## [2.9.3] - 2026-06-22
+
+**Fix: auto-resolve bare JID to full JID (with resource) for SI file transfers.**
+
+### Changed
+
+- `src/startXMPP.ts`: added `fullJidMap` (bare → full JID) populated from inbound
+  messages. `sendFile()` resolves bare JID to last-seen full JID before SI transfer,
+  ensuring the SI IQ is sent to `user@domain/resource` instead of bare JID.
+
+## [2.9.2] - 2026-06-22
+
+**Fix: SOCKS5 bytestream domain name length mismatch + use bound full JID for SHA1 hash.
+Swap transfer priority: SI first, HTTP Upload fallback.**
+
+### Changed
+
+- `src/startXMPP.ts` SOCKS5 CONNECT request: changed `Buffer.from(hash, "hex")` to
+  `Buffer.from(hash, "utf8")` so the hex-encoded SHA1 hash (40 ASCII chars) matches
+  the declared domain-name length of 40 bytes. Previously the binary hash (20 bytes)
+  was sent with length=40, causing the SOCKS5 proxy to wait for 18 more bytes → stall.
+- `src/startXMPP.ts` SHA1 hash computation: uses `botFullJid` (bound full JID with
+  resource from the `online` event) instead of `cfg.jid` (which may be bare JID).
+  This ensures the hash matches what PSI+ computes from the SI stanza's `from`
+  attribute (XEP-0065).
+- `src/startXMPP.ts` `sendFile()`: tries SI (native PSI+ file transfer via
+  SOCKS5/IBB) first, falls back to HTTP Upload (URL link) on failure.
+- `src/startXMPP.ts` online handler: stores the bound full JID as `botFullJid`
+  for use in SOCKS5 hash computation.
+
+## [2.9.1] - 2026-06-22
+
+**Fix: /sendfile uses full JID (with resource) instead of bare JID for SI transfers.**
+
+### Changed
+
+- `src/gateway.ts` line 468: agent response `deliver` callback now passes `from`
+  (full JID with resource, e.g. `jamie@kazakhan.com/jupiter`) instead of
+  `senderBareJid` to `handleAgentSendFile()`. This ensures `/sendfile` SI
+  requests are sent to the user's full JID, bypassing
+  `service-unavailable` errors from the server when IQs are sent to bare JIDs.
+
+## [2.9.0] - 2026-06-22
+
+**Fix: HTTP Upload header value trimming + remove manual Content-Length.
+Debug: SI request target JID logged.**
+
+### Changed
+
+- `requestUploadSlot()` in `src/lib/upload-protocol.ts`: header values returned
+  by the upload service are now trimmed (`value?.trim()`) before use, to avoid
+  `UND_ERR_INVALID_ARG` from undici when Bearer tokens have trailing whitespace
+  or control characters.
+- `uploadFileViaHTTP()` in `src/lib/upload-protocol.ts`: removed manual
+  `Content-Length` from `fetchHeaders`; undici computes it automatically from
+  the Buffer body, eliminating one possible source of `UND_ERR_INVALID_ARG`.
+- `sendFileWithSITransfer()` in `src/startXMPP.ts`: SI request log changed from
+  `debug` to `error` level and includes the `to` target JID so `service-unavailable`
+  failures can be diagnosed.
+
+## [2.8.0] - 2026-06-22
+
+**Fix: /sendfile file-not-found now logs server-side only (no chat message to user).
+Debug: HTTP Upload putUrl logged at warn level for UND_ERR_INVALID_ARG diagnosis.**
+
+### Changed
+
+- `send()` in `src/startXMPP.ts`: when /sendfile target file doesn't exist, error
+  is logged server-side and the send is silently dropped instead of sending a
+  "File not found" chat message back to the user.
+- `uploadFileViaHTTP()` in `src/lib/upload-protocol.ts`: putUrl and fetchHeaders
+  logged at `warn` level instead of `debug` so they appear in production logs.
+
+## [2.7.0] - 2026-06-22
+
+**Fix: `/sendfile` now intercepted in outgoing `send()` messages, not just agent responses.**
+
+### Added
+
+- `parseSendfileArgs()` helper in `src/startXMPP.ts` — shared argument parser
+  for `/sendfile` commands (handles single/double-quoted args).
+- `/sendfile` intercept in `xmppClient.send()` — when the body starts with
+  `/sendfile`, the file is resolved (absolute path or `dataDir/uploads/`)
+  and sent via `xmppClient.sendFile()` instead of sending the text message.
+  Unknown files return a "File not found" error message.
+
+### Changed
+
+- `xmppClient.send()` in `src/startXMPP.ts` now checks for `/sendfile`
+  prefix on every outgoing chat message and routes to file transfer.
+
+## [2.6.0] - 2026-06-22
+
+**Debug: Log putUrl + headers before HTTP Upload `fetch()` to diagnose `UND_ERR_INVALID_ARG`.**
+
+### Added
+
+- Pre-fetch logging: `putUrl`, serialized `fetchHeaders` logged at `debug` level in
+  `src/lib/upload-protocol.ts` before calling `fetch(putUrl, ...)`.
+- `new URL(putUrl)` validation with explicit error log if parsing fails, to detect
+  unexpanded templates or malformed URLs.
+
+## [2.5.0] - 2026-06-22
+
+**Feature: SOCKS5 bytestream support (proxy65) for outbound file transfer.**
+
+### Added
+
+- `http://jabber.org/protocol/bytestreams` restored to `CAPS_FEATURES` in
+  `src/config.ts` so PSI+ discovers the bot supports both IBB and SOCKS5.
+- SOCKS5 `<option>` in the SI `stream-method` field within the SI request
+  payload (`src/startXMPP.ts`) so PSI+ can select bytestreams.
+- SI response validation updated to accept either `http://jabber.org/protocol/ibb`
+  or `http://jabber.org/protocol/bytestreams`; the selected method drives the
+  path taken (IBB vs. SOCKS5).
+- `sendFileWithS5BTransfer` implemented in `src/startXMPP.ts`: sends streamhost
+  IQ to the target, connects to the proxy65 SOCKS5 proxy at `proxy.<domain>:5000`
+  with the SHA1(sid+initiator+target) destination hash (XEP-0065 §5.2.3), sends
+  `<activate/>` IQ, then writes the raw file to the TCP socket.
+- Error-detail logging for HTTP Upload fetch failures: `err.code`, `err.cause`,
+  and `err.message` are now captured via JSON in the catch block
+  (`src/lib/upload-protocol.ts`).
+
+### Changed
+
+- `import net from "net"` added to `src/startXMPP.ts` for TCP socket to proxy65.
+- Response validation in SI handler no longer hard-requires IBB; it stores the
+  selected stream-method URI and branches accordingly.
+
+## [2.4.1] - 2026-06-22
+
+**Debug: Added error-stanza logging in `sendIqAndWait` to diagnose
+SI/IBB remote rejection.**
+
+### Added
+
+- `sendIqAndWait` in `src/startXMPP.ts` now logs the actual error
+  stanza (`<error>` child) when the remote rejects an IQ, so we can
+  see whether it's `NotAcceptable`, `BadRequest`, `Forbidden`, etc.
+- Pre-send SI stanza logged via `xmppLog.debug` so the actual XML
+  sent over the wire can be inspected.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | added error-stanza logging in `sendIqAndWait` reject path; added pre-send SI log |
+| `package.json` | version: 2.4.0 → 2.4.1 |
+
+## [2.4.0] - 2026-06-22
+
+**Fix: `/sendfile` file resolution — absolute paths work directly,
+relative paths searched in `xmpp-data/uploads/**` only.**
+
+### Changed
+
+- `handleAgentSendFile` in `src/gateway.ts`:
+  - Absolute path (`C:\path\to\file.txt`) → sent directly without
+    `isSafePath` restriction
+  - Relative path (`file.txt`) → looked up in `<dataDir>/uploads/`
+    only (no fallback to `downloads/`)
+  - Removed `validators.isSafePath` check for absolute paths
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | absolute path trusted; relative path limited to `uploads/` dir |
+| `package.json` | version: 2.3.9 → 2.4.0 |
+
+## [2.3.9] - 2026-06-22
+
+**Fix: openclaw CLI "Unexpected end of input" — openclaw.json had
+UTF-8 BOM causing JSON.parse failure.**
+
+### Bug
+
+`~/.openclaw/openclaw.json` started with a UTF-8 Byte Order Mark
+(`EF BB BF`).  The openclaw CLI's `JSON.parse()` rejected this
+with `Unexpected end of input`, preventing `openclaw gateway`
+from starting.
+
+### Fix
+
+Stripped the 3-byte BOM from `openclaw.json`.  JSON is now valid
+and parses cleanly.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `~/.openclaw/openclaw.json` | UTF-8 BOM stripped (no other content changes) |
+| `package.json` | version: 2.3.8 → 2.3.9 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `~/.openclaw/openclaw.json.bom-backup-20260622-075304`
+
+### Rollback
+
+```bash
+cp "$HOME/.openclaw/openclaw.json.bom-backup-20260622-075304" "$HOME/.openclaw/openclaw.json"
+```
+
+## [2.3.8] - 2026-06-22
+
+**Fix: `/sendfile` silently consumed when leading whitespace or
+file not found — zero feedback to user.**
+
+### Bug
+
+Two bugs in `handleAgentSendFile`:
+
+1. **Leading whitespace**: Agent response could include a leading
+   newline/space before `/sendfile`.  `text.startsWith('/sendfile')`
+   returned `false` → command silently skipped → the raw text was
+   sent as a regular XMPP message.
+2. **File not found**: `log.warn` (not shown in console output) with
+   `return true` — command consumed but user got no error, no
+   message, no anything.
+
+### Fix
+
+| # | Change |
+|---|--------|
+| 1 | Changed prefix check to `text.trim().startsWith('/sendfile')` |
+| 2 | Changed `log.warn` → `log.error`; sends `"File not found: <filename>"` message to user |
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | `.startsWith()` → `.trim().startsWith()`; file-not-found sends error message |
+| `package.json` | version: 2.3.7 → 2.3.8 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-notfound-20260622-073647`
+- `_backups/package.json.backup-notfound-20260622-073647`
+- `_backups/CHANGELOG.md.backup-notfound-20260622-073647`
+
+### Rollback
+
+```bash
+cp "_backups/gateway.ts.backup-notfound-20260622-073647" src/gateway.ts
+cp "_backups/package.json.backup-notfound-20260622-073647" package.json
+cp "_backups/CHANGELOG.md.backup-notfound-20260622-073647" CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.7] - 2026-06-21
+
+**Fix: Outbound SI request missing `<option>` wrapper — PSI+ rejected
+with "No valid stream types".**
+
+### Root cause
+
+PSI+ parses stream-method offers in incoming SI requests by iterating
+`<option>` elements inside `<field var="stream-method">`
+(`JT_PushFT::take()`, `filetransfer.cpp:757`).  There is no fallback for
+a bare `<value>`.  Our outbound SI request sent:
+
+```xml
+<field var="stream-method" type="list-single">
+  <value>http://jabber.org/protocol/ibb</value>
+</field>
+```
+
+PSI+ found zero `<option>` descendants → `streamTypes` empty →
+`respondError(NotAcceptable, "No valid stream types")`.
+
+This was the **real** cause of the transfer failure all along.  The
+pre-v2.3.6 generic error `Remote rejected IBB transfer` (same text for
+all phases) masked which phase was failing.  v2.3.6's parameterized
+error `Remote rejected SI request` exposed the truth.
+
+### Fix
+
+Wrapped `<value>` in `<option>` in the outbound SI `<field>`:
+
+```xml
+<field var="stream-method" type="list-single">
+  <option>
+    <value>http://jabber.org/protocol/ibb</value>
+  </option>
+</field>
+```
+
+Also updated the SI response validation (in case the
+responder also uses `<option>` wrappers — more robust).
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | `<value>` → `<option><value>` in SI payload; response validation now checks both direct `<value>` and `<option>`-wrapped values |
+| `package.json` | version: 2.3.6 → 2.3.7 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/startXMPP.ts.backup-si-option-20260621-210741`
+- `_backups/package.json.backup-si-option-20260621-210741`
+- `_backups/CHANGELOG.md.backup-si-option-20260621-210741`
+
+### Rollback
+
+```bash
+cp "_backups/startXMPP.ts.backup-si-option-20260621-210741" src/startXMPP.ts
+cp "_backups/package.json.backup-si-option-20260621-210741" package.json
+cp "_backups/CHANGELOG.md.backup-si-option-20260621-210741" CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.6] - 2026-06-21
+
+**Fix: Outbound SI+IBB transfer — IBB rejection, missing desc,
+hardcoded mime-type, HTTP Upload false-start.**
+
+### Bug
+
+Five bugs in the outbound SI+IBB initiator and HTTP Upload path:
+
+1. **Hardcoded `application/octet-stream`** — PSI+ may reject
+   transfers where the mime-type doesn't match the file extension.
+2. **No `<desc>` in SI `<file>`** — The `text` (description)
+   parameter was silently dropped for 1:1 SI transfers; PSI+ may
+   expect it.
+3. **No `is("iq")` guard** — `sendIqAndWait` matched any stanza
+   with the same `id`, not just IQ, risking cross-wiring with
+   non-IQ stanzas.
+4. **SI response not validated** — The code accepted *any* result
+   IQ for the SI request without verifying PSI+ actually selected
+   IBB, then proceeded to IBB open without PSI+ tracking the
+   session.
+5. **HTTP Upload no-service false-start** — When no upload
+   service was discovered, the code still sent a slot request to
+   the domain JID and waited 30s for timeout before falling back
+   to SI.
+
+### Fix
+
+| # | Change |
+|---|--------|
+| 1 | `"mime-type"` derived from file extension via `getMimeType()` lookup table (30+ common types). |
+| 2 | `<desc>` child appended to `<file>` when `text` is provided. |
+| 3 | Added `stanza.is("iq")` guard in `sendIqAndWait` handler. |
+| 4 | SI response parsed for `<field var="stream-method"><value>ibb</value>`; throws if IBB not selected. |
+| 5 | `requestUploadSlot` throws immediately when `discoverUploadService` returns null (skips 30s timeout). |
+
+Also parameterized error messages in `sendIqAndWait` per call
+context (`SI request` / `IBB open` / `IBB data` / `IBB close`)
+to aid future debugging.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | Added `getMimeType()`, `<desc>` in SI, `is("iq")` guard, SI response validation, parameterized errors |
+| `src/lib/upload-protocol.ts` | `requestUploadSlot` throws when no upload service discovered |
+| `package.json` | version: 2.3.5 → 2.3.6 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/startXMPP.ts.backup-20260621-203210`
+- `_backups/upload-protocol.ts.backup-20260621-203210`
+- `_backups/package.json.backup-20260621-203210`
+- `_backups/CHANGELOG.md.backup-20260621-203210`
+
+### Rollback
+
+```bash
+cp _backups/startXMPP.ts.backup-20260621-203210 src/startXMPP.ts
+cp _backups/upload-protocol.ts.backup-20260621-203210 src/lib/upload-protocol.ts
+cp _backups/package.json.backup-20260621-203210 package.json
+cp _backups/CHANGELOG.md.backup-20260621-203210 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.5] - 2026-06-21
+
+**Fix: Error objects logged as `{}` — non-enumerable
+`message`/`stack` properties not serialized.**
+
+### Bug
+
+Four catch blocks logged Error objects as a second argument to
+`log.error()` / `xmppLog.error()`.  Since `Error.prototype`
+defines `message` and `stack` as non-enumerable properties,
+JSON serialization produced `{}`, making it impossible to
+diagnose file-transfer failures.
+
+### Fix
+
+Changed all four sites to format the error inline:
+`"prefix: " + (err?.message || String(err))`.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | `log.error("sendfile failed:", err)` → inline format |
+| `src/lib/upload-protocol.ts` | Two `log.error(…, err)` calls → inline format |
+| `src/startXMPP.ts` | `xmppLog.error("all transfer methods failed", siErr)` → inline format |
+| `package.json` | version: 2.3.4 → 2.3.5 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-20260621-201558`
+- `_backups/upload-protocol.ts.backup-20260621-201558`
+- `_backups/startXMPP.ts.backup-20260621-201558`
+- `_backups/package.json.backup-20260621-201558`
+- `_backups/CHANGELOG.md.backup-20260621-201558`
+
+### Rollback
+
+```bash
+cp _backups/gateway.ts.backup-20260621-201558 src/gateway.ts
+cp _backups/upload-protocol.ts.backup-20260621-201558 src/lib/upload-protocol.ts
+cp _backups/startXMPP.ts.backup-20260621-201558 src/startXMPP.ts
+cp _backups/package.json.backup-20260621-201558 package.json
+cp _backups/CHANGELOG.md.backup-20260621-201558 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.4] - 2026-06-21
+
+**Fix: /sendfile argument parsing — quotes not stripped,
+`ctx.cfg.dataDir` undefined.**
+
+### Bug
+
+Two issues in `handleAgentSendFile`:
+
+1. **`ctx.cfg.dataDir` undefined** — the helper used
+   `path.join(ctx.cfg.dataDir, 'downloads')` but `ctx.cfg`
+   did not have a `dataDir` property.  `path.join(undefined, …)`
+   threw `The "path" argument must be of type string. Received
+   undefined`, which was caught by `onDispatchError`.
+
+2. **Quoted arguments not parsed** — `text.split(/\s+/)`
+   preserves quote characters.  `/sendfile "filename" "desc"`
+   produced `filename = '"filename"'`.  File lookup failed
+   silently and `return true` consumed the response without
+   sending anything.
+
+### Fix
+
+Replaced the argument parser with a state-machine that
+handles both single and double quotes.  Also changed
+`path.join(ctx.cfg.dataDir, 'downloads')` → `path.join(dataDir,
+'downloads')`, where `dataDir` is the already-scoped variable
+that has a fallback to `path.join(process.cwd(), 'data')`.
+
+Both forms now work:
+- `/sendfile test-transfer.txt Test file`
+- `/sendfile "test-transfer.txt" "Test file"`
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | Quote-aware argument parsing; `ctx.cfg.dataDir` → `dataDir` |
+| `package.json` | version: 2.3.3 → 2.3.4 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-20260621-195152`
+- `_backups/package.json.backup-20260621-195152`
+- `_backups/CHANGELOG.md.backup-20260621-195152`
+
+### Rollback
+
+```bash
+cp _backups/gateway.ts.backup-20260621-195152 src/gateway.ts
+cp _backups/package.json.backup-20260621-195152 package.json
+cp _backups/CHANGELOG.md.backup-20260621-195152 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.3] - 2026-06-21
+
+**Feat: Agent can send files to users via /sendfile command in
+response text.**
+
+### Feature
+
+When the agent includes `/sendfile <filename> [description]` in
+its response text, the gateway intercepts it in the `deliver`
+callback, resolves the file path, and transfers the file to
+the user via the existing `sendFile` pipeline (HTTP Upload →
+SI+IBB fallback).
+
+File resolution:
+1. Searches `data/downloads/` for the given filename
+2. Falls back to absolute paths (with `isSafePath` validation)
+
+For groupchat responses, a text notification is sent instead
+(SI/IBB does not support MUC). The optional description is
+sent as a text message before the file transfer for direct
+chats, or appended to the notification text for groupchat.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | Added `handleAgentSendFile` helper; both `deliver` callbacks intercept `/sendfile` before normal send |
+| `package.json` | version: 2.3.2 → 2.3.3 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-20260621-193830`
+- `_backups/package.json.backup-20260621-193830`
+- `_backups/CHANGELOG.md.backup-20260621-193830`
+
+### Rollback
+
+```bash
+cp _backups/gateway.ts.backup-20260621-193830 src/gateway.ts
+cp _backups/package.json.backup-20260621-193830 package.json
+cp _backups/CHANGELOG.md.backup-20260621-193830 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.2] - 2026-06-21
+
+**Fix: File notification deliver callback was a no-op —
+agent responses never reached the sender.**
+
+### Bug
+
+The `deliver` callback inside `dispatchInboundReplyWithBase`
+(in `handleIncomingFile`) was an empty async function that
+only logged a debug message.  When the agent responded to a
+file notification, `dispatchInboundReplyWithBase` called
+`deliver` with the response payload, but since the callback
+did nothing, the reply was silently dropped.  The response
+appeared in the OpenClaw dashboard (recorded by the dispatch
+pipeline) but never reached the XMPP sender's client.
+
+### Fix
+
+Replaced the no-op `deliver` with a proper implementation
+that calls `xmpp.send(fromJidStr, text)` to relay the
+agent's response back to the sender via XMPP.  The `xmpp`
+variable is accessible through closure (same scope as the
+`onMessage` callback's deliver which already works
+correctly).
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | `deliver` callback now sends agent response via `xmpp.send()` |
+| `package.json` | version: 2.3.1 → 2.3.2 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-20260621-191734`
+- `_backups/package.json.backup-20260621-191734`
+- `_backups/CHANGELOG.md.backup-20260621-191734`
+
+### Rollback
+
+```bash
+cp _backups/gateway.ts.backup-20260621-191734 src/gateway.ts
+cp _backups/package.json.backup-20260621-191734 package.json
+cp _backups/CHANGELOG.md.backup-20260621-191734 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.1] - 2026-06-21
+
+**Fix: File notification not dispatched to agent — used
+`recordInboundSession` instead of standard dispatch pipeline.**
+
+### Bug
+
+The `handleIncomingFile` function used
+`runtime.channel.session.recordInboundSession()` to notify the
+agent about an incoming file transfer.  This method **only
+records a session entry** — it does not inject a message into
+the agent's conversation queue or trigger the agent's
+inference loop.  The agent was never aware that a file had
+been received, even though the file transfer succeeded and the
+file was saved to disk.
+
+The standard message dispatch pipeline (used by all regular
+XMPP messages) goes through `resolveAgentRoute` →
+`finalizeInboundContext` → `dispatchInboundReplyWithBase`,
+which correctly adds the message to the agent queue, persists
+it, and dispatches it for AI processing.
+
+### Fix
+
+`handleIncomingFile` in `src/gateway.ts` now calls the same
+`onMessage` callback used for regular XMPP messages.  The
+file notification is dispatched as an inbound message with
+`[File received: <filename>]` body and `mediaPaths` set to the
+saved file location, routing through the exact same pipeline
+as a chat message.  All the manual `ctxPayload`,
+`sessionKey`, and `recordInboundSession` code has been
+removed.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/gateway.ts` | Replaced `recordInboundSession` dispatch with `onMessage()` call in `handleIncomingFile` |
+| `package.json` | version: 2.3.0 → 2.3.1 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/gateway.ts.backup-20260621-183126`
+- `_backups/package.json.backup-20260621-183126`
+- `_backups/CHANGELOG.md.backup-20260621-183126`
+
+### Rollback
+
+```bash
+cp _backups/gateway.ts.backup-20260621-183126 src/gateway.ts
+cp _backups/package.json.backup-20260621-183126 package.json
+cp _backups/CHANGELOG.md.backup-20260621-183126 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.3.0] - 2026-06-21
+
+**Feat: Pass PSI+ file transfer description to agent; wire
+`handleIncomingFile` to `onFileReceived` callback.**
+
+### Feature
+
+PSI+ allows the user to add an optional description when
+sending a file via SI file transfer (XEP-0096).  The
+description is carried in the `<desc>` child element of the
+`<file>` element in the SI request:
+
+```xml
+<si xmlns="http://jabber.org/protocol/si" id="ft_XXXX"
+    profile="http://jabber.org/protocol/si/profile/file-transfer">
+  <file xmlns="...file-transfer" name="doc.pdf" size="12345">
+    <desc>Here is the document you asked for</desc>
+  </file>
+  ...
+</si>
+```
+
+Previously, the SI handler only extracted `name` and `size`
+from the `<file>` element — `<desc>` was ignored.  The
+`onFileReceived` callback also had no parameter for a
+description, and the gateway's `handleIncomingFile` function
+was defined but never wired to `onFileReceived` (so the agent
+was never notified when a file was received).
+
+### Fix
+
+**`src/startXMPP.ts`:**
+- Added `description` field to the IBB session type and stored
+  the parsed `<desc>` content from the SI `<file>` element.
+- Extended the `onFileReceived` callback signature to accept
+  an optional 4th argument `description?: string`.
+- Both call sites (IBB data completion and IBB close handler)
+  now pass `session.description` to `onFileReceived`.
+
+**`src/gateway.ts`:**
+- Updated `LifecycleServices.startXmpp` interface to accept
+  a 6th argument `onFileReceived`.
+- Updated `handleIncomingFile` signature to accept
+  `description?: string`; the description is included in the
+  agent notification message body.
+- Wired `handleIncomingFile` as the `onFileReceived` callback
+  so the agent is notified of incoming file transfers.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | IBB session: added `description` field; SI handler: extract `<desc>` from `<file>`; `onFileReceived` sig: added optional 4th param; both call sites pass description |
+| `src/gateway.ts` | `LifecycleServices` interface: added 6th param; `handleIncomingFile`: accepts `description` and formats message; wired as `onFileReceived` callback |
+| `package.json` | version: 2.2.2 → 2.3.0 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/startXMPP.ts.backup-20260621-181825`
+- `_backups/gateway.ts.backup-20260621-181825`
+- `_backups/package.json.backup-20260621-181825`
+- `_backups/CHANGELOG.md.backup-20260621-181825`
+
+### Rollback
+
+```bash
+cp _backups/startXMPP.ts.backup-20260621-181825 src/startXMPP.ts
+cp _backups/gateway.ts.backup-20260621-181825 src/gateway.ts
+cp _backups/package.json.backup-20260621-181825 package.json
+cp _backups/CHANGELOG.md.backup-20260621-181825 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.2.2] - 2026-06-21
+
+**Fix: SI stream-method parsing — Psi+ wraps values in
+`<option>` elements.**
+
+### Bug
+
+Psi+ formats the SI feature negotiation form using XEP-0004
+data forms with `<option>` wrappers around each stream-method
+`<value>`:
+
+```xml
+<field var="stream-method" type="list-single">
+  <option><value>http://jabber.org/protocol/ibb</value></option>
+  <option><value>http://jabber.org/protocol/bytestreams</value></option>
+</field>
+```
+
+Our code called `field.getChildren("value")`, which looks for
+`<value>` as a **direct** child of `<field>`.  But Psi+
+wraps them in `<option>`, so `getChildren("value")` returned
+an empty array, `supportedMethod` stayed `null`, and every
+incoming SI transfer was rejected with
+"feature-not-implemented / No supported stream method"
+regardless of the three previous fixes (feature parsing,
+response format, SID attribute).
+
+### Fix
+
+Changed the stream-method iteration to check **both**
+`<option>` wrappers (Psi+ style) and direct `<value>` children
+(simple clients), selecting the first match for IBB.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | Stream-method parsing: check `<option>` children first, then direct `<value>` |
+| `package.json` | version: 2.2.1 → 2.2.2 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/startXMPP.ts.backup-20260621-174212`
+
+### Rollback
+
+```bash
+cp _backups/startXMPP.ts.backup-20260621-174212 src/startXMPP.ts
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.2.1] - 2026-06-21
+
+**Fix: SI session ID attribute name mismatch.  XEP-0096 uses
+`id` on `<si>`, not `sid`.**
+
+### Bug
+
+`src/startXMPP.ts` line 634 read `si.attrs.sid` to obtain the
+SI session identifier, but XEP-0096 §3 specifies the attribute
+is `id` (the `sid` attribute belongs to XEP-0047 IBB).  PSI+
+sends the spec-compliant `id` attribute, so `si.attrs.sid`
+always returned `undefined`, the `if (!sid)` guard fired, and
+every incoming SI file transfer was rejected with "Missing
+SID" before any stream-method negotiation could take place.
+
+### Fix
+
+Changed the attribute read to
+`si.attrs.id || si.attrs.sid`, handling both the standard
+attribute name and a fallback for legacy clients that might
+use `sid`.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | `si.attrs.sid` → `si.attrs.id \|\| si.attrs.sid` at line 634 |
+| `package.json` | version: 2.2.0 → 2.2.1 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+- `_backups/startXMPP.ts.backup-20260621-161400`
+
+### Rollback
+
+```bash
+cp _backups/startXMPP.ts.backup-20260621-161400 src/startXMPP.ts
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.2.0] - 2026-06-21
+
+**File Transfer: fix incoming SI+IBB negotiation; implement
+outbound SI+IBB.  Closes the PSI+ "Unable to negotiate
+transfer" error.**
+
+### Phase 1 — Fix incoming SI File Transfer (XEP-0096) + IBB
+(XEP-0047)
+
+The SI handler had two bugs that caused PSI+ (and other
+clients) to fail when sending files to the bot:
+
+**Fix 1 — SI feature negotiation XML parsing
+(`src/startXMPP.ts`, SI handler).**
+
+The stream-method field in the `jabber:x:data` form is
+nested inside `<feature>/<x xmlns="jabber:x:data">/field`,
+but the code called `feature.getChildren("field")` directly,
+missing the `<x>` wrapper.  No supported stream method was
+ever found, so the transfer was always rejected with
+"feature-not-implemented / No supported stream method".
+
+New code navigates `feature → x → field (var="stream-method")
+→ value` to correctly discover IBB support.
+
+**Fix 2 — SI acceptance response is now protocol-compliant
+(`src/startXMPP.ts`, SI handler).**
+
+The previous code sent an empty `<iq type="result"/>`.
+Per XEP-0096 §3, the responder MUST return the negotiated
+feature in the result.  The new response includes the
+complete `<si>` element with the selected stream method:
+
+```xml
+<iq type="result">
+  <si xmlns="http://jabber.org/protocol/si">
+    <feature xmlns="http://jabber.org/protocol/feature-neg">
+      <x xmlns="jabber:x:data" type="submit">
+        <field var="stream-method">
+          <value>http://jabber.org/protocol/ibb</value>
+        </field>
+      </x>
+    </feature>
+  </si>
+</iq>
+```
+
+**Fix 3 — Remove false SOCKS5 bytestreams advertising
+(`src/config.ts`, `src/startXMPP.ts` disco#info handler).**
+
+The plugin advertised `http://jabber.org/protocol/bytestreams`
+but had no SOCKS5 handler.  Clients like PSI+ would offer
+SOCKS5 as the primary transport (sometimes the only option),
+causing negotiation failure.  Removed from `CAPS_FEATURES`
+and from the disco#info response.  The `CapsInfo.ver` hash
+changes as a result (features set changed).
+
+### Phase 2 — Implement outbound SI+IBB file transfer
+
+The previous `sendFileWithSITransfer` fallback (used when
+HTTP Upload is unavailable) only sent a text notification
+`[File: filename]` instead of actually transferring the
+file.  It is now replaced with a full SI + IBB initiator:
+
+1. **SI initiation** — Send `iq type="set"` with `<si
+   profile="file-transfer">` offering IBB as the stream
+   method.  Wait for the recipient's result.
+2. **IBB open** — Send `<open block-size="4096"
+   stanza="iq">`, wait for result.
+3. **IBB data** — Read the file, send in 4 KB base64
+   chunks via `<iq type="set"><data seq="N">...</data></iq>`,
+   waiting for each IQ result before sending the next.
+4. **IBB close** — Send `<close>` and wait for result.
+
+An internal `sendIqAndWait()` helper (one-shot stanza
+listener + timeout) prevents ID collisions across concurrent
+transfers.
+
+For MUC rooms (`isGroupChat = true`), the function falls
+back to a text notification (SI/IBB is 1:1 only).
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/startXMPP.ts` | Fix SI parsing, fix SI response, remove SOCKS5 disco, rewrite `sendFileWithSITransfer` (SI+IBB outbound) |
+| `src/config.ts` | Remove `bytestreams` from `CAPS_FEATURES` |
+| `package.json` | version: 2.1.5 → 2.2.0 |
+| `CHANGELOG.md` | new entry at top (this one) |
+
+### Backups
+
+All files backed up to `_backups/` with the `-20260621-160525`
+suffix:
+
+- `_backups/startXMPP.ts.backup-20260621-160525`
+- `_backups/config.ts.backup-20260621-160525`
+- `_backups/package.json.backup-20260621-160525`
+- `_backups/CHANGELOG.md.backup-20260621-160525`
+
+### Rollback
+
+```bash
+cp _backups/startXMPP.ts.backup-20260621-160525 src/startXMPP.ts
+cp _backups/config.ts.backup-20260621-160525 src/config.ts
+cp _backups/package.json.backup-20260621-160525 package.json
+cp _backups/CHANGELOG.md.backup-20260621-160525 CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
 ## [2.1.5] - 2026-06-17
 
 **Refactor: split `startXMPP.ts` into three files.**

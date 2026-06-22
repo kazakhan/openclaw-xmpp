@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import net from "net";
 import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
@@ -52,7 +53,7 @@ process.on('unhandledRejection', (reason: any, promise: any) => {
   log.error(`[UNHANDLED REJECTION] Stack: ${stack}`);
 });
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string, description?: string) => void) {
     // SECURITY (2.0.18, L1): per-invocation import of @xmpp/client.
     // Node caches the module so the second call is a no-op.  See
     // the comment on the (now-removed) module-level binding.
@@ -86,7 +87,13 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         return result;
      };
 
-    async function shouldAcceptInvite(inviterJid: string, roomJid: string): Promise<boolean> {
+     // Track the bot's bound full JID (with resource) after XMPP connection
+     // Used for SOCKS5 bytestream SHA1 hash computation (XEP-0065)
+     let botFullJid = cfg.jid;
+     // Track user full JIDs from inbound messages for SI file transfers
+     const fullJidMap = new Map<string, string>();
+
+     async function shouldAcceptInvite(inviterJid: string, roomJid: string): Promise<boolean> {
       const bareInviter = inviterJid.split('/')[0];
       const bareRoom = roomJid.split('/')[0];
       if (await contacts.isAdmin(bareInviter)) return true;
@@ -320,6 +327,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
 
   xmpp.on("online", async (address: any) => {
     log.info("XMPP online as", address.toString());
+    botFullJid = address.toString();
     // SECURITY (2.1.3, restore-old-design): no liveness manager,
     // no keepalive setup, no reconnect-timer reset.  The OLD
     // design from D:\Downloads\xmppOLD just logs "online" and
@@ -395,7 +403,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
    });
 
      const roomsPendingConfig = new Set<string>(); // rooms waiting for configuration
-     const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, data: Buffer, received: number, createdAt: number }>(); // IBB session tracking
+     const ibbSessions = new Map<string, { sid: string, from: string, filename: string, size: number, description?: string, data: Buffer, received: number, createdAt: number }>(); // IBB session tracking
 
      // Cleanup function for stale IBB sessions
      const cleanupIbbSessions = () => {
@@ -449,8 +457,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
      // debugLog("XMPP stanza received: " + stanza.toString().substring(0, 200));
      
      if (stanza.is("presence")) {
-      const from = stanza.attrs.from;
-      const type = stanza.attrs.type || "available";
+       const from = stanza.attrs.from;
+       if (from && from.includes('/')) fullJidMap.set(from.split('/')[0], from);
+       const type = stanza.attrs.type || "available";
       const parts = from.split('/');
       const room = parts[0];
       const nick = parts[1] || '';
@@ -593,21 +602,41 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             const filename = file.attrs.name || "unknown";
             const size = file.attrs.size ? parseInt(file.attrs.size) : 0;
             debugLog(`File offer: ${filename} (${size} bytes)`);
-            
-            // Check for supported stream methods
+
+            // Check for supported stream methods — navigate through jabber:x:data form
             const feature = si.getChild("feature", "http://jabber.org/protocol/feature-neg");
             let supportedMethod = null;
             if (feature) {
-              const streamMethods = feature.getChildren("field");
-              for (const field of streamMethods) {
-                const method = field.getChildText("value");
-                if (method === "http://jabber.org/protocol/ibb") {
-                  supportedMethod = method;
-                  break;
+              const xForm = feature.getChild("x", "jabber:x:data");
+              if (xForm) {
+                const fields = xForm.getChildren("field");
+                for (const field of fields) {
+                  if (field.attrs.var === "stream-method") {
+                    // Some clients (e.g. Psi+) wrap <value> in <option> elements
+                    const options = field.getChildren("option");
+                    for (const option of options) {
+                      const valueEl = option.getChild("value");
+                      if (valueEl && valueEl.getText() === "http://jabber.org/protocol/ibb") {
+                        supportedMethod = "http://jabber.org/protocol/ibb";
+                        break;
+                      }
+                    }
+                    // Other clients put <value> directly under <field>
+                    if (!supportedMethod) {
+                      const values = field.getChildren("value");
+                      for (const value of values) {
+                        if (value.getText() === "http://jabber.org/protocol/ibb") {
+                          supportedMethod = "http://jabber.org/protocol/ibb";
+                          break;
+                        }
+                      }
+                    }
+                    if (supportedMethod) break;
+                  }
                 }
               }
             }
-            
+
             if (supportedMethod === "http://jabber.org/protocol/ibb") {
               xmppLog.debug("fileTransfer", { action: "accept-si", filename });
               if (size > MAX_FILE_SIZE) {
@@ -622,7 +651,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 return;
               }
               // Capture session ID from SI element
-              const sid = si.attrs.sid;
+              const sid = si.attrs.id || si.attrs.sid;
               if (!sid) {
                 xmppLog.debug("fileTransfer", { action: "reject-no-sid" });
                 const errorIq = xml("iq", { to: from, type: "error", id },
@@ -634,21 +663,36 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 await safeXmppSend(xmpp,errorIq);
                 return;
               }
-              
-               // Store IBB session - ensure from is a valid string
+
+               // Extract optional description from SI file element
+               const descElement = file.getChild("desc", "http://jabber.org/protocol/si/profile/file-transfer");
+               const description = descElement ? descElement.getText() : undefined;
+
+                // Store IBB session - ensure from is a valid string
                 const fromJid = typeof from === 'string' ? from : String(from);
                 ibbSessions.set(sid, {
                   sid,
                   from: fromJid,
                   filename,
                   size,
+                  description,
                   data: Buffer.alloc(0),
                   received: 0,
                   createdAt: Date.now()
                 });
-              
-              // Accept the SI request
-              const acceptIq = xml("iq", { to: from, type: "result", id });
+
+              // Accept the SI request with proper negotiation response (XEP-0096)
+              const acceptIq = xml("iq", { to: from, type: "result", id },
+                xml("si", { xmlns: "http://jabber.org/protocol/si" },
+                  xml("feature", { xmlns: "http://jabber.org/protocol/feature-neg" },
+                    xml("x", { xmlns: "jabber:x:data", type: "submit" },
+                      xml("field", { var: "stream-method" },
+                        xml("value", {}, "http://jabber.org/protocol/ibb")
+                      )
+                    )
+                  )
+                )
+              );
               await safeXmppSend(xmpp,acceptIq);
               xmppLog.debug("fileTransfer", { action: "si-accepted", sid, filename });
             } else {
@@ -731,11 +775,11 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 await fs.promises.writeFile(filePath, session.data);
                 ibbSessions.delete(sid);
                // Notify about incoming file
-               if (onFileReceived) {
-                 onFileReceived(filePath, session.filename, session.from);
-               }
-             }
-          } catch (err) {
+                if (onFileReceived) {
+                  onFileReceived(filePath, session.filename, session.from, session.description);
+                }
+              }
+           } catch (err) {
             xmppLog.error("IBB data error", err);
            const errorIq = xml("iq", { to: from, type: "error", id },
              xml("error", { type: "cancel" },
@@ -770,7 +814,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 await fs.promises.writeFile(filePath, session.data);
                 // Notify about incoming file
                 if (onFileReceived) {
-                  onFileReceived(filePath, session.filename, session.from);
+                  onFileReceived(filePath, session.filename, session.from, session.description);
                 }
               }
               ibbSessions.delete(sid);
@@ -841,7 +885,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             xml("feature", { var: "vcard-temp" }),
             xml("feature", { var: "http://jabber.org/protocol/muc" }),
             xml("feature", { var: "http://jabber.org/protocol/si/profile/file-transfer" }),
-            xml("feature", { var: "http://jabber.org/protocol/bytestreams" }),
             xml("feature", { var: "http://jabber.org/protocol/ibb" }),
             xml("feature", { var: "http://jabber.org/protocol/sxe" }),
             xml("feature", { var: "http://jabber.org/protocol/swb" }),
@@ -861,9 +904,11 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     }
     
     if (stanza.is("message")) {
-       const from = stanza.attrs.from;
-      const to = stanza.attrs.to;
-      const messageType = stanza.attrs.type || "chat";
+        const from = stanza.attrs.from;
+       // Track full JID for SI file transfers
+       if (from && from.includes('/')) fullJidMap.set(from.split('/')[0], from);
+       const to = stanza.attrs.to;
+       const messageType = stanza.attrs.type || "chat";
       
       // Check for MUC invites
       const xElement = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
@@ -1414,27 +1459,279 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     // see the error and attempt to reconnect.
   });
 
-     // SI File Transfer (XEP-0096) helpers (fallback)
-    const sendFileWithSITransfer = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
-        debugLog(`Attempting SI file transfer to ${to}`);
-        const filename = path.basename(filePath);
-
-        const downloadsDir = path.join(cfg.dataDir || path.join(process.cwd(), 'data'), 'downloads');
-        if (!fs.existsSync(downloadsDir)) {
-          fs.mkdirSync(downloadsDir, { recursive: true });
-        }
-        const localPath = path.join(downloadsDir, filename);
-        try {
-          await fs.promises.copyFile(filePath, localPath);
-          debugLog(`File saved locally to: ${localPath}`);
-        } catch (copyErr) {
-          xmppLog.error("SI fallback save failed", copyErr);
-        }
-
-         const message = `[File: ${filename}] ${text || ''}`;
-         const msgEl = xml("message", { type: isGroupChat ? "groupchat" : "chat", to }, xml("body", {}, message));
-         await safeXmppSend(xmpp,msgEl);
+     const MIME_TYPES: Record<string, string> = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+        ".bmp": "image/bmp", ".ico": "image/x-icon",
+        ".pdf": "application/pdf", ".zip": "application/zip",
+        ".gz": "application/gzip", ".tar": "application/x-tar",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+        ".mp4": "video/mp4", ".webm": "video/webm",
+        ".json": "application/json", ".xml": "application/xml",
+        ".html": "text/html", ".css": "text/css", ".js": "text/javascript",
+        ".ts": "text/typescript", ".txt": "text/plain", ".md": "text/markdown",
+        ".csv": "text/csv", ".yaml": "text/yaml", ".yml": "text/yaml",
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       };
+      const getMimeType = (fname: string): string =>
+        MIME_TYPES[path.extname(fname).toLowerCase()] || "application/octet-stream";
+
+      // SI File Transfer (XEP-0096) + IBB (XEP-0047) outbound helper
+    const sendFileWithSITransfer = async (to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void> => {
+      if (isGroupChat) {
+        // SI/IBB only works for 1:1 chats; send text notification to room
+        const filename = path.basename(filePath);
+        const msgEl = xml("message", { type: "groupchat", to }, xml("body", {}, `[File: ${filename}] ${text || ''}`));
+        await safeXmppSend(xmpp, msgEl);
+        return;
+      }
+
+      debugLog(`Attempting SI file transfer to ${to}`);
+      const filename = path.basename(filePath);
+      const fileData = await fs.promises.readFile(filePath);
+      const size = fileData.length;
+
+      if (size > MAX_FILE_SIZE) {
+        throw new Error(`File too large: ${size} bytes (max ${MAX_FILE_SIZE} bytes)`);
+      }
+
+      if (size === 0) {
+        throw new Error("Cannot transfer empty file");
+      }
+
+      const sid = `si-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+
+      // Helper: send an IQ-set with payload and wait for result
+      const sendIqAndWait = (payload: any, timeout = 120000, context = "IBB transfer", toOverride?: string): Promise<any> => {
+        return new Promise((resolve, reject) => {
+          const id = `iq-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
+          const iq = xml("iq", { to: toOverride || to, type: "set", id }, payload);
+          let resolved = false;
+          let timer: ReturnType<typeof setTimeout> | null = null;
+
+          const cleanup = () => { if (timer) { clearTimeout(timer); timer = null; } };
+          const handler = (stanza: any) => {
+            if (stanza.is("iq") && stanza.attrs.id === id) {
+              resolved = true;
+              xmpp.off('stanza', handler);
+              cleanup();
+              if (stanza.attrs.type === 'result') resolve(stanza);
+              else {
+                const errChild = stanza.getChild("error");
+                const errText = errChild ? errChild.toString() : stanza.attrs.type;
+                xmppLog.error(`${context} rejected: ${errText}`);
+                reject(new Error(`Remote rejected ${context}`));
+              }
+            }
+          };
+
+          xmpp.on('stanza', handler);
+          xmpp.send(iq).catch((err: any) => {
+            if (!resolved) { resolved = true; xmpp.off('stanza', handler); cleanup(); reject(err); }
+          });
+
+          timer = setTimeout(() => {
+            if (!resolved) { resolved = true; xmpp.off('stanza', handler); reject(new Error(`${context} timeout`)); }
+          }, timeout);
+        });
+      };
+
+      // 1. Send SI request
+      debugLog(`Sending SI request to ${to}`);
+      const fileEl = xml("file", { xmlns: "http://jabber.org/protocol/si/profile/file-transfer", name: filename, size: size.toString() });
+      if (text) { fileEl.children.push(xml("desc", {}, text)); }
+      const siPayload = xml("si", {
+        xmlns: "http://jabber.org/protocol/si",
+        profile: "http://jabber.org/protocol/si/profile/file-transfer",
+        id: sid,
+        "mime-type": getMimeType(filename)
+      },
+        fileEl,
+        xml("feature", { xmlns: "http://jabber.org/protocol/feature-neg" },
+          xml("x", { xmlns: "jabber:x:data", type: "form" },
+            xml("field", { var: "stream-method", type: "list-single" },
+              xml("option", {},
+                xml("value", {}, "http://jabber.org/protocol/ibb")
+              ),
+              xml("option", {},
+                xml("value", {}, "http://jabber.org/protocol/bytestreams")
+              )
+            )
+          )
+        )
+      );
+      xmppLog.error("SI request to=" + to + " stanza: " + siPayload.toString().substring(0, 800));
+      const siResp = await sendIqAndWait(siPayload, 120000, "SI request");
+      // Verify which stream method PSI+ selected (IBB or SOCKS5 bytestreams)
+      const siRespChild = siResp?.getChild?.("si", "http://jabber.org/protocol/si");
+      const featureNeg = siRespChild?.getChild?.("feature", "http://jabber.org/protocol/feature-neg");
+      const xData = featureNeg?.getChild?.("x", "jabber:x:data");
+      const getMethodFromField = (field: any): string => {
+        const values = field.getChildren?.("value") || [];
+        for (const v of values) {
+          const t = v.text();
+          if (t === "http://jabber.org/protocol/ibb" || t === "http://jabber.org/protocol/bytestreams") return t;
+        }
+        const options = field.getChildren?.("option") || [];
+        for (const o of options) {
+          const ov = o.getChild?.("value");
+          if (ov) {
+            const t = ov.text();
+            if (t === "http://jabber.org/protocol/ibb" || t === "http://jabber.org/protocol/bytestreams") return t;
+          }
+        }
+        return "";
+      };
+      let selectedMethod = "";
+      if (xData) {
+        for (const child of xData.children || []) {
+          if (child.name === "field" && child.attrs?.var === "stream-method") {
+            selectedMethod = getMethodFromField(child);
+            if (selectedMethod) break;
+          }
+        }
+      }
+      if (!selectedMethod) { throw new Error("Remote did not select a supported stream-method"); }
+      xmppLog.debug("fileTransfer", { action: "si-request-accepted", sid, filename, method: selectedMethod });
+
+      if (selectedMethod === "http://jabber.org/protocol/ibb") {
+        // 2. Open IBB stream
+        debugLog(`Opening IBB stream to ${to} (sid=${sid})`);
+        const blockSize = 4096;
+        const openPayload = xml("open", {
+          xmlns: "http://jabber.org/protocol/ibb",
+          sid,
+          "block-size": blockSize.toString(),
+          stanza: "iq"
+        });
+        await sendIqAndWait(openPayload, 120000, "IBB open");
+        xmppLog.debug("fileTransfer", { action: "ibb-opened", sid });
+
+        // 3. Send file data in chunks
+        const totalChunks = Math.ceil(fileData.length / blockSize);
+        xmppLog.debug("fileTransfer", { action: "ibb-transfer-start", sid, chunks: totalChunks, bytes: size });
+        for (let offset = 0, seq = 0; offset < fileData.length; offset += blockSize, seq++) {
+          const end = Math.min(offset + blockSize, fileData.length);
+          const chunk = fileData.slice(offset, end);
+          const dataPayload = xml("data", {
+            xmlns: "http://jabber.org/protocol/ibb",
+            sid,
+            seq: seq.toString()
+          }, chunk.toString('base64'));
+          await sendIqAndWait(dataPayload, 60000, "IBB data");
+          if (seq % 20 === 0 && seq > 0) {
+            xmppLog.debug("fileTransfer", { action: "ibb-progress", sid, seq, total: totalChunks });
+          }
+        }
+
+        // 4. Close IBB stream
+        debugLog(`Closing IBB stream sid=${sid}`);
+        const closePayload = xml("close", { xmlns: "http://jabber.org/protocol/ibb", sid });
+        await sendIqAndWait(closePayload, 120000, "IBB close");
+        xmppLog.debug("fileTransfer", { action: "ibb-closed", sid, filename, bytes: size });
+
+      } else if (selectedMethod === "http://jabber.org/protocol/bytestreams") {
+        // 2. SOCKS5 bytestream via proxy65
+        const proxyDomain = `proxy.${cfg.domain}`;
+        const proxyHost = proxyDomain;
+        const proxyPort = 5000;
+        const proxyJid = proxyDomain;
+
+        debugLog(`Starting SOCKS5 bytestream to ${proxyHost}:${proxyPort} (sid=${sid})`);
+
+        // 2a. Send streamhost list to target
+        const streamhostPayload = xml("query", { xmlns: "http://jabber.org/protocol/bytestreams", sid },
+          xml("streamhost", {
+            jid: proxyJid,
+            host: proxyHost,
+            port: String(proxyPort)
+          })
+        );
+        await sendIqAndWait(streamhostPayload, 120000, "Streamhost");
+
+        // 2b. Compute SOCKS5 hash: SHA1(SID + initiator_jid + target_jid)
+        const initiatorJid = botFullJid;
+        const targetJid = to;
+        const hashInput = `${sid}${initiatorJid}${targetJid}`;
+        const hash = crypto.createHash("sha1").update(hashInput, "utf8").digest("hex");
+
+        // 2c. Connect to SOCKS5 proxy
+        const socket = new net.Socket();
+        await new Promise<void>((resolve, reject) => {
+          socket.connect(proxyPort, proxyHost, () => {
+            // SOCKS5 greeting: VER=5, NAUTH=1, AUTH=no-auth
+            socket.write(Buffer.from([0x05, 0x01, 0x00]));
+            socket.once("data", (greetingResp: Buffer) => {
+              if (greetingResp[0] !== 0x05 || greetingResp[1] !== 0x00) {
+                reject(new Error(`SOCKS5 greeting failed: ${greetingResp[1]}`));
+                return;
+              }
+              // SOCKS5 connect: VER=5, CMD=1(connect), RSV=0, ATYP=3(domain), len=40, hash(40 hex chars), port=0
+              const hashBytes = Buffer.from(hash, "utf8");
+              const connectReq = Buffer.concat([
+                Buffer.from([0x05, 0x01, 0x00, 0x03, 40]),
+                hashBytes,
+                Buffer.from([0x00, 0x00])
+              ]);
+              socket.write(connectReq);
+              socket.once("data", (connectResp: Buffer) => {
+                if (connectResp[0] !== 0x05 || connectResp[1] !== 0x00) {
+                  reject(new Error(`SOCKS5 connect failed: ${connectResp[1]}`));
+                  return;
+                }
+                resolve();
+              });
+            });
+          });
+          socket.on("error", reject);
+        });
+
+        // 2d. Short delay for target to connect to proxy too
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 2e. Send activate IQ to proxy
+        debugLog(`Activating bytestream sid=${sid} on ${proxyJid}`);
+        const activatePayload = xml("query", { xmlns: "http://jabber.org/protocol/bytestreams", sid },
+          xml("activate", {}, targetJid)
+        );
+        await sendIqAndWait(activatePayload, 120000, "Activate", proxyJid);
+
+        // 2f. Write file data to socket
+        debugLog(`Writing ${size} bytes to SOCKS5 socket (sid=${sid})`);
+        await new Promise<void>((resolve, reject) => {
+          socket.write(fileData, (err: Error | undefined) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+
+        // 2g. Close socket
+        await new Promise(r => setTimeout(r, 500));
+        socket.destroy();
+        xmppLog.debug("fileTransfer", { action: "bytestream-done", sid, filename, bytes: size });
+      }
+    };
+
+    const parseSendfileArgs = (cmdText: string): string[] => {
+      const args: string[] = [];
+      let current = '';
+      let quoteChar = '';
+      for (const char of cmdText) {
+        if (quoteChar) {
+          if (char === quoteChar) quoteChar = '';
+          else current += char;
+        } else if (char === '"' || char === "'") {
+          quoteChar = char;
+        } else if (char === ' ') {
+          if (current) { args.push(current); current = ''; }
+        } else {
+          current += char;
+        }
+      }
+      if (current) args.push(current);
+      return args;
+    };
 
     xmppClient = {
       // Access to raw XMPP connection for status and low-level operations
@@ -1450,6 +1747,40 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       // wrapper.
 
       send: (to: string, body: string) => {
+        if (body && body.trim().startsWith('/sendfile')) {
+          const cmdText = body.trim().substring('/sendfile'.length).trim();
+          if (cmdText) {
+            const args = parseSendfileArgs(cmdText);
+            const filename = args[0];
+            const description = args.slice(1).join(' ');
+            if (filename) {
+              const dataDir = cfg.dataDir || path.join(process.cwd(), 'data');
+              const uploadsDir = path.join(dataDir, 'uploads');
+              let resolvedPath = '';
+              if (path.isAbsolute(filename) && fs.existsSync(filename)) {
+                resolvedPath = filename;
+              } else {
+                const uploadsCandidate = path.join(uploadsDir, filename);
+                if (fs.existsSync(uploadsCandidate)) {
+                  resolvedPath = uploadsCandidate;
+                }
+              }
+              if (resolvedPath) {
+                (async () => {
+                  try {
+                    await xmppClient.sendFile(to, resolvedPath, description);
+                  } catch (err: any) {
+                    xmppLog.error("sendfile in send() failed: " + (err?.message || String(err)));
+                  }
+                })();
+                return Promise.resolve();
+              } else {
+                xmppLog.error("sendfile: file not found", { to, filename, searched: uploadsDir });
+                return Promise.resolve();
+              }
+            }
+          }
+        }
         const message = xml("message", { type: "chat", to }, xml("body", {}, body));
         return xmpp.send(message);
       },
@@ -1570,21 +1901,24 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         const iqStanza = xml("iq", { to, type, id }, payload);
         return xmpp.send(iqStanza);
       },
-       sendFile: async (to: string, filePath: string, text?: string, isGroupChat?: boolean) => {
-         xmppLog.debug("fileTransfer", { action: "send", to, file: filePath });
-         try {
-           // First try HTTP Upload
-            await sendFileWithHTTPUpload(xmpp, to, filePath, cfg.domain, text, isGroupChat);
-           return true;
-          } catch (httpErr) {
-            xmppLog.debug("fileTransfer", { action: "fallback-to-si" });
-            try {
-              await sendFileWithSITransfer(to, filePath, text, isGroupChat);
-              return true;
-            } catch (siErr) {
-              xmppLog.error("all transfer methods failed", siErr);
-             throw new Error(`File transfer failed: ${httpErr.message}, ${siErr.message}`);
-           }
+        sendFile: async (to: string, filePath: string, text?: string, isGroupChat?: boolean) => {
+          // Resolve bare JID to last-known full JID (with resource) for SI
+          const bareTo = to.split('/')[0];
+          const fullTo = (bareTo !== to) ? to : (fullJidMap.get(bareTo) || to);
+          xmppLog.debug("fileTransfer", { action: "send", to, fullTo, file: filePath });
+          try {
+            // First try SI (native PSI+ file transfer dialog via SOCKS5/IBB)
+             await sendFileWithSITransfer(fullTo, filePath, text, isGroupChat);
+            return true;
+           } catch (siErr) {
+             xmppLog.debug("fileTransfer", { action: "fallback-to-http" });
+             try {
+               await sendFileWithHTTPUpload(xmpp, to, filePath, cfg.domain, text, isGroupChat);
+               return true;
+             } catch (httpErr) {
+                xmppLog.error("all transfer methods failed: " + (siErr?.message || String(siErr)));
+              throw new Error(`File transfer failed: ${siErr.message}, ${httpErr.message}`);
+            }
          }
        },
        inviteToRoom: async (contact: string, room: string, reason?: string, password?: string) => {

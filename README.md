@@ -3,9 +3,9 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.1.5)
+## Status: ✅ WORKING (v2.9.4)
 
-Fully functional with shared sessions, memory continuity, file transfers, password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
+Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
 
 ## Installation
 
@@ -203,6 +203,7 @@ openclaw xmpp upload <local-path> [remote-name]  # Upload a file via HTTP File U
 openclaw xmpp download <remote-name> [local-path] # Download a previously uploaded file
 openclaw xmpp ls                                 # List uploaded files
 openclaw xmpp rm <remote-name>                   # Delete an uploaded file
+openclaw xmpp msg <jid> "/sendfile <path> [desc]" # Send file via SI/SOCKS5/IBB (native PSI+ transfer) with HTTP Upload fallback
 ```
 ### Security Commands
 ```bash
@@ -245,6 +246,7 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 /invite <jid> <room>             # Invite a contact to a MUC room
 /rooms                           # List joined rooms
 /leave <room>                   # Leave a MUC room
+/sendfile <path> [description]  # Send a file via SI/SOCKS5/IBB (native transfer) with HTTP Upload fallback
 /vcard                           # Manage vCard profile
 /vcard get                       # Show current vCard
 /vcard get <jid>                 # Show any user's vCard
@@ -261,9 +263,28 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 - The `/help` command forwards to the AI agent in direct chat
 ## File Management
 
-Files are transferred over XMPP via the HTTP File Upload protocol (XEP-0363). The plugin uploads/downloads to an HTTP upload service advertised by the XMPP server; no separate file server is required.
+Files are transferred over XMPP via SI (XEP-0096) with SOCKS5 bytestreams (XEP-0065) or IBB (XEP-0047) preferred, falling back to HTTP File Upload (XEP-0363) for a URL link. PSI+ clients receive a native file transfer dialog; other clients receive an HTTP download link.
 
+### Transfer Methods
 
+1. **SI → SOCKS5 bytestream** (preferred) — PSI+ selects this when available. Requires a SOCKS5 proxy65 component on the server (e.g., Prosody `proxy65` module) at `proxy.<domain>:5000`.
+2. **SI → IBB** (fallback within SI) — if SOCKS5 is unavailable, PSI+ falls back to IBB (in-band bytestreams via IQ stanzas).
+3. **HTTP Upload** (last resort) — sends a URL link via chat message if SI/SOCKS5/IBB fails.
+
+### Usage
+
+```bash
+# CLI — bare JID auto-resolves to full JID via presence tracking
+openclaw xmpp msg user@domain "/sendfile /path/to/file description"
+
+# CLI — explicit full JID (more reliable)
+openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
+
+# In-chat (agent response) — agent text starting with /sendfile triggers transfer
+/sendfile /path/to/file description
+```
+
+**Note:** The target must be using a compatible client (PSI+ tested) for native SI transfers. Bare JIDs are auto-resolved to the last-seen full JID (tracked from presence and message stanzas).
 
 ## Features
 
@@ -274,7 +295,9 @@ Files are transferred over XMPP via the HTTP File Upload protocol (XEP-0363). Th
 - XEP-0327 Occupant-ID support for MUC
 - Contact & roster management
 - vCard support (get/set/query)
-- File transfers via HTTP File Upload (XEP-0363)
+- File transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) with HTTP Upload (XEP-0363) fallback
+- In-chat `/sendfile` command (agent response and CLI)
+- Bare JID auto-resolve to full JID via presence/message tracking
 - Password encryption at rest (AES-256-GCM)
 - Comprehensive input validation (JID, filename, URL)
 - Secure debug logging (sensitive data redaction)
