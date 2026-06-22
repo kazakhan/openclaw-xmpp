@@ -4,7 +4,8 @@ import crypto from "crypto";
 import { log } from "./lib/logger.js";
 import { debugLog } from "./shared/index.js";
 import { MessageStore } from "./messageStore.js";
-import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml } from "./whiteboard.js";
+import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
+import { safeSend } from "./lib/xmpp-utils.js";
 import { xml } from "@xmpp/client";
 
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
@@ -477,80 +478,124 @@ export class GatewayLifecycle {
 
                 log.debug(`GC_DELIVER: called=true payloadKeys=${Object.keys(payload||{}).join(",")} textLen=${(payload?.text||"").length} isGC=${isGroupChat} optType=${options?.type} roomJid=${roomJid} jid=${jid}`);
 
-                try {
-                  const sessionManager = (global as any).whiteboardSessionManager;
-                  if (sessionManager && sessionManager.hasSession(bareJid)) {
-                    const session = sessionManager.getSession(bareJid);
-                    const svgCommands = parseSvgPathCommands(cleanText);
-                    if (svgCommands.length > 0) {
-                      const pathId = `agent${Date.now()}`;
-                      const paths: any[] = svgCommands.map((cmd: any) => ({
-                        d: cmd.path,
-                        stroke: cmd.color || '#000000',
-                        strokeWidth: cmd.width || 1,
-                        id: `${pathId}_${cmd.index}`
-                      }));
-                      const messageType = (isGroupChat && !(options?.type === "chat")) ? 'groupchat' : 'chat';
-                      let textOnly = cleanText.replace(/\[WHITEBOARD_DRAW\][\s\S]*?\[\/WHITEBOARD_DRAW\]/gi, '').trim();
-                      if (textOnly.length > 2) {
-                        if (isGroupChat && !(options?.type === "chat")) {
-                          await xmpp.sendGroupchat(jid, textOnly);
-                        } else {
-                          await xmpp.send(jid, textOnly);
-                        }
-                      }
-                      if (session.protocol === 'sxe' && session.sessionId) {
-                        const edits = buildSxePathEdits(paths);
-                        const sxeStanzas = sxeEditsToXml(session.sessionId, edits);
-                        for (const sxeElement of sxeStanzas) {
-                          const wbMessage = xml('message', { type: messageType, to: jid },
-                            xml('body', {}, ''),
-                            sxeElement
-                          );
-                          await xmpp.send(wbMessage);
-                        }
-                        sessionManager.updateSession(bareJid, { paths });
-                      } else {
-                        const whiteboardChildren = paths.map((p: any) =>
-                          xml('path', {
-                            d: p.d,
-                            stroke: p.stroke,
-                            'stroke-width': p.strokeWidth.toString(),
-                            id: p.id
-                          })
+                const sessionManager = (global as any).whiteboardSessionManager;
+                const svgCommands = parseSvgPathCommands(cleanText);
+                const hasDrawing = svgCommands.length > 0;
+
+                log.debug(`GC_WB: hasDrawing=${hasDrawing} cmdCount=${svgCommands.length} sessionExists=${!!(sessionManager && sessionManager.hasSession(bareJid))} bareJid=${bareJid}`);
+
+                if (sessionManager && sessionManager.hasSession(bareJid)) {
+                  const sessCheck = sessionManager.getSession(bareJid);
+                  log.debug(`GC_WB: session protocol=${sessCheck?.protocol} sessionId=${sessCheck?.sessionId} sxeNodes=${Object.keys(sessCheck?.sxeNodes||{}).length} svgParentRid=${sessCheck?.svgParentRid}`);
+                }
+
+                // STEP 1: Determine and send the human-readable text (strip whiteboard tags if present)
+                const displayText = hasDrawing
+                  ? cleanText.replace(/\[WHITEBOARD_DRAW\][\s\S]*?\[\/WHITEBOARD_DRAW\]/gi, '').trim()
+                  : cleanText;
+
+                if (displayText) {
+                  try {
+                    if (isGroupChat && !(options?.type === "chat")) {
+                      await xmpp.sendGroupchat(jid, displayText);
+                    } else {
+                      await xmpp.send(jid, displayText);
+                    }
+                  } catch (err) {
+                    log.error('XMPP SEND TEXT ERROR:', err);
+                  }
+                }
+
+                // STEP 2: Send whiteboard drawing (SXE/SWB) in isolated error handling
+                if (hasDrawing && sessionManager && sessionManager.hasSession(bareJid)) {
+                  const session = sessionManager.getSession(bareJid);
+                  const pathId = `agent${Date.now()}`;
+                  const paths: any[] = svgCommands.map((cmd: any) => ({
+                    d: cmd.path,
+                    stroke: cmd.color || '#000000',
+                    strokeWidth: cmd.width || 1,
+                    id: `${pathId}_${cmd.index}`
+                  }));
+                  const messageType = (isGroupChat && !(options?.type === "chat")) ? 'groupchat' : 'chat';
+
+                  log.debug(`GC_WB: attempting protocol=${session?.protocol} sessionId=${session?.sessionId} pathCount=${paths.length} paths=${paths.map(p=>p.d.substring(0,40)).join("|")}`);
+
+                  try {
+                    if (session.protocol === 'sxe' && session.sessionId) {
+                      const svgParentRid = session.svgParentRid || '0.1';
+                      log.debug(`GC_WB: building SXE edits svgParentRid=${svgParentRid} prefix=${getAvailableRidPrefix(session.sxeNodes)}`);
+                      const edits = buildSxePathEdits(paths, getAvailableRidPrefix(session.sxeNodes), svgParentRid, session.ridOffset);
+                      session.ridOffset += paths.length;
+                      const sxeStanzas = sxeEditsToXml(session.sessionId, edits);
+                      log.debug(`GC_WB: SXE stanzas count=${sxeStanzas.length} sessionId=${session.sessionId}`);
+                      for (const sxeElement of sxeStanzas) {
+                        const wbMessage = xml('message', { type: messageType, to: jid },
+                          xml('body', {}, ''),
+                          sxeElement
                         );
-                        const whiteboardElement = xml('x', { xmlns: 'http://jabber.org/protocol/swb' }, whiteboardChildren);
-                        const wbMessage = xml('message', { type: messageType, to: jid }, whiteboardElement);
-                        await xmpp.send(wbMessage);
+                        log.debug(`GC_WB: sending SXE stanza rid=${sxeElement?.children?.[0]?.attrs?.rid || '?'} jid=${jid}`);
+                        log.info(`SXE_DELIVER_XML: ${wbMessage.toString().substring(0, 3000)}`);
+                        await safeSend(xmpp.xmpp, wbMessage);
+                      }
+                      sessionManager.updateSession(bareJid, { paths });
+                      log.info(`GC_WB: SXE whiteboard SENT to ${bareJid} paths=${paths.length}`);
+                    } else {
+                      log.debug(`GC_WB: sending SWB protocol=${session?.protocol} sessionId=${session?.sessionId}`);
+                      const whiteboardChildren = paths.map((p: any) =>
+                        xml('path', {
+                          d: p.d,
+                          stroke: p.stroke,
+                          'stroke-width': p.strokeWidth.toString(),
+                          id: p.id
+                        })
+                      );
+                      const whiteboardElement = xml('x', { xmlns: 'http://jabber.org/protocol/swb' }, whiteboardChildren);
+                      const wbMessage = xml('message', { type: messageType, to: jid }, whiteboardElement);
+                      await safeSend(xmpp.xmpp, wbMessage);
+                      log.info(`GC_WB: SWB whiteboard SENT to ${bareJid} paths=${paths.length}`);
+                    }
+                  } catch (err) {
+                    log.error('XMPP WHITEBOARD SEND ERROR:', err instanceof Error ? err.message : String(err));
+                    log.error('XMPP WHITEBOARD SEND STACK:', err instanceof Error ? err.stack || '' : '');
+                    // Emergency fallback: if no readable text was sent (displayText was empty),
+                    // send the raw response text as a normal message
+                    if (!displayText) {
+                      log.debug(`GC_WB: emergency fallback — sending raw text to ${jid}`);
+                      try {
+                        if (isGroupChat && !(options?.type === "chat")) {
+                          await xmpp.sendGroupchat(jid, cleanText);
+                        } else {
+                          await xmpp.send(jid, cleanText);
+                        }
+                      } catch (fallbackErr) {
+                        log.error('XMPP FALLBACK SEND ERROR:', fallbackErr);
                       }
                     }
                   }
+                } else if (hasDrawing) {
+                  log.debug(`GC_WB: hasDrawing=true but NO session for ${bareJid}`);
+                }
+
+                // STEP 3: Debug log for normal (non-whiteboard) sends
+                if (!hasDrawing) {
                   log.debug(`GC_SEND: pre isGC=${isGroupChat} optType=${options?.type} jid=${jid} cleanTextLen=${cleanText.length} ready=${true}`);
-                  if (isGroupChat && !(options?.type === "chat")) {
-                    await xmpp.sendGroupchat(jid, cleanText);
-                    log.debug(`GC_SEND: post groupchat success=true`);
-                  } else {
-                    await xmpp.send(jid, cleanText);
-                    log.debug(`GC_SEND: post direct success=true`);
-                  }
-                  ctx.setStatus({ lastTransportActivityAt: Date.now() });
-                  try {
-                    await messageStore.saveMessage({
-                      direction: 'outbound',
-                      type: (options?.type || 'chat') as 'chat' | 'groupchat',
-                      roomJid: options?.room || undefined,
-                      fromBareJid: jid,
-                      fromFullJid: `${config.jid}/openclaw`,
-                      to: config.jid,
-                      body: cleanText,
-                      timestamp: Date.now(),
-                      accountId: account.accountId
-                    });
-                  } catch (err) {
-                    log.error('[MessageStore] Failed to save outbound:', err);
-                  }
+                }
+
+                ctx.setStatus({ lastTransportActivityAt: Date.now() });
+                try {
+                  await messageStore.saveMessage({
+                    direction: 'outbound',
+                    type: (options?.type || 'chat') as 'chat' | 'groupchat',
+                    roomJid: options?.room || undefined,
+                    fromBareJid: jid,
+                    fromFullJid: `${config.jid}/openclaw`,
+                    to: config.jid,
+                    body: cleanText,
+                    timestamp: Date.now(),
+                    accountId: account.accountId
+                  });
                 } catch (err) {
-                  log.error('XMPP SEND ERROR:', err);
+                  log.error('[MessageStore] Failed to save outbound:', err);
                 }
               },
             });

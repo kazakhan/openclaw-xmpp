@@ -5,6 +5,453 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.15] - 2026-06-22
+
+**Fix: every bot drawing after the first uses duplicate RID `a.10`, causing PSI+ to
+silently reject the entire stanza.**
+
+### Root cause
+
+`buildSxePathEdits()` always assigned RIDs starting at `prefix + ".10"` (e.g.
+`a.10`, `a.10.1`, …). Every call to the function produced the same RID sequence
+regardless of previous calls. PSI+'s `SxeRecord::applySxeNewEdit()`
+(`sxerecord.cpp:63-68`) detects that a node with that RID already exists:
+
+```cpp
+if (!(edits_.size() == 0 && node_.isNull())) {
+    qDebug("Someone's not behaving! Tried to apply a SxeNewEdit to an existing node.");
+    emit nodeRemovalRequired(node_);
+    return false;
+}
+```
+
+The edit is silently dropped with `return false;`. Only the very first drawing
+ever sent to a session used a fresh RID (`a.10` → accepted); every subsequent
+drawing (auto-draw, house+star, diamond, etc.) collided with `a.10` and was
+ignored by PSI+.
+
+This explains why:
+- **The agent's dot worked** — it was the first drawing, RID `a.10` was new
+- **Everything else failed** — auto-draw, house+star, diamond all reused `a.10`
+
+### Fix
+
+Added a `ridOffset` counter to `WhiteboardSession` (`whiteboard-session.ts:17`).
+Each call to `buildSxePathEdits()` passes the current `ridOffset` and then
+increments it by `paths.length`. The offset shifts the numeric part of every
+RID so each batch is unique:
+
+- Batch 1 (offset 0): `a.10`, `a.20`, …
+- Batch 2 (offset 1): `a.20`, `a.30`, … *(still collides!)*
+
+Wait — even with offset 1, `a.20` could collide if batch 1 had 2 paths. The
+correct approach: **increment by `paths.length`** after each call, and compute
+`baseRid = \`${prefix}.${(ridOffset + i + 1) * 10}\``. This guarantees
+non-overlapping ranges:
+
+- Call 1, 1 path → offset 0 → `a.10` → offset becomes 1
+- Call 2, 1 path → offset 1 → `a.20` → offset becomes 2
+- Call 3, 2 paths → offset 2 → `a.30`, `a.40` → offset becomes 4
+
+### Files changed
+- `src/whiteboard-session.ts` — added `ridOffset: number` to interface,
+  initialized to `0` in `createSession()`
+- `src/whiteboard.ts` — added `ridOffset: number = 0` param to
+  `buildSxePathEdits()`; changed baseRid to `(ridOffset + i + 1) * 10`
+- `src/startXMPP.ts` — pass `currentSession.ridOffset` in auto-draw call,
+  increment after
+- `src/gateway.ts` — pass `session.ridOffset` in deliver callback, increment
+  after
+- `src/outbound.ts` — pass `session.ridOffset` in sendText, increment after
+
+## [2.9.14] - 2026-06-22
+
+**Diagnostic: log full XML of outgoing SXE stanzas at info level for side-by-side
+comparison of working (auto-draw) vs non-working (agent) paths.**
+
+### What changed
+
+Added `log.info(...)` with prefix `SXE_AUTO_XML`, `SXE_DELIVER_XML`, and
+`SXE_SENDTEXT_XML` immediately before each `safeSend`/`safeXmppSend` call that
+transmits SXE whiteboard data to PSI+. Each log line includes the full XML of
+the `<message>` stanza (truncated to 3000 chars).
+
+The three send paths are:
+
+| Prefix | File | Trigger |
+|---|---|---|
+| `SXE_AUTO_XML` | `startXMPP.ts:1238` | Auto-draw fires on first user whiteboard input |
+| `SXE_DELIVER_XML` | `gateway.ts:536` | Agent responds via the `deliver` callback |
+| `SXE_SENDTEXT_XML` | `outbound.ts:89` | Agent responds via `sendText()` |
+
+### How to use
+
+Deploy, then have the user:
+1. Draw a dot on PSI+ → triggers auto-draw → `SXE_AUTO_XML` appears in logs
+2. Ask the agent to draw a house → `SXE_DELIVER_XML` or `SXE_SENDTEXT_XML` appears
+
+Compare the two XML outputs. Any structural difference (missing attribute,
+different namespace, wrong JID, etc.) will reveal why one renders and the other
+doesn't.
+
+### Files changed
+- `src/startXMPP.ts` — added `SXE_AUTO_XML` log before auto-draw send
+- `src/gateway.ts` — added `SXE_DELIVER_XML` log before deliver-callback send
+- `src/outbound.ts` — added `SXE_SENDTEXT_XML` log before sendText send
+
+## [2.9.13] - 2026-06-22
+
+**Fix: PSI+ silently drops bot's SXE messages because the `<sxe>` element lacks a
+required `id` attribute.**
+
+### Root cause
+
+PSI+'s SXE session code (`sxesession.cpp:87-89`) runs an early return when an incoming
+`<sxe>` element has no `id` attribute:
+
+```cpp
+if (id.isEmpty() && !importing_) {
+    qDebug("Trying to process an SXE element without an associated id!");
+    return;
+}
+```
+
+The `id` is read from `message.sxe().attribute("id")` at `sxemanager.cpp:81`. PSI+ always
+sets `id` on its own outgoing `<sxe>` elements (`sxemanager.cpp:669-673`), but our bot
+never did. As a result, every SXE drawing stanza the bot sent was silently discarded by
+PSI+ before any DOM processing could occur.
+
+The `usedSxeIds_` dedup check (`sxesession.cpp:99`) never even fired because the empty-ID
+guard at line 87 short-circuits first.
+
+### Fix
+
+In `sxeEditsToXml()` (whiteboard.ts line 642 and 652), added a unique `id` attribute to
+every outgoing `<sxe>` element. The ID is generated by a new `generateSxeId()` helper
+that produces strings like `bot-k4c9n2-a3f8g` using `Date.now` and `Math.random` in
+base-36 encoding — guaranteed to be unique per stanza and never collide with PSI+'s UUID
+format (`550e8400-...`).
+
+### Verification
+
+Every SXE stanza the bot sends now includes `<sxe id="bot-..." ...>`. PSI+ will see a
+non-empty `id`, skip the guard at line 87, and proceed to process the element contents.
+
+### Files changed
+- `src/whiteboard.ts` — `sxeEditsToXml()`: added `id` attribute to both `<sxe>` creation
+  paths (new-children stanzas and `<set>` stanzas); added `generateSxeId()` helper.
+
+## [2.9.12] - 2026-06-22
+
+**Fix: PSI+ silently ignores bot's SXE `<new>` elements because they lack the required
+`ns` (namespace) attribute on both element and attr creation.**
+
+### Root cause
+
+In PSI+'s `SxeNewEdit` parser (`sxenewedit.cpp`), the `ns` attribute is read from every
+incoming `<new>` element. When PSI+ processes `<new type="element" name="path">`, it
+calls `doc.createElementNS(ns, "path")`. Without `ns="http://www.w3.org/2000/svg"`,
+the `<path>` element is created in the **null namespace** — PSI+ treats it as a
+non-SVG XML node and never renders it on the canvas. The bot's log showed
+`GC_WB: SXE whiteboard SENT` but PSI+ silently discarded the element.
+
+A second issue: attribute `<new>` elements also lacked `ns=""`, though SVG attributes
+(`d`, `stroke`, etc.) are unqualified and PSI+ would create them correctly even without
+it. Still, the explicit empty `ns=""` matches PSI+'s own output.
+
+### Fix
+
+In `sxeEditsToXml()` (whiteboard.ts lines 621–633), added the `ns` attribute:
+
+- **`<new type="element">`** → `ns="http://www.w3.org/2000/svg"`
+- **`<new type="attr">`** → `ns=""`
+
+This matches exactly what PSI+'s `SxeNewEdit::xml()` outputs for its own path-creation
+stanzas, and is what `createElementNS()` requires to build a proper SVG DOM node.
+
+### Files changed
+- `src/whiteboard.ts` — `sxeEditsToXml()`: added `ns` attribute to element and attr
+  `<new>` stanzas
+
+## [2.9.11] - 2026-06-22
+
+**Diagnostic: add targeted logging to whiteboard delivery paths in deliver callback
+and sendText to determine why SXE/SWB messages are not rendering on PSI+.**
+
+### What changed
+
+Added `log.debug` and `log.info` calls at every decision point in the whiteboard
+send path:
+
+- **`src/gateway.ts` deliver callback:**
+  - Logs `hasDrawing`, `svgCommands` count, and whether the session exists
+  - If session exists, logs protocol, sessionId, sxeNodes count, svgParentRid
+  - Logs protocol branch taken (SXE vs SWB)
+  - Logs SVG parent RID and RID prefix at `buildSxePathEdits` time
+  - Logs SXE stanza count and session ID before sending
+  - Logs each stanza's first child RID before `safeSend()`
+  - Logs success (`GC_WB: SXE whiteboard SENT`) or full error with stack trace
+  - Logs emergency fallback if triggered
+
+- **`src/outbound.ts` `sendText()`:**
+  - Same diagnostic points with `ST_WB:` prefix
+  - Logs session state, protocol, stanza count, send success/failure
+
+### Purpose
+
+Readers can search `GC_WB:` or `ST_WB:` in the plugin logs to determine:
+1. Is `parseSvgPathCommands` finding the `[WHITEBOARD_DRAW]` tags? (`hasDrawing`)
+2. Does the whiteboard session still exist when the deliver callback runs?
+3. What protocol and session ID does the session have?
+4. Is the code taking the SXE branch or the SWB fallback?
+5. Does `safeSend()` succeed or throw? What error message/stack trace?
+6. Is the emergency fallback ever triggered?
+
+Once the diagnostics reveal the failure point, a targeted fix can be applied.
+
+## [2.9.10] - 2026-06-22
+
+**Fix: when agent response contains `[WHITEBOARD_DRAW]` tags, neither text nor drawing
+reached PSI+ because the whiteboard code path swallowed errors and skipped the normal text
+fallback.**
+
+### Root cause
+
+The deliver callback (gateway.ts) and `sendText()` (outbound.ts) used a `sentWhiteboard`
+flag that suppressed the normal text fallback (`if (!sentWhiteboard)`). Inside that code
+path:
+
+1. The text-only portion was sent conditionally (only if `textOnly.length > 2`). If the agent
+   drew without commentary (e.g. just `[WHITEBOARD_DRAW]M100,200[/WHITEBOARD_DRAW]`), the
+   text-only portion was `""` and no text was sent at all.
+2. The SXE/SWB send used raw `xmpp.xmpp.send()` instead of `safeSend()` (the timeout-safe
+   wrapper used everywhere else in the codebase). If the send threw, the entire `try` block
+   exited to a `catch` that logged `'XMPP SEND ERROR:'` but produced no output on PSI+.
+3. Since `sentWhiteboard = true`, the `if (!sentWhiteboard)` fallback that would have sent
+   the cleaned full text was skipped entirely.
+
+### Fix
+
+Split the text send and the whiteboard send into independent paths:
+
+**gateway.ts deliver callback:**
+- Removed `sentWhiteboard` flag and the encompassing outer `try`/`catch`
+- **Step 1 (always runs):** strip `[WHITEBOARD_DRAW]` tags and send the human-readable
+  text portion. No length gate — any non-empty text is sent.
+- **Step 2 (isolated):** if the text contains `[WHITEBOARD_DRAW]` commands, attempt SXE/SWB
+  send inside its own `try`/`catch`. Uses `safeSend()` (with timeout) instead of raw
+  `xmpp.xmpp.send()`.
+- **Emergency fallback:** if Step 2 fails and no readable text was sent in Step 1 (empty
+  `displayText`), send the raw response text as a normal message.
+- **Step 3 (debug):** only the `GC_SEND` debug log for non-drawing messages.
+
+**outbound.ts `sendText()`:**
+- Same split: text-only portion sent unconditionally before whiteboard attempt
+- Wrapped SXE/SWB in isolated `try`/`catch` with `safeSend()`
+- Removed early returns (`return { ok: true, wasWhiteboard: true }`) so normal text
+  path runs after whiteboard attempt
+- Emergency fallback for empty-text drawing responses
+
+### Files changed
+- `src/gateway.ts` — import `safeSend`, restructured deliver callback (lines 466–560)
+- `src/outbound.ts` — import `safeSend`, restructured `sendText()`
+
+## [2.9.9] - 2026-06-22
+
+**Fix: outbound SXE paths use RID prefix `a` which collides with PSI+'s own paths — PSI+
+silently ignores `<new>` elements with RIDs that already exist in the session.**
+
+### Root cause
+
+`buildSxePathEdits()` always uses the prefix `a` for generated path RIDs (`a.10`, `a.10.1`,
+etc.). PSI+ also uses `a` as its RID prefix when rendering the user's own drawings. When
+the bot sends `<new rid="a.10" type="element" ...>` and PSI+ already has a node with RID
+`a.10` in its SXE document tree, PSI+ silently ignores the `<new>` — the drawing never
+renders on the canvas.
+
+This was masked by prior bugs (SWB→SXE protocol upgrade, hardcoded SVG RID `'0.1'`) but is
+the actual reason the auto-draw circle and agent drawings still don't appear even after
+v2.9.5–v2.9.8.
+
+### Fix
+
+Added `getAvailableRidPrefix(sxeNodes)` helper that scans all existing RID keys in the
+session for their first letter prefix (`a`, `b`, …) and returns the first unused letter.
+All callers now pass a unique prefix instead of `undefined` (which defaulted to `a`).
+
+- `src/whiteboard.ts`: added `getAvailableRidPrefix()` helper.
+- `src/outbound.ts`: passes `getAvailableRidPrefix(session.sxeNodes)` as prefix.
+- `src/gateway.ts`: same.
+- `src/startXMPP.ts`: both SXE and SWB auto-draw sections pass
+  `getAvailableRidPrefix(currentSession.sxeNodes)`.
+
+### Backups
+
+- `_backups/2.9.9_20260622_150938/whiteboard.ts`
+- `_backups/2.9.9_20260622_150938/outbound.ts`
+- `_backups/2.9.9_20260622_150938/gateway.ts`
+- `_backups/2.9.9_20260622_150938/startXMPP.ts`
+- `_backups/2.9.9_20260622_150938/package.json`
+- `_backups/2.9.9_20260622_150938/CHANGELOG.md`
+
+### Rollback
+
+```bash
+cp _backups/2.9.9_20260622_150938/whiteboard.ts src/whiteboard.ts
+cp _backups/2.9.9_20260622_150938/outbound.ts src/outbound.ts
+cp _backups/2.9.9_20260622_150938/gateway.ts src/gateway.ts
+cp _backups/2.9.9_20260622_150938/startXMPP.ts src/startXMPP.ts
+cp _backups/2.9.9_20260622_150938/package.json package.json
+cp _backups/2.9.9_20260622_150938/CHANGELOG.md CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.9.8] - 2026-06-22
+
+**Fix: SXE whiteboard session protocol never upgraded from SWB — agent's drawing was sent as
+SWB (ignored by PSI+) instead of SXE. SVG parent RID now tracked directly on session.**
+
+### Root cause
+
+When PSI+ opens a whiteboard, it sends an SWB invitation (`<x xmlns="http://jabber.org/protocol/swb">`).
+The SWB handler creates a session with `protocol: 'swb'` and no `sessionId`. When the user draws,
+PSI+ sends SXE stanzas. The SXE handler (`startXMPP.ts:1071`) found the existing session but
+did **not** upgrade its protocol or set `sessionId` — the session stayed `'swb'` with `sessionId:
+undefined`.
+
+When the agent replied with `[WHITEBOARD_DRAW]`, both `outbound.ts:65` and `gateway.ts:504`
+checked `session.protocol === 'sxe' && session.sessionId` — which was **false** — so the drawing
+was sent as an SWB message instead of SXE. PSI+, running in SXE whiteboard mode, ignored the
+SWB drawing data. The drawing was "sent" but never appeared on the canvas.
+
+This explains why all prior fixes (v2.9.5 wrong send method, v2.9.6 hardcoded SVG RID, v2.9.7
+create-vs-set two-step) appeared to do nothing — the SXE send path was **never entered**.
+
+### Changes
+
+- `src/startXMPP.ts` — SXE stanza handler now upgrades an existing session from `'swb'` to
+  `'sxe'` with the correct `sessionId`, rather than only creating a new session if none exists.
+- `src/startXMPP.ts` — when processing incoming SXE path elements, the SVG parent RID is now
+  captured directly into `session.svgParentRid` (extracted from the path `<new>` element's
+  `parent` attribute).
+- `src/whiteboard-session.ts` — added `svgParentRid?: string` field to `WhiteboardSession`
+  interface for direct access to the SVG container element's RID.
+- `src/outbound.ts` — replaced `sxeNodes` search for `name === 'svg'` with direct
+  `session.svgParentRid || '0.1'` lookup.
+- `src/gateway.ts` — same direct `svgParentRid` lookup as outbound.ts.
+- `src/startXMPP.ts` — both SXE and SWB auto-draw sections now use `currentSession.svgParentRid
+  || '0.1'` instead of searching `sxeNodes`.
+
+### Backups
+
+- `_backups/2.9.8_20260622_145834/startXMPP.ts`
+- `_backups/2.9.8_20260622_145834/whiteboard-session.ts`
+- `_backups/2.9.8_20260622_145834/outbound.ts`
+- `_backups/2.9.8_20260622_145834/gateway.ts`
+- `_backups/2.9.8_20260622_145834/package.json`
+- `_backups/2.9.8_20260622_145834/CHANGELOG.md`
+
+### Rollback
+
+```bash
+cp _backups/2.9.8_20260622_145834/startXMPP.ts src/startXMPP.ts
+cp _backups/2.9.8_20260622_145834/whiteboard-session.ts src/whiteboard-session.ts
+cp _backups/2.9.8_20260622_145834/outbound.ts src/outbound.ts
+cp _backups/2.9.8_20260622_145834/gateway.ts src/gateway.ts
+cp _backups/2.9.8_20260622_145834/package.json package.json
+cp _backups/2.9.8_20260622_145834/CHANGELOG.md CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.9.7] - 2026-06-22
+
+**Fix: SXE path `d` attribute sent as empty then `<set>`-updated — PSI+ renders the empty
+path and does NOT re-render when the `<set>` arrives, leaving whiteboard drawings invisible.**
+
+### Root cause
+
+`buildSxePathEdits()` always created a `<new>` element with `d=""` (empty path data), then
+sent one or more `<set>` elements to fill in the actual SVG path data. PSI+ processes `<new>`
+as "create" and `<set>` as "modify". When the `<path>` is created with `d=""`, PSI+ renders
+an invisible (zero-width) path. The subsequent `<set>` to populate `d` is processed but PSI+
+does not re-render the already-created path element, so the drawing never appears on the
+whiteboard canvas.
+
+### Fix
+
+For paths that fit in a single SXE chunk (≤ 1024 characters — virtually all AI‑generated
+drawings), the `d` value is now set directly in the `<new>` element's `chdata` and the
+`<set>` loop is skipped entirely. PSI+ creates the `<path>` with the correct data in one
+step and renders it immediately.
+
+For longer paths (> 1024 chars), the previous two‑step (empty `<new>` + chunked `<set>`)
+behavior is preserved.
+
+| Before (broken) | After (fixed) |
+|---|---|
+| `<new rid="a.10.5" type="attr" parent="a.10" name="d" chdata=""/><set rid="a.10.5" chdata="M160,340..." version="1"/>` | `<new rid="a.10.5" type="attr" parent="a.10" name="d" chdata="M160,340..." primary-weight="4"/>` |
+
+### Changed
+
+- `src/whiteboard.ts` — `buildSxePathEdits()`: for short paths, set `d` directly in the
+  `<new>` attr element and skip the chunked `<set>` loop; for long paths, keep the existing
+  two-step behavior.
+
+### Backups
+
+- `_backups/2.9.7_20260622_143821/whiteboard.ts`
+- `_backups/2.9.7_20260622_143821/package.json`
+- `_backups/2.9.7_20260622_143821/CHANGELOG.md`
+
+### Rollback
+
+```bash
+cp "_backups/2.9.7_20260622_143821/whiteboard.ts" src/whiteboard.ts
+cp "_backups/2.9.7_20260622_143821/package.json" package.json
+cp "_backups/2.9.7_20260622_143821/CHANGELOG.md" CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new typecheck errors.
+
+## [2.9.6] - 2026-06-22
+
+**Fix: whiteboard SVG parent RID was hardcoded to `0.1`, causing PSI+ to reject outbound paths because they were not children of the correct SVG container element.**
+
+### Changed
+
+- `src/whiteboard.ts`: added `svgParentRid` parameter to `buildSxePathEdits()` (default `'0.1'`)
+  so callers can supply the actual SVG element RID from the session state.
+- `src/startXMPP.ts`: document-begin handler now populates `session.sxeNodes` and
+  `session.sxeAttrs` from the embedded elements, so the SVG container RID is tracked.
+  Both auto-draw sections look up the SVG RID dynamically.
+- `src/outbound.ts`: looks up the SVG element RID from `session.sxeNodes` before calling
+  `buildSxePathEdits`. Falls back to `'0.1'` if no SVG node is tracked.
+- `src/gateway.ts`: same dynamic SVG RID lookup as outbound.ts.
+
+## [2.9.5] - 2026-06-22
+
+**Fix: whiteboard SXE/SWB outbound stanzas sent through wrong client method, causing PSI+ to never receive drawing data.**
+
+### Changed
+
+- `src/outbound.ts`: changed `xmpp.send(wbMessage)` → `xmpp.xmpp.send(wbMessage)` for
+  SXE and SWB pre-built stanzas. The wrapper's `send(to, body)` was being called with a
+  single stanza argument, which treated the XML element as the `to` attribute and sent
+  an empty `<body/>` instead of the actual drawing data. Using the raw client's `send()`
+  transmits the stanza as-is.
+- `src/gateway.ts`: same raw-send fix applied to both SXE and SWB outbound paths.
+  Also added a `sentWhiteboard` flag so that after whiteboard stanzas are transmitted,
+  the code skips the fallback text send that was duplicating `[WHITEBOARD_DRAW]` tags
+  as visible chat text.
+
 ## [2.9.4] - 2026-06-22
 
 **Fix: populate fullJidMap from presence stanzas so bare-JID /sendfile works immediately after restart.**

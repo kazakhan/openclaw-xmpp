@@ -6,7 +6,7 @@ import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
 import { VCard } from "./vcard.js";
 import { parseWhiteboardMessage } from "./whiteboard.js";
-import { parseSxeMessage, buildSxeXml, convertSxeToWhiteboardData, reconstructPathsFromState, buildSxePathEdits, sxeEditsToXml } from "./whiteboard.js";
+import { parseSxeMessage, buildSxeXml, convertSxeToWhiteboardData, reconstructPathsFromState, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
 import { WhiteboardSessionManager } from "./whiteboard-session.js";
 import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_SIZE } from "./shared/index.js";
 import { Config, CapsInfo } from "./config.js";
@@ -1072,6 +1072,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               if (!session) {
                 session = whiteboardSessionManager.createSession(fromBareJid, 'sxe', sxeData.sessionId);
                 xmppLog.info("SXE whiteboard session created", { jid: fromBareJid, session: sxeData.sessionId });
+              } else {
+                session.protocol = 'sxe';
+                session.sessionId = sxeData.sessionId;
+                xmppLog.info("SXE whiteboard session upgraded", { jid: fromBareJid, session: sxeData.sessionId });
               }
               
               if (sxeData.type === 'invitation') {
@@ -1103,6 +1107,19 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 });
 
                 if (sxeData.elements && sxeData.elements.length > 0) {
+                  // Populate sxeNodes/sxeAttrs from document-begin embedded elements
+                  // so the SVG parent RID is known for outbound path creation
+                  for (const el of sxeData.elements) {
+                    if (el.type === 'new' || el.type === 'element') {
+                      if (el.name && el.parent !== undefined && el.rid) {
+                        session.sxeNodes[el.rid] = { name: el.name, parent: el.parent };
+                      }
+                    } else if (el.type === 'attr') {
+                      if (el.rid) {
+                        session.sxeAttrs[el.rid] = { parent: el.parent || '', name: el.name || '', chdata: el.chdata || '' };
+                      }
+                    }
+                  }
                   const convertedData = convertSxeToWhiteboardData(sxeData);
                   whiteboardSessionManager.updateSession(fromBareJid, {
                     paths: convertedData.paths,
@@ -1133,6 +1150,9 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                     if (el.type === 'element' || el.type === 'new') {
                       if (el.name && el.parent !== undefined && el.rid) {
                         session.sxeNodes[el.rid] = { name: el.name, parent: el.parent };
+                        if (el.name === 'path' && el.parent) {
+                          session.svgParentRid = el.parent;
+                        }
                       }
                     } else if (el.type === 'attr') {
                       if (el.rid) {
@@ -1207,13 +1227,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   if (reconstructedPaths.length > 0 && !currentSession.autoDrawSent) {
                     try {
                       const autoPaths = [{ d: 'M200,200m-20,0a20,20 0 1,0 40,0a20,20 0 1,0 -40,0', stroke: '#ff0000', strokeWidth: 2, id: `auto${Date.now()}` }];
-                      const autoEdits = buildSxePathEdits(autoPaths);
+                      const svgParentRid = currentSession.svgParentRid || '0.1';
+                      const autoEdits = buildSxePathEdits(autoPaths, getAvailableRidPrefix(currentSession.sxeNodes), svgParentRid, currentSession.ridOffset);
+                      currentSession.ridOffset += autoPaths.length;
                       const autoStanzas = sxeEditsToXml(currentSession.sessionId!, autoEdits);
                       for (const sxeEl of autoStanzas) {
                         const autoMsg = xml('message', { type: messageType, to: from },
                           xml('body', {}, ''),
                           sxeEl
                         );
+                        xmppLog.info(`SXE_AUTO_XML: ${autoMsg.toString().substring(0, 3000)}`);
                         await safeXmppSend(xmpp,autoMsg);
                       }
                       currentSession.autoDrawSent = true;
@@ -1352,7 +1375,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
               try {
                 const autoPaths = [{ d: 'M200,200m-20,0a20,20 0 1,0 40,0a20,20 0 1,0 -40,0', stroke: '#ff0000', strokeWidth: 2, id: `auto${Date.now()}` }];
                 if (currentSession.protocol === 'sxe' && currentSession.sessionId) {
-                  const autoEdits = buildSxePathEdits(autoPaths);
+                  const svgParentRid = currentSession.svgParentRid || '0.1';
+                  const autoEdits = buildSxePathEdits(autoPaths, getAvailableRidPrefix(currentSession.sxeNodes), svgParentRid);
                   const autoStanzas = sxeEditsToXml(currentSession.sessionId, autoEdits);
                   for (const sxeEl of autoStanzas) {
                     const autoMsg = xml('message', { type: messageType, to: from },

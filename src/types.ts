@@ -220,6 +220,7 @@ export interface StanzaElement {
 }
 
 export interface XmppClient {
+  xmpp: any;
   send(to: string, body: string): Promise<void>;
   sendGroupchat(to: string, body: string): Promise<void>;
   send(stanza: StanzaElement | any): Promise<any>;

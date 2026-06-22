@@ -551,45 +551,70 @@ export interface SxePathEdit {
 
 const SXE_CHUNK_SIZE = 1024;
 
-export function buildSxePathEdits(paths: Array<{ d: string; stroke?: string; strokeWidth?: number; id?: string }>, prefix: string = 'a'): SxePathEdit[] {
+export function getAvailableRidPrefix(sxeNodes: Record<string, { name: string; parent: string }>): string {
+  const used = new Set<string>();
+  for (const key of Object.keys(sxeNodes)) {
+    const match = key.match(/^([a-z])/);
+    if (match) used.add(match[1]);
+  }
+  for (let code = 97; code <= 122; code++) {
+    const letter = String.fromCharCode(code);
+    if (!used.has(letter)) return letter;
+  }
+  return `p${Date.now().toString(36)}`;
+}
+
+export function buildSxePathEdits(
+  paths: Array<{ d: string; stroke?: string; strokeWidth?: number; id?: string }>,
+  prefix: string = 'a',
+  svgParentRid: string = '0.1',
+  ridOffset: number = 0
+): SxePathEdit[] {
   const edits: SxePathEdit[] = [];
   
   for (let i = 0; i < paths.length; i++) {
     const p = paths[i];
-    const baseRid = `${prefix}.${(i + 1) * 10}`;
+    const baseRid = `${prefix}.${(ridOffset + i + 1) * 10}`;
     const pathId = p.id || `e${Date.now()}${Math.floor(Math.random() * 10000)}`;
     
-    edits.push({ rid: baseRid, type: 'element', parent: '0.1', name: 'path', primaryWeight: (i + 1) * 10 });
+    edits.push({ rid: baseRid, type: 'element', parent: svgParentRid, name: 'path', primaryWeight: (i + 1) * 10 });
     edits.push({ rid: `${baseRid}.1`, type: 'attr', parent: baseRid, name: 'stroke', chdata: p.stroke || '#000000', primaryWeight: 0 });
     edits.push({ rid: `${baseRid}.2`, type: 'attr', parent: baseRid, name: 'vector-effect', chdata: 'none', primaryWeight: 1 });
     edits.push({ rid: `${baseRid}.3`, type: 'attr', parent: baseRid, name: 'fill-rule', chdata: 'nonzero', primaryWeight: 2 });
     edits.push({ rid: `${baseRid}.4`, type: 'attr', parent: baseRid, name: 'fill-opacity', chdata: '0', primaryWeight: 3 });
-    edits.push({ rid: `${baseRid}.5`, type: 'attr', parent: baseRid, name: 'd', chdata: '', primaryWeight: 4 });
+    const dData = p.d || '';
+    if (dData.length <= SXE_CHUNK_SIZE) {
+      edits.push({ rid: `${baseRid}.5`, type: 'attr', parent: baseRid, name: 'd', chdata: dData, primaryWeight: 4 });
+    } else {
+      edits.push({ rid: `${baseRid}.5`, type: 'attr', parent: baseRid, name: 'd', chdata: '', primaryWeight: 4 });
+      const dRid = `${baseRid}.5`;
+      let offset = 0;
+      let version = 0;
+      while (offset < dData.length) {
+        const chunk = dData.substring(offset, offset + SXE_CHUNK_SIZE);
+        version++;
+        edits.push({
+          rid: dRid,
+          type: 'set',
+          chdata: chunk,
+          replacefrom: offset,
+          replacen: offset === 0 ? 0 : 0,
+          version
+        });
+        offset += SXE_CHUNK_SIZE;
+      }
+    }
     edits.push({ rid: `${baseRid}.6`, type: 'attr', parent: baseRid, name: 'fill', chdata: 'none', primaryWeight: 5 });
     edits.push({ rid: `${baseRid}.7`, type: 'attr', parent: baseRid, name: 'id', chdata: pathId, primaryWeight: 6 });
     edits.push({ rid: `${baseRid}.8`, type: 'attr', parent: baseRid, name: 'stroke-linecap', chdata: 'square', primaryWeight: 7 });
     edits.push({ rid: `${baseRid}.9`, type: 'attr', parent: baseRid, name: 'stroke-width', chdata: String(p.strokeWidth || 1), primaryWeight: 8 });
-    
-    const dRid = `${baseRid}.5`;
-    const dData = p.d || '';
-    let offset = 0;
-    let version = 0;
-    while (offset < dData.length) {
-      const chunk = dData.substring(offset, offset + SXE_CHUNK_SIZE);
-      version++;
-      edits.push({
-        rid: dRid,
-        type: 'set',
-        chdata: chunk,
-        replacefrom: offset,
-        replacen: offset === 0 ? 0 : 0,
-        version
-      });
-      offset += SXE_CHUNK_SIZE;
-    }
   }
   
   return edits;
+}
+
+function generateSxeId(): string {
+  return `bot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function sxeEditsToXml(sessionId: string, edits: SxePathEdit[]): any {
@@ -601,12 +626,14 @@ export function sxeEditsToXml(sessionId: string, edits: SxePathEdit[]): any {
     if (e.type === 'element') {
       attrs.type = 'element';
       attrs.parent = e.parent;
+      attrs.ns = 'http://www.w3.org/2000/svg';
       if (e.name) attrs.name = e.name;
       if (e.primaryWeight != null) attrs['primary-weight'] = String(e.primaryWeight);
       return xml('new', attrs);
     } else {
       attrs.type = 'attr';
       attrs.parent = e.parent;
+      attrs.ns = '';
       if (e.name) attrs.name = e.name;
       if (e.chdata != null) attrs.chdata = e.chdata;
       if (e.primaryWeight != null) attrs['primary-weight'] = String(e.primaryWeight);
@@ -617,7 +644,7 @@ export function sxeEditsToXml(sessionId: string, edits: SxePathEdit[]): any {
   const stanzas: any[] = [];
   
   if (newChildren.length > 0) {
-    stanzas.push(xml('sxe', { xmlns: 'http://jabber.org/protocol/sxe', session: sessionId }, newChildren));
+    stanzas.push(xml('sxe', { xmlns: 'http://jabber.org/protocol/sxe', session: sessionId, id: generateSxeId() }, newChildren));
   }
   
   for (const setEdit of setEdits) {
@@ -627,7 +654,7 @@ export function sxeEditsToXml(sessionId: string, edits: SxePathEdit[]): any {
     if (setEdit.version != null) setAttrs.version = String(setEdit.version);
     if (setEdit.chdata != null) setAttrs.chdata = setEdit.chdata;
     
-    stanzas.push(xml('sxe', { xmlns: 'http://jabber.org/protocol/sxe', session: sessionId }, xml('set', setAttrs)));
+    stanzas.push(xml('sxe', { xmlns: 'http://jabber.org/protocol/sxe', session: sessionId, id: generateSxeId() }, xml('set', setAttrs)));
   }
   
   return stanzas;

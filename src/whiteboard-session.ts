@@ -14,6 +14,8 @@ export interface WhiteboardSession {
   sessionId?: string;
   sxeNodes: Record<string, { name: string; parent: string }>;
   sxeAttrs: Record<string, { parent: string; name: string; chdata: string }>;
+  svgParentRid?: string;
+  ridOffset: number;
 }
 
 export class WhiteboardSessionManager {
@@ -48,7 +50,8 @@ export class WhiteboardSessionManager {
       protocol,
       sessionId,
       sxeNodes: {},
-      sxeAttrs: {}
+      sxeAttrs: {},
+      ridOffset: 0
     };
     this.sessions.set(jid, session);
     return session;
