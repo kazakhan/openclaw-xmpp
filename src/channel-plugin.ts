@@ -51,6 +51,13 @@ export const xmppChannelPlugin = {
       allowFrom: { type: "array", items: { type: "string" } },
       autoJoinRooms: { type: "array", items: { type: "string" } },
       rooms: { type: "array", items: { type: "string" } },
+      autoUpdate: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          intervalHours: { type: "number" },
+        },
+      },
       vcard: {
         type: "object",
         properties: {

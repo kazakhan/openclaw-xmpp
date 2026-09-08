@@ -263,6 +263,13 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   // firewall idle timers from silently killing the TCP socket.
   let whitespaceKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
+  // SECURITY (2.12.0): auto-update timer handle.  Declared before the
+  // offline/online handlers so both can clear/set it.  Periodically
+  // checks the GitHub repo for a newer release and notifies the admin
+  // (notify-only; the operator decides whether to run `openclaw xmpp
+  // update`).  Disabled by config: cfg.autoUpdate.enabled === false.
+  let autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+
   // SECURITY (2.1.3, restore-old-design): NO `xmpp.on("disconnect", ...)`
   // handler that triggers reconnection.  The OLD design from
   // D:\Downloads\xmppOLD deliberately did NOT have one — the
@@ -285,6 +292,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     if (whitespaceKeepaliveTimer) {
       clearInterval(whitespaceKeepaliveTimer);
       whitespaceKeepaliveTimer = null;
+    }
+    if (autoUpdateTimer) {
+      clearInterval(autoUpdateTimer);
+      autoUpdateTimer = null;
     }
     whiteboardSessionManager.stopCleanup();
     whiteboardSessionManager.destroy();
@@ -449,6 +460,55 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             log.info("re-joined MUC room after reconnect", { room, nick });
           } catch (err) {
             xmppLog.error("MUC re-join after reconnect failed", { room });
+          }
+        }
+      }
+
+      // SECURITY (2.12.0): periodic auto-update check.  notify-only: it
+      // does not auto-install.  On finding a newer release it messages
+      // the admin JID(s) with the `openclaw xmpp update` command.  The
+      // operator decides whether to actually run the update.  Disabled
+      // via cfg.autoUpdate.enabled = false; interval via
+      // cfg.autoUpdate.intervalHours (default 6).
+      {
+        const autoUpdate = cfg?.autoUpdate ?? {};
+        if (autoUpdate.enabled !== false) {
+          const hours = Number(autoUpdate.intervalHours || 6);
+          if (hours > 0) {
+            if (autoUpdateTimer) {
+              clearInterval(autoUpdateTimer);
+              autoUpdateTimer = null;
+            }
+            const runUpdateCheck = async (): Promise<void> => {
+              try {
+                const { checkForUpdate, notifyUpdateAvailable } = await import('./updater.js');
+                const info = await checkForUpdate();
+                if (info.updateAvailable) {
+                  const admins: string[] = [];
+                  if (cfg?.adminJid?.trim()) admins.push(cfg.adminJid.trim());
+                  try {
+                    const adminList = await contacts.listAdmins();
+                    for (const a of (adminList || [])) {
+                      const jid = typeof a === "string" ? a : a?.jid || (a as any)?.address;
+                      if (jid && !admins.includes(jid)) admins.push(jid);
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                  if (admins.length === 0 && cfg?.jid) {
+                    admins.push(String(cfg.jid).split("/")[0]);
+                  }
+                  if (admins.length > 0) {
+                    notifyUpdateAvailable(xmpp, admins, info);
+                    xmppLog.info(`auto-update: notified admins of v${info.latest} (current v${info.current})`);
+                  }
+                }
+              } catch (err) {
+                xmppLog.debug(`auto-update check failed: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            };
+            autoUpdateTimer = setInterval(runUpdateCheck, hours * 60 * 60 * 1000);
+            xmppLog.debug(`auto-update: armed (every ${hours}h)`);
           }
         }
       }

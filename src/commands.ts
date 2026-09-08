@@ -958,6 +958,60 @@ Note: Commands connect directly to XMPP server.`);
       }
     });
 
+  // Subcommand: update-check — compare current vs latest GitHub release
+  xmpp
+    .command("update-check")
+    .description("Check the GitHub repo for a newer release")
+    .option("--tag <tag>", "Override the current version (testing)")
+    .action(async (options: any) => {
+      const { checkForUpdate, getCurrentVersion } = await import('./updater.js');
+      const info = await checkForUpdate();
+      console.log(`Current version: v${info.current}`);
+      console.log(`Latest release:  v${info.latest}`);
+      if (info.error) {
+        console.error(`  (could not reach GitHub: ${info.error})`);
+      } else if (info.updateAvailable) {
+        console.log('  A newer version is available. Run: openclaw xmpp update');
+      } else {
+        console.log('  Already up to date.');
+      }
+    });
+
+  // Subcommand: update — download + install the latest release
+  xmpp
+    .command("update")
+    .description("Update the XMPP plugin to the latest GitHub release (preserves data/config)")
+    .option("--yes", "Skip confirmation")
+    .option("--dry-run", "Report what would change without installing")
+    .action(async (options: any) => {
+      const { performUpdate } = await import('./updater.js');
+      const yes = !!options?.yes;
+      const dryRun = !!options?.dryRun;
+      if (!yes && !dryRun && process.stdout.isTTY) {
+        // Confirm before installing (uses readline/promises — the confirmation
+        // is not a secret, unlike the password path which deliberately avoids
+        // readline because it echoes).
+        const { createInterface } = await import('node:readline/promises');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question('Install the latest release? [y/N]: ')).trim().toLowerCase();
+        rl.close();
+        if (!['y', 'yes'].includes(answer)) {
+          console.log('Aborted.');
+          process.exit(0);
+        }
+      }
+      const result = await performUpdate({ dryRun });
+      if (result.ok) {
+        console.log(result.message);
+        if (result.toVersion && !dryRun) {
+          console.log('Note: restart the gateway to apply the update (openclaw gateway restart).');
+        }
+      } else {
+        console.error(result.message);
+        process.exit(1);
+      }
+    });
+
 }
 export function registerCommands(api: any, dataPath: string) {
   console.log("Registering XMPP CLI commands via registerCommands (legacy)");

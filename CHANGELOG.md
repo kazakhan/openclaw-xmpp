@@ -5,6 +5,76 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-09-08
+
+**Feature: auto-update — periodic GitHub release check that notifies the admin
+to update (notify-only; the operator decides).**
+
+### What it does
+
+- **`openclaw xmpp update-check`** — prints the current version vs the latest
+  GitHub release (`kazakhan/openclaw-xmpp`).
+- **`openclaw xmpp update [--yes] [--dry-run]`** — downloads the latest release's
+  source tarball and installs it over the plugin directory, then runs
+  `npm install` and rebuilds `dist/`. Works for **both git-clone and copied**
+  installs (tarball-based). Refuses to update a **dirty git tree** and notifies.
+- **Periodic check in the gateway** (`src/startXMPP.ts`): after connecting, arms
+  an interval (default **every 6h**) that checks GitHub; when a newer release is
+  found it **messages the admin JID(s)** with the `openclaw xmpp update` command
+  and a release-notes snippet. The timer is cleared on `offline`. This is
+  **notify-only** — it never auto-installs.
+- **Config** `autoUpdate: { enabled: boolean; intervalHours: number }` added to
+  `src/types.ts`, `src/channel-plugin.ts`, `src/setup-plugin.ts`, and
+  `openclaw.plugin.json`. Defaults: **enabled** with `intervalHours: 6`.
+
+### Safety
+
+- **Snapshot before update** — the current plugin source is copied to
+  `_backups/<version>_<timestamp>/` (gitignored) for rollback; the snapshot is
+  restored automatically if the install/build fails.
+- **Refuses a dirty git tree** (uncommitted changes) with a clear message.
+- **Preserves** `data/`, `node_modules`, `dist`, `_backups`, `.opencode` (excluded
+  from the copy), and never touches `~/.openclaw/openclaw.json`.
+- After a successful update it tells the operator to restart the gateway
+  (`openclaw gateway restart`) — it does **not** auto-restart.
+
+### Files changed
+
+- `src/updater.ts` (new) — version detection, GitHub release lookup, semver
+  compare, tarball install, snapshot/restore, admin notification.
+- `src/commands.ts` — `update-check` and `update` subcommands.
+- `src/startXMPP.ts` — periodic `autoUpdateTimer` (arms on `online`, clears on
+  `offline`), notifies admins.
+- `src/types.ts`, `src/channel-plugin.ts`, `src/setup-plugin.ts`,
+  `openclaw.plugin.json` — `autoUpdate` config schema.
+- `tests/v2.12.0-updater.test.ts` (new).
+
+### Backups
+
+- `_backups/2.12.0_20260908_141147/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.12.0_20260908_141147"
+rm -f src/updater.ts tests/v2.12.0-updater.test.ts
+cp "$BK/commands.ts"         src/commands.ts
+cp "$BK/startXMPP.ts"        src/startXMPP.ts
+cp "$BK/types.ts"            src/types.ts
+cp "$BK/channel-plugin.ts"   src/channel-plugin.ts
+cp "$BK/setup-plugin.ts"     src/setup-plugin.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json"        package.json
+cp "$BK/CHANGELOG.md"        CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors in the edited files.
+- `node --test tests/*.test.ts` — the new v2.12.0 updater suite passes.
+
 ## [2.11.3] - 2026-09-04
 
 ### Fixed

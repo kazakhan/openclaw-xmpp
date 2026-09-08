@@ -48,6 +48,13 @@
                 "dmPolicy": { "type": "string", "enum": ["open", "allowlist"] },
                 "allowFrom": { "type": "array", "items": { "type": "string" } },
                 "autoJoinRooms": { "type": "array", "items": { "type": "string" } },
+                "autoUpdate": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "intervalHours": { "type": "number" }
+                  }
+                },
                 "rooms": {
                   "type": "array",
                   "items": { "type": "string" }

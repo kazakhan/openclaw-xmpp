@@ -13,6 +13,10 @@ export interface XmppConfig {
   enabled?: boolean;
   accountId?: string;
   session?: Record<string, unknown>;
+  autoUpdate?: {
+    enabled?: boolean;
+    intervalHours?: number;
+  };
 }
 
 export interface VCardConfig {

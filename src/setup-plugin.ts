@@ -24,6 +24,13 @@ export const xmppSetupPlugin = {
       jid: { type: "string" },
       password: { type: "string" },
       dataDir: { type: "string" },
+      autoUpdate: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          intervalHours: { type: "number" },
+        },
+      },
     },
     required: ["service", "domain", "jid", "password", "dataDir"],
   },
