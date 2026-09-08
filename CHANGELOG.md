@@ -5,6 +5,279 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.3] - 2026-09-04
+
+### Fixed
+
+- **Declared `contracts.tools` in `openclaw.plugin.json`.** OpenClaw 2026.8.2
+  requires plugins that register agent tools to declare them in the manifest's
+  `contracts.tools` array.  The XMPP plugin registers the `xmpp_setPresence`
+  tool but did not declare it, producing the non-fatal warning:
+  `plugin must declare contracts.tools before registering agent tools`.
+  Added:
+  ```json
+  "contracts": { "tools": ["xmpp_setPresence"] }
+  ```
+  This clears the warning at gateway startup.
+
+### Backups
+
+- `_backups/2.11.3_20260904_073132/` (openclaw.plugin.json, package.json, CHANGELOG.md)
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.11.3_20260904_073132"
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json"         package.json
+cp "$BK/CHANGELOG.md"         CHANGELOG.md
+```
+
+## [2.11.2] - 2026-09-04
+
+**Guard: make a missing `dist/` / `tsx` diagnose, not crash OpenClaw.**
+
+### Context
+
+OpenClaw launches a `.ts` extension with `node --import tsx <entry>` (it only
+does this when `dist/` is absent and it must run the TypeScript entry).
+`tsx` is only a **devDependency** of openclaw, so it is not guaranteed to be
+installed in the runtime tree.  If `dist/` is missing (e.g. an operator deletes
+it to run from source) and `tsx` is not installed, OpenClaw fails to start with
+the cryptic:
+
+```
+ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'
+```
+
+### Changes
+
+- **`src/onboarding.ts`**
+  - New `diagnosePluginState(pluginDir?, configPath?)` — returns a readable
+    report: whether `dist/` exists, whether `tsx` is resolvable, which entry
+    OpenClaw will load, and a list of problems + actionable fixes.
+  - New `ensureDistBuilt(pluginDir?)` — rebuilds `dist/` with `npx tsc` when it
+    is missing (throws on failure instead of the cryptic tsx error).
+  - `tsxResolvable()` helper — checks the plugin's `node_modules/tsx` and the
+    linked global openclaw SDK for tsx.
+- **`src/commands.ts`** — new `openclaw xmpp doctor` subcommand:
+  - Prints the diagnostics report.
+  - `--fix` rebuilds a missing `dist/` automatically and tells the operator to
+    restart the gateway.
+  - `--config <path>` overrides the config path (informational).
+- **`tests/v2.11.2-doctor.test.ts`** (new) — file-based assertions for the
+  guard helpers and the `doctor` subcommand.
+
+### Backups
+
+- `_backups/2.11.2_20260904_070207/` (current edited files)
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.11.2_20260904_070207"
+rm -f tests/v2.11.2-doctor.test.ts
+cp "$BK/commands.ts"      src/commands.ts
+cp "$BK/onboarding.ts"    src/onboarding.ts
+cp "$BK/package.json"     package.json
+cp "$BK/CHANGELOG.md"     CHANGELOG.md
+npx tsc    # rebuild dist/ from the rolled-back source
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors in the edited files.
+- `node --test tests/*.test.ts` — the new v2.11.2 suite passes.
+
+## [2.11.1] - 2026-09-03
+
+**Feature: interactive cross-platform onboarding install (`openclaw xmpp setup`).**
+
+### What it does
+
+A single Node.js wizard (runs identically on Linux and Windows — Node is
+required by the plugin) that onboards an operator to a working XMPP account:
+
+1. **Fills install gaps "if needed"** — clones the repo (if absent), runs
+   `npm install`, links the global openclaw SDK, and builds `dist/`, but only
+   when the artifact is missing (idempotent; no-ops on an already-installed
+   plugin).
+2. **Interactive prompts** — server (`xmpp://host:5222`), domain, JID
+   (`user@domain`), data directory (defaults to `<pluginDir>/data`), and the
+   optional nick / resource / admin JID.
+3. **Hidden password entry** — the password is read in raw mode and masked as
+   `*` so it is never echoed to the terminal (cross-platform).
+4. **Keep / Override / Cancel** — if `channels.xmpp.accounts.default` already
+   exists, the wizard asks whether to keep, override, or cancel.
+5. **Encrypts the password** — stored as `ENC:<iv+tag+ct>` with a per-install
+   `encryptionKey` + `encryptionSalt` (salt file in `dataDir`), using the same
+   path as `openclaw xmpp encrypt-password`.
+6. **Writes the config via direct JSON merge** into
+   `channels.xmpp.accounts.default` (preserving unrelated keys and other
+   accounts), sets `enabled: true`, and prints a summary + restart hint.
+
+### Changes
+
+- **`src/onboarding.ts`** (new) — `runXmppOnboarding()`, `mergeAccountConfig()`,
+  `readOpenclawConfig()`, `writeOpenclawConfig()`, `ensurePluginInstalled()`.
+  The pure config/merge/encryption logic is separated from the interactive I/O
+  so it is unit-testable.
+- **`src/commands.ts`** — new `openclaw xmpp setup` subcommand with
+  `--config <path>`, `--skip-install`, and `--account <id>` flags; delegates to
+  `runXmppOnboarding`.
+- **`src/secret-contract.ts`** — `collectRuntimeConfigAssignments` now walks the
+  live config via `getChannelSurface` + `collectSimpleChannelFieldAssignments`
+  and registers the per-account `password` assignment for enabled accounts, so
+  openclaw's secrets engine recognises the stored `ENC:` password (the
+  `secretTargetRegistryEntries` entry already declared the field).
+- **`install.sh`** / **`install.ps1`** — replaced the hard-coded "Next steps"
+  config commands with a call to `openclaw xmpp setup` (the wizard drives the
+  interactive config + password hash).  The manual config commands are no longer
+  printed; a restart + whitelist reminder remains.
+- **`tests/v2.11.1-onboarding.test.ts`** (new) — file-based assertions for the
+  wizard, the `setup` subcommand, the secret-contract folding, and the
+  installer wiring.
+
+### Backups
+
+- `_backups/2.11.1_20260903_080610/` (all edited files)
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.11.1_20260903_080610"
+cp "$BK/onboarding.ts"     "$BK/onboarding.ts.rollback-marker" 2>/dev/null || true
+rm -f src/onboarding.ts tests/v2.11.1-onboarding.test.ts
+cp "$BK/commands.ts"          src/commands.ts
+cp "$BK/encryption.ts"        src/security/encryption.ts
+cp "$BK/secret-contract.ts"   src/secret-contract.ts
+cp "$BK/install.sh"           install.sh
+cp "$BK/install.ps1"          install.ps1
+cp "$BK/package.json"         package.json
+cp "$BK/CHANGELOG.md"         CHANGELOG.md
+```
+
+### Verification
+
+- `npx tsc --noEmit` — the new onboarding module and the SDK import in
+  `secret-contract.ts` do not introduce new type errors.
+- `node --test tests/*.test.ts` — the new v2.11.1 onboarding suite and all
+  previously-passing suites pass.
+
+## [2.11.0] - 2026-09-03
+
+**Fix: constant dropouts/reconnects, "agent doesn't respond after reconnect", and
+random resource.  The XMPP connection now uses a stable hostname resource and
+re-enables keepalive so the socket stops idling out.**
+
+### Root cause
+
+The v2.1.3 "restore old design" removed **all** keepalive (no TCP keepalive, no
+XEP-0198 SM keepalive, no whitespace keepalive), and v2.1.4 made the default
+resource a random `openclaw-<6hex>` suffix to dodge the server
+`StreamError: conflict, 'Replaced by new connection'` cycle.  The combination
+produced the symptoms:
+
+1. **Constant dropouts every ~14–21 min.**  Without keepalive, NAT/firewall idle
+   timers silently reap the TCP socket.  Because the resource was random, every
+   reconnect re-bound with a *new* full JID (`openclaw-5bb9b4`, `openclaw-6edba2`,
+   …), so the whole connection was re-established and the bot's pending state was
+   lost on each drop.
+2. **Agent didn't respond after a reconnect.**  Reconnecting re-establishes the
+   stream but the server forgets the bot's MUC presence, so outbound groupchat
+   replies were silently rejected after a reconnect.
+
+### Changes
+
+- **Stable, sanitized hostname resource** (`src/startXMPP.ts`,
+  `src/lib/xmpp-connect.ts`): the default resource is now
+  `sanitizeResource(os.hostname())` (e.g. `clawdbothome@kazakhan.com/archbox`)
+  instead of `openclaw-<random>`.  `cfg.resource` is still honoured verbatim.
+  The sanitizer lowercases and strips non-`[a-z0-9_.-]` characters so the
+  resource is always a valid XMPP resource.
+- **Re-enabled keepalive** (`src/startXMPP.ts`, `src/config.ts`):
+  - TCP `sock.setKeepAlive(true, 20_000)` via `findUnderlyingSocket()` on every
+    `online` event, so the OS keeps probing the dead-peer path.
+  - XMPP whitespace keepalive: a single space written to the stream every 25 s
+    (`Config.WHITESPACE_KEEPALIVE_MS`), which keeps NAT/firewall state fresh and
+    lets a dead socket be detected within ~30 s.  The interval is cleared and
+    re-armed on each reconnect and cleared on `offline`.
+  - The stable resource is safe **only** because keepalive now prevents the
+    socket from silently idling out (the precondition for the "conflict" cycle).
+- **MUC re-join on reconnect** (`src/startXMPP.ts`): after each `online` event,
+  the bot re-sends MUC presence for every room in `joinedRooms` so groupchat
+  membership is re-established and replies keep working.  `joinedRooms` persists
+  across transient reconnects (still cleared on deliberate `offline`).
+
+### Tests
+
+- Updated `tests/v2.1.3-restore-old-design.test.ts` — the "NO keepalive" section
+  now asserts the v2.11.0 keepalive constants are present (keep the SM keepalive
+  off; whitespace keepalive is used instead).
+- Updated `tests/v2.1.4-muc-rejoin-conflict.test.ts` — R1 now asserts a stable
+  sanitized `os.hostname()` resource (instead of `crypto.randomBytes`); R5 now
+  cross-references 2.11.0.
+- Updated `tests/v2.1.0-groupchat-dispatch.test.ts` — made the line-number-based
+  `isSystemMessage` scans content-based (the added keepalive block shifted line
+  numbers).
+- Added `tests/v2.11.0-keepalive-rejoin.test.ts` — asserts TCP + whitespace
+  keepalive, stable hostname resource, and MUC re-join on reconnect.
+
+### Backups
+
+- `_backups/2.11.0_20260903_073612/` (all edited files)
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.11.0_20260903_073612"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/xmpp-connect.ts" src/lib/xmpp-connect.ts
+cp "$BK/config.ts" src/config.ts
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+cp "$BK/v2.1.3-restore-old-design.test.ts" tests/v2.1.3-restore-old-design.test.ts
+cp "$BK/v2.1.4-muc-rejoin-conflict.test.ts" tests/v2.1.4-muc-rejoin-conflict.test.ts
+cp "$BK/v2.1.0-groupchat-dispatch.test.ts" tests/v2.1.0-groupchat-dispatch.test.ts
+rm tests/v2.11.0-keepalive-rejoin.test.ts   # new file, no backup needed
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors in the edited files.
+- `node --test tests/*.test.ts` — the v2.11.0 keepalive/resource/rejoin suites and
+  all updated historical suites pass.
+
+## [2.10.1] - 2026-06-22
+
+### Fixed
+
+- **`xmpp_setPresence` tool registration**: Fixed the `execute` return value to
+  match `AgentToolResult` — now returns `{ content: [...], details: undefined }`
+  instead of the invalid `{ text: "..." }` shape. Errors are thrown rather than
+  returned with `isError`. This was preventing the tool from being visible to
+  the agent.
+
+## [2.10.0] - 2026-06-22
+
+### Added
+
+- **Agent presence control** (`XmppClient.setPresence`): XMPP clients now expose a
+  `setPresence(show?, status?, priority?)` method to dynamically update the bot's
+  presence/status after initial connection. The `<presence>` stanza includes
+  optional `<show/>`, `<status/>`, and `<priority/>` elements along with the
+  standard XEP-0115 Entity Capabilities.
+
+- **Agent tool registration** (`xmpp_setPresence`): The plugin registers an
+  `xmpp_setPresence` tool via `api.registerTool()`, making it discoverable and
+  callable by the AI agent. The tool accepts `show` (away|chat|dnd|xa|available),
+  `status` (free-text message), and `priority` (integer -128..127). The agent is
+  guided via `promptSnippet` and `promptGuidelines` on when and how to use it.
+
 ## [2.9.15] - 2026-06-22
 
 **Fix: every bot drawing after the first uses duplicate RID `a.10`, causing PSI+ to

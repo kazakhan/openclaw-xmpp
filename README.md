@@ -3,14 +3,24 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.9.4)
+## Status: ✅ WORKING (v2.11.3)
 
-Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), password encryption at rest, and enhanced file transfer security. The `startXMPP.ts` module was split into `slash-commands.ts` and `vcard-server.ts` in v2.1.5 for maintainability — no behavior changes.
+Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), password encryption at rest, and enhanced file transfer security.
+
+**v2.11.x highlights:** a **stable sanitized-hostname XMPP resource** (no more random
+`openclaw-<hex>` on every reconnect), **re-enabled keepalive** (TCP `setKeepAlive`
++ XML whitespace) that stops the ~15-minute NAT/firewall dropouts, **MUC rooms
+are re-joined after a reconnect** so groupchat replies keep working, and a
+cross-platform **interactive onboarding** (`openclaw xmpp setup`) together with a
+runtime-readiness **`openclaw xmpp doctor`**. `openclaw.plugin.json` now declares
+`contracts.tools` (`xmpp_setPresence`) to satisfy the OpenClaw 2026.8.x plugin
+contract check.
 
 ## Installation
 
 ### Prerequisites
-- OpenClaw 2026.6+ (tested on 2026.6.1)
+- OpenClaw **2026.8.2+** (the capability-consent and `contracts.tools` checks
+  were introduced in 2026.8.x; see the "Troubleshooting" note below)
 - Node.js >= 16.0.0
 - npm
 
@@ -314,17 +324,18 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 ## Quick Start
 
 ```bash
-# Configure account
-openclaw config set channels.xmpp.accounts.default.service "xmpp://your-server:5222"
-openclaw config set channels.xmpp.accounts.default.domain "your-domain"
-openclaw config set channels.xmpp.accounts.default.jid "user@domain"
-openclaw config set channels.xmpp.accounts.default.password "your-password"
-openclaw config set channels.xmpp.accounts.default.dataDir "~/.openclaw/extensions/xmpp/data"
-openclaw config set channels.xmpp.accounts.default.enabled true
-openclaw config set messages.groupChat.visibleReplies automatic
+# Interactive onboarding (prompts for server/JID, masks the password and
+# encrypts it to ENC:, asks Keep/Override/Cancel if a config already exists)
+openclaw xmpp setup
 
-# Encrypt your password (recommended)
-openclaw xmpp encrypt-password
+# Or configure manually:
+# openclaw config set channels.xmpp.accounts.default.service "xmpp://your-server:5222"
+# openclaw config set channels.xmpp.accounts.default.domain "your-domain"
+# openclaw config set channels.xmpp.accounts.default.jid "user@domain"
+# openclaw config set channels.xmpp.accounts.default.dataDir "~/.openclaw/extensions/xmpp/data"
+# openclaw config set channels.xmpp.accounts.default.enabled true
+# openclaw config set messages.groupChat.visibleReplies automatic
+# openclaw xmpp encrypt-password
 
 # Whitelist contacts
 openclaw xmpp add user@domain.com
@@ -339,6 +350,40 @@ openclaw gateway
 ```bash
 openclaw plugins install --force ~/.openclaw/extensions/xmpp
 ```
+
+### OpenClaw 2026.8.x: "plugin verification failed / requires capability consent"
+OpenClaw 2026.8+ refuses to start until every enabled plugin's capabilities are
+consented. For the XMPP plugin (and any other enabled plugin):
+```bash
+openclaw plugins enable xmpp --accept-capabilities
+# also consent the other enabled plugins you use (e.g. deepseek, zai)
+```
+Then disable any config entries that are `enabled` but not installed, and the
+unused `perplexity` runtime default:
+```bash
+openclaw config set plugins.entries.comfy.enabled false
+openclaw config set plugins.entries.duckduckgo.enabled false
+openclaw config set plugins.entries.opencode.enabled false
+openclaw config set plugins.entries.perplexity.enabled false
+openclaw plugins registry --refresh
+systemctl --user restart openclaw-gateway   # Linux; on Windows run openclaw (elevated) then `openclaw gateway restart`
+```
+
+### Windows: "schtasks ... access denied" / doctor can't enter maintenance
+On Windows the gateway runs as a Scheduled Task and `openclaw` must modify it
+via `schtasks`. Run `openclaw` from an **Administrator** PowerShell, or a
+non-elevated session gets `ERROR: Access is denied`. Use `openclaw gateway
+restart` on Windows instead of `systemctl`.
+
+### "Cannot find package 'tsx'"
+OpenClaw only needs `tsx` when it runs the plugin from the TypeScript source
+(`index.ts`). The supported path is compiled `dist/`: run `npx tsc` in the
+plugin directory, then restart. (Or `openclaw xmpp doctor --fix` to rebuild a
+missing `dist/`.)
+
+### "plugin must declare contracts.tools before registering agent tools"
+The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
+to v2.11.3+ to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
