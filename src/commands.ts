@@ -896,9 +896,69 @@ Note: Commands connect directly to XMPP server.`);
       console.log('Updated fields: encryptionKey, password (ENC:...)');
     });
 
-}
+  // Subcommand: setup — interactive onboaring
+  // SECURITY (2.11.1): an interactive, cross-platform onboarding wizard
+  // that prompts for user + server info, encrypts the password (using
+  // the same path as encrypt-password), and asks to keep / override the
+  // existing account config if one is present.  Delegates to
+  // src/onboarding.ts so it is testable and reusable by the installers.
+  xmpp
+    .command("setup")
+    .description("Interactive onboarding: configure XMPP account and encrypt the password")
+    .option("--config <path>", "Override the openclaw.json config path")
+    .option("--skip-install", "Do not run clone/npm/build/register — only config + password")
+    .option("--account <id>", "Account id to configure (default: default)")
+    .action(async (options: any) => {
+      const { runXmppOnboarding } = await import('./onboarding.js');
+      const result = await runXmppOnboarding({
+        configPath: options?.config,
+        skipInstall: !!options?.skipInstall,
+        account: options?.account || "default",
+      });
+      if (!result.ok) {
+        console.error('XMPP onboarding failed:', result.error || 'Unknown error');
+        process.exit(1);
+      }
+    });
 
-// Legacy function for backward compatibility - now delegates to registerXmppCli
+  // Subcommand: doctor — diagnose the plugin install/runtime readiness
+  // SECURITY (2.11.2): OpenClaw launches a `.ts` extension with
+  // `node --import tsx`.  `tsx` is only a devDependency of openclaw,
+  // so it is not guaranteed to be installed.  If `dist/` is missing,
+  // the plugin falls back to `index.ts` and needs tsx — otherwise
+  // OpenClaw crashes at startup with the cryptic `Cannot find package
+  // 'tsx'`.  `doctor` surfaces that condition with clear, actionable
+  // advice and can rebuild the missing dist/ automatically.
+  xmpp
+    .command("doctor")
+    .description("Diagnose the XMPP plugin install (missing dist/ or tsx) and show how to fix it")
+    .option("--config <path>", "Override the openclaw.json config path")
+    .option("--fix", "Rebuild the missing dist/ output automatically")
+    .action(async (options: any) => {
+      const { diagnosePluginState, ensureDistBuilt } = await import('./onboarding.js');
+      const report = diagnosePluginState(undefined, options?.config);
+      console.log('XMPP plugin diagnostics');
+      console.log(`  Plugin directory:  ${report.pluginDir}`);
+      console.log(`  dist/ present:     ${report.distExists ? "yes" : "NO"}`);
+      console.log(`  tsx available:     ${report.tsxAvailable ? "yes" : "NO"}`);
+      console.log(`  entry OpenClaw uses: ${report.entryKind === "dist" ? "dist/index.js (compiled JS)" : "index.ts (needs tsx)"}`);
+      for (const p of report.problems) console.log(`  - ${p}`);
+      for (const f of report.fixes) console.log(`      ${f}`);
+
+      if (options?.fix && !report.distExists) {
+        console.log("\nRunning: npx tsc ...");
+        try {
+          const { built } = await ensureDistBuilt();
+          console.log(built ? "  dist/ rebuilt." : "  nothing to do.");
+          console.log("  Restart the gateway to load the plugin.");
+        } catch (err: any) {
+          console.error('  Failed to rebuild dist/:', err?.message || String(err));
+          process.exit(1);
+        }
+      }
+    });
+
+}
 export function registerCommands(api: any, dataPath: string) {
   console.log("Registering XMPP CLI commands via registerCommands (legacy)");
   

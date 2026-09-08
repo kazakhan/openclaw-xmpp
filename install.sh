@@ -46,7 +46,8 @@ else
 fi
 
 echo "Registering plugin with OpenClaw..."
-openclaw plugins install --link --force "$PLUGIN_DIR"
+#openclaw plugins install --link --force "$PLUGIN_DIR"
+openclaw plugins install --link "$PLUGIN_DIR"
 
 echo "Enabling XMPP entry..."
 openclaw config set plugins.entries.xmpp.enabled true || true
@@ -56,23 +57,27 @@ openclaw config set messages.groupChat.visibleReplies automatic || true
 
 echo ""
 echo "============================================"
+echo " Running interactive onboarding..."
+echo "============================================"
+echo ""
+echo "You will be asked for your server, JID, and password."
+echo "The password is encrypted and stored as an ENC: secret."
+echo ""
+openclaw xmpp setup || {
+  echo ""
+  echo "  WARNING: interactive onboarding did not complete."
+  echo "  You can run it later with: openclaw xmpp setup"
+}
+
+echo ""
+echo "============================================"
 echo " Install complete!"
 echo "============================================"
 echo ""
 echo "Next steps:"
-echo "  1. Configure your XMPP account (if not already set):"
-echo "     openclaw config set channels.xmpp.accounts.default.service 'xmpp://your-server:5222'"
-echo "     openclaw config set channels.xmpp.accounts.default.domain 'your-domain'"
-echo "     openclaw config set channels.xmpp.accounts.default.jid 'user@domain'"
-echo "     openclaw config set channels.xmpp.accounts.default.password 'your-password'"
-echo "     openclaw config set channels.xmpp.accounts.default.dataDir '$PLUGIN_DIR/data'"
-echo "     openclaw config set channels.xmpp.accounts.default.enabled true"
-echo ""
-echo "  2. Encrypt your password (recommended):"
-echo "     openclaw xmpp encrypt-password"
-echo ""
-echo "  3. Restart the gateway:"
+echo "  1. Restart the gateway:"
 echo "     openclaw gateway restart"
 echo ""
-echo "  4. Whitelist contacts:"
+echo "  2. Whitelist contacts:"
 echo "     openclaw xmpp add user@domain.com"
+echo ""

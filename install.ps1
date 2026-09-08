@@ -88,23 +88,29 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "============================================"
+Write-Host " Running interactive onboarding..."
+Write-Host "============================================"
+Write-Host ""
+Write-Host "You will be asked for your server, JID, and password."
+Write-Host "The password is encrypted and stored as an ENC: secret."
+Write-Host ""
+$configPath = Join-Path "$env:USERPROFILE" ".openclaw\openclaw.json"
+& openclaw xmpp setup --config $configPath
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  WARNING: interactive onboarding did not complete." -ForegroundColor Yellow
+    Write-Host "  You can run it later with: openclaw xmpp setup" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "============================================"
 Write-Host " Install complete!"
 Write-Host "============================================"
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Configure your XMPP account (if not already set):"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.service 'xmpp://your-server:5222'"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.domain 'your-domain'"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.jid 'user@domain'"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.password 'your-password'"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.dataDir '$PluginDir\data'"
-Write-Host "     openclaw config set channels.xmpp.accounts.default.enabled true"
-Write-Host ""
-Write-Host "  2. Encrypt your password (recommended):"
-Write-Host "     openclaw xmpp encrypt-password"
-Write-Host ""
-Write-Host "  3. Restart the gateway:"
+Write-Host "  1. Restart the gateway:"
 Write-Host "     openclaw gateway restart"
 Write-Host ""
-Write-Host "  4. Whitelist contacts:"
+Write-Host "  2. Whitelist contacts:"
 Write-Host "     openclaw xmpp add user@domain.com"
+Write-Host ""
