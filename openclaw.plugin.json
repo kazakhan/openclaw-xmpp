@@ -8,6 +8,9 @@
     "onCommands": ["xmpp"]
   },
   "channels": ["xmpp"],
+  "contracts": {
+    "tools": ["xmpp_setPresence"]
+  },
   "channelEnvVars": {
     "xmpp": [
       "XMPP_SERVICE",
