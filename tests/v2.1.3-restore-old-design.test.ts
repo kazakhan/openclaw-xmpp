@@ -120,13 +120,22 @@ describe('Fix 2.1.3: safeSend + findUnderlyingSocket moved to src/lib/xmpp-utils
   });
 });
 
-describe('Fix 2.1.3: NO keepalive config in config.ts (OLD design had none)', () => {
-  it('config.ts has no TCP_KEEPALIVE_* config', async () => {
+describe('Fix 2.11.0: keepalive config re-introduced (removed in 2.1.3)', () => {
+  it('config.ts now has TCP_KEEPALIVE_MS', async () => {
     const src = await readSource('src/config.ts');
-    assert.equal(
-      /TCP_KEEPALIVE/.test(src),
-      false,
-      'config.ts must NOT have TCP_KEEPALIVE_* — the OLD design had no TCP keepalive',
+    assert.match(
+      src,
+      /TCP_KEEPALIVE_MS:\s*\d+/,
+      'config.ts must now have TCP_KEEPALIVE_MS — 2.11.0 re-enables socket setKeepAlive to stop NAT idling dropouts.',
+    );
+  });
+
+  it('config.ts now has WHITESPACE_KEEPALIVE_MS', async () => {
+    const src = await readSource('src/config.ts');
+    assert.match(
+      src,
+      /WHITESPACE_KEEPALIVE_MS:\s*\d+/,
+      'config.ts must now have WHITESPACE_KEEPALIVE_MS — 2.11.0 re-enables the XML whitespace keepalive.',
     );
   });
 
@@ -135,7 +144,7 @@ describe('Fix 2.1.3: NO keepalive config in config.ts (OLD design had none)', ()
     assert.equal(
       /SM_KEEPALIVE/.test(src),
       false,
-      'config.ts must NOT have SM_KEEPALIVE_* — the OLD design had no SM keepalive',
+      'config.ts must NOT have SM_KEEPALIVE_* — we keep SM keepalive off; whitespace keepalive is used instead',
     );
   });
 
@@ -148,21 +157,12 @@ describe('Fix 2.1.3: NO keepalive config in config.ts (OLD design had none)', ()
     );
   });
 
-  it('config.ts has no WHITESPACE_KEEPALIVE_* config', async () => {
-    const src = await readSource('src/config.ts');
-    assert.equal(
-      /WHITESPACE_KEEPALIVE/.test(src),
-      false,
-      'config.ts must NOT have WHITESPACE_KEEPALIVE_* — the OLD design had no whitespace keepalive',
-    );
-  });
-
   it('config.ts has no SOCKET_IDLE_TIMEOUT_MS config', async () => {
     const src = await readSource('src/config.ts');
     assert.equal(
       /SOCKET_IDLE_TIMEOUT_MS/.test(src),
       false,
-      'config.ts must NOT have SOCKET_IDLE_TIMEOUT_MS — the OLD design had no socket-idle watchdog',
+      'config.ts must NOT have SOCKET_IDLE_TIMEOUT_MS — 2.11.0 uses keepalive, not a socket-idle watchdog',
     );
   });
 

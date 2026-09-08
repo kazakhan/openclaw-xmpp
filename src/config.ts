@@ -77,6 +77,18 @@ export const Config = {
   RECONNECT_BASE_MS: 1000,
   RECONNECT_MAX_MS: 60000,
   RECONNECT_BACKOFF_FACTOR: 2,
+
+  // Keepalive (2.11.0): the v2.1.3 "restore old design" removed ALL
+  // keepalive, which let NAT/firewall idle timers silently kill the
+  // TCP socket every ~15-20 minutes.  @xmpp/reconnect then re-armed
+  // with a fresh random resource, causing constant dropouts and the
+  // "agent doesn't respond after reconnect" complaint.  v2.11.0
+  // re-introduces a stable hostname resource AND keepalive (TCP-level
+  // setKeepAlive + XMPP whitespace) so the connection stays alive and
+  // the stable resource never trips the server "Replaced by new
+  // connection" conflict.
+  TCP_KEEPALIVE_MS: 20000,
+  WHITESPACE_KEEPALIVE_MS: 25000,
 };
 
 export type Config = typeof Config;

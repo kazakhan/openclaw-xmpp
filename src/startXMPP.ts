@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import os from "os";
 import net from "net";
 import { validators } from "./security/validation.js";
 import { decryptPasswordFromConfig } from "./security/encryption.js";
@@ -59,25 +60,32 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     // the comment on the (now-removed) module-level binding.
     const xmppClientModule = await import("@xmpp/client");
     const { client, xml } = xmppClientModule;
-    // Helper to get default resource/nick from JID local part
-    // SECURITY (2.1.4): the previous default (`cfg?.jid?.split("@")[0]`)
-    // was a STABLE resource, which combined with the
-    // `startXmpp()` reconnect path caused the
-    // `StreamError { condition: 'conflict', text: 'Replaced by
-    // new connection' }` cycle on networks where the XMPP
-    // server hadn't noticed the old TCP socket was dead yet
-    // (e.g. NAT idle-timeout).  We now generate a
-    // stable-prefix + 6-hex-char random suffix per
-    // `startXmpp()` call.  16M possible values; collision
-    // requires two connections from the same JID in the same
-    // millisecond, which is effectively zero.  Operators who
-    // supply `cfg.resource` explicitly are honoured verbatim
-    // (e.g. for operators who filter their active-sessions
-    // list by resource).
-    const getDefaultResource = () => {
-      if (cfg?.resource) return cfg.resource;
-      return `openclaw-${crypto.randomBytes(3).toString("hex")}`;
-    };
+  // Helper to get default resource/nick from JID local part
+  // SECURITY (2.11.0): v2.1.4 made the default resource a random
+  // `openclaw-<6hex>` suffix to avoid the server kicking a freshly
+  // reconnected session with `StreamError { condition: 'conflict',
+  // text: 'Replaced by new connection' }`.  That random resource is
+  // now the source of the constant dropouts: every reconnect picks a
+  // NEW resource, so the whole connection (and the agent's pending
+  // state) is re-established and groupchat membership is lost.
+  //
+  // v2.11.0 reverts to a STABLE resource derived from the machine
+  // hostname (sanitized to valid XMPP resource characters) because
+  // the operator wants a predictable full JID (e.g.
+  // `clawdbothome@kazakhan.com/archbox`).  A stable resource is safe
+  // here ONLY because v2.11.0 also re-enables keepalive (TCP
+  // setKeepAlive + XMPP whitespace) so the underlying socket no
+  // longer idles out — without keepalive the server would eventually
+  // see the same resource reconnect to a session it still considers
+  // alive and kill the new connection.  Operators who supply
+  // `cfg.resource` explicitly are still honoured verbatim (e.g. for
+  // filtering the active-sessions list by resource).
+  const sanitizeResource = (s: string): string =>
+    s.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "");
+  const getDefaultResource = () => {
+    if (cfg?.resource) return cfg.resource;
+    return sanitizeResource(os.hostname()) || "openclaw";
+  };
     
      const getDefaultNick = async () => {
        // Use local vCard value directly (set by CLI command)
@@ -248,6 +256,13 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     /* no-op — liveness manager removed in 2.1.3 */
   };
 
+  // SECURITY (2.11.0): whitespace keepalive timer handle.  Declared
+  // before the offline/online handlers so both can clear/set it
+  // without a temporal-dead-zone issue.  A single XML whitespace
+  // character is written to the stream on each tick to keep NAT and
+  // firewall idle timers from silently killing the TCP socket.
+  let whitespaceKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
   // SECURITY (2.1.3, restore-old-design): NO `xmpp.on("disconnect", ...)`
   // handler that triggers reconnection.  The OLD design from
   // D:\Downloads\xmppOLD deliberately did NOT have one — the
@@ -267,6 +282,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     log.warn("XMPP went offline");
     isRunning = false;
     if (ibbCleanupInterval) { clearInterval(ibbCleanupInterval); }
+    if (whitespaceKeepaliveTimer) {
+      clearInterval(whitespaceKeepaliveTimer);
+      whitespaceKeepaliveTimer = null;
+    }
     whiteboardSessionManager.stopCleanup();
     whiteboardSessionManager.destroy();
     // SECURITY (2.1.4): reject any in-flight MUC join
@@ -377,6 +396,61 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       } catch (err) {
         xmppLog.error("vCard register failed", err);
        log.error("Failed to register vCard", err);
+      }
+
+      // SECURITY (2.11.0): re-arm keepalive on every (re)connect.
+      // `online` can fire repeatedly (via @xmpp/reconnect), so we
+      // clear the previous whitespace timer to avoid leaking duplicate
+      // intervals.  TCP-level setKeepAlive keeps the OS probing the
+      // dead-peer path; the whitespace keepalive keeps NAT/firewall
+      // idle timers from reaping the session.  Together these stop the
+      // ~15-minute idling dropouts.
+      try {
+        const keepaliveSocket = findUnderlyingSocket(xmpp);
+        if (keepaliveSocket && typeof keepaliveSocket.setKeepAlive === "function") {
+          keepaliveSocket.setKeepAlive(true, Config.TCP_KEEPALIVE_MS);
+          xmppLog.debug(`keepalive: TCP setKeepAlive(true, ${Config.TCP_KEEPALIVE_MS}ms)`);
+        }
+      } catch (err) {
+        xmppLog.warn("keepalive: failed to set TCP keepalive", err);
+      }
+      if (whitespaceKeepaliveTimer) {
+        clearInterval(whitespaceKeepaliveTimer);
+        whitespaceKeepaliveTimer = null;
+      }
+      whitespaceKeepaliveTimer = setInterval(() => {
+        try {
+          // A single space is valid inter-stanza XML whitespace and is
+          // ignored by the parser; it keeps the connection alive.
+          xmpp.write(" ").catch(() => {});
+        } catch {
+          // socket may already be gone; @xmpp/reconnect will recover
+        }
+      }, Config.WHITESPACE_KEEPALIVE_MS);
+      xmppLog.debug(`keepalive: whitespace keepalive armed (${Config.WHITESPACE_KEEPALIVE_MS}ms)`);
+
+      // SECURITY (2.11.0): re-join any MUC rooms we were in before the
+      // (transient) reconnect.  @xmpp/reconnect reopens the stream but
+      // the server forgets our MUC presence, so outbound groupchat
+      // sends would be silently rejected after a reconnect.  Re-sending
+      // the MUC presence re-establishes membership.  joinedRooms
+      // persists across transient reconnects (only cleared on a
+      // deliberate `offline`), so this re-uses the pre-reconnect state.
+      if (joinedRooms.size > 0) {
+        for (const room of Array.from(joinedRooms)) {
+          const nick = roomNicks.get(room) || (await getDefaultNick());
+          try {
+            const rejoinPresence = xml("presence", { to: `${room}/${nick}` },
+              xml("x", { xmlns: "http://jabber.org/protocol/muc" },
+                xml("history", { maxstanzas: "0" })
+              )
+            );
+            await safeXmppSend(xmpp, rejoinPresence);
+            log.info("re-joined MUC room after reconnect", { room, nick });
+          } catch (err) {
+            xmppLog.error("MUC re-join after reconnect failed", { room });
+          }
+        }
       }
 
       if (onOnline) {
@@ -1945,7 +2019,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             }
          }
        },
-       inviteToRoom: async (contact: string, room: string, reason?: string, password?: string) => {
+        inviteToRoom: async (contact: string, room: string, reason?: string, password?: string) => {
          const resolvedRoom = resolveRoomJid(room);
          const inviteAttrs: any = { jid: resolvedRoom };
          if (reason) inviteAttrs.reason = reason;
@@ -1956,6 +2030,26 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          );
          
            await safeXmppSend(xmpp,message);
+        },
+        setPresence: async (show?: string, status?: string, priority?: number) => {
+          const children: any[] = [];
+          if (show && show !== "available") {
+            children.push(xml("show", {}, show));
+          }
+          if (status) {
+            children.push(xml("status", {}, status));
+          }
+          if (priority !== undefined && priority !== null) {
+            children.push(xml("priority", {}, String(priority)));
+          }
+          children.push(xml("c", {
+            xmlns: CapsInfo.xmlns,
+            hash: CapsInfo.hash,
+            node: CapsInfo.node,
+            ver: CapsInfo.ver
+          }));
+          const presence = xml("presence", {}, ...children);
+          await safeXmppSend(xmpp, presence);
         }
       };
 

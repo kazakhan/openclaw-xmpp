@@ -24,12 +24,21 @@ async function readSource(rel: string): Promise<string> {
 }
 
 describe('Fix 2.1.4 (R1): startXmpp() uses a unique resource per call (prevents the conflict cycle)', () => {
-  it('src/startXMPP.ts uses crypto.randomBytes for the default resource', async () => {
+  it('src/startXMPP.ts uses a stable, sanitized hostname resource (NOT a random suffix)', async () => {
     const src = await readSource('src/startXMPP.ts');
+    // v2.11.0 superseded the random `openclaw-<hex>` resource with a
+    // stable sanitized os.hostname() resource (operator request).  A
+    // stable resource is safe ONLY because v2.11.0 also re-enabled
+    // keepalive (see the v2.1.3 test suite).
     assert.match(
       src,
-      /crypto\.randomBytes\(\s*\d+\s*\)\.toString\(\s*["']hex["']\s*\)/,
-      'startXMPP.ts must use crypto.randomBytes(...).toString("hex") for the default resource, otherwise the XMPP server kicks the new connection with "Replaced by new connection" when the old TCP socket is still half-alive on the server side.',
+      /os\.hostname\(\s*\)/,
+      'startXMPP.ts must derive the default resource from os.hostname() so the full JID is predictable.',
+    );
+    assert.match(
+      src,
+      /replace\(\s*\/\[\^a-z0-9_.-\]/,
+      'startXMPP.ts must sanitize the hostname resource to valid XMPP resource characters.',
     );
   });
 
@@ -220,12 +229,12 @@ describe('Fix 2.1.4 (R4): gateway.startAccount no longer reads the dead _lastInb
 });
 
 describe('Fix 2.1.4 (R5): xmpp-connect.ts has a JSDoc cross-reference to the startXMPP.ts fix', () => {
-  it('src/lib/xmpp-connect.ts contains a v2.1.4 cross-reference comment', async () => {
+  it('src/lib/xmpp-connect.ts contains a v2.11.0 cross-reference comment', async () => {
     const src = await readSource('src/lib/xmpp-connect.ts');
     assert.match(
       src,
-      /SECURITY\s*\(\s*2\.1\.4\s*\)/,
-      'src/lib/xmpp-connect.ts must contain a SECURITY (2.1.4) comment cross-referencing the startXMPP.ts fix so future contributors do not undo it.',
+      /SECURITY\s*\(\s*2\.11\.0\s*\)/,
+      'src/lib/xmpp-connect.ts must contain a SECURITY (2.11.0) comment cross-referencing the startXMPP.ts fix so future contributors do not reintroduce a random resource.',
     );
   });
 });

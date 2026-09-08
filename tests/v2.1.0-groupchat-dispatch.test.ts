@@ -91,7 +91,7 @@ describe('Fix v2.1.0: room subject change is marked isSystemMessage', () => {
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
     let found = false;
-    for (let i = 1270; i < 1300 && i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i++) {
       if (/Whiteboard session established with/.test(lines[i - 1] || '')) {
         for (let j = i; j < i + 20 && j < lines.length; j++) {
           if (/onMessage\(fromBareJid,\s*instructions/.test(lines[j])) {
@@ -159,7 +159,7 @@ describe('Fix v2.1.0: real user message paths do NOT set isSystemMessage', () =>
     const src = await readSourceRaw('src/startXMPP.ts');
     const lines = src.split('\n');
     let found = false;
-    for (let i = 1140; i < 1170 && i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i++) {
       if (/SXE timer: calling onMessage/.test(lines[i] || '')) {
         const callLine = lines[i + 1];
         if (callLine) {

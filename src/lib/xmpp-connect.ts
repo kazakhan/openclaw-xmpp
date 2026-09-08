@@ -1,5 +1,5 @@
 import client from "@xmpp/client";
-import crypto from "crypto";
+import os from "os";
 
 export interface XmppConnectConfig {
   service: string;
@@ -9,29 +9,25 @@ export interface XmppConnectConfig {
   resource?: string;
 }
 
-// SECURITY (2.1.4): the random-resource strategy
-// implemented in this file was, in v2.1.3, only used by
-// the short-lived CLI tools (`vcard-cli.ts`,
-// `whiteboard-cli.ts`).  The long-lived gateway
-// connection in `src/startXMPP.ts` had its own inline
-// `client({...})` call with a STABLE resource
-// (`cfg.resource || jid.split("@")[0]`), which is what
-// caused the `StreamError: conflict, 'Replaced by new
-// connection'` cycle on networks where the XMPP server
-// hadn't noticed the old TCP socket was dead yet.
+// SECURITY (2.11.0): the random-resource strategy implemented in
+// this file was, in v2.1.3, only used by the short-lived CLI tools
+// (`vcard-cli.ts`, `whiteboard-cli.ts`).  v2.1.4 extended the same
+// random resource to the long-lived gateway connection in
+// `src/startXMPP.ts` to dodge the `StreamError: conflict, 'Replaced
+// by new connection'` cycle on NAT networks where the server hadn't
+// noticed the old TCP socket was dead yet.
 //
-// As of v2.1.4, the inline `getDefaultResource()` in
-// `src/startXMPP.ts:60-83` uses the SAME random-resource
-// strategy as this file.  This JSDoc exists so a future
-// contributor doesn't "fix" the duplicate by deleting
-// the random-resource code in startXMPP.ts (which would
-// re-introduce the conflict cycle).
-//
-// If you want to refactor both call sites to share this
-// function, the right move is to delete the inline
-// `getDefaultResource()` in startXMPP.ts and import
-// from this file instead.  Do not delete the random
-// suffix in either place.
+// v2.11.0 reverts BOTH call sites to a STABLE, sanitized hostname
+// resource so the bot's full JID is predictable (operator request).
+// A stable resource is safe because v2.11.0 also re-enables keepalive
+// (TCP setKeepAlive + XMPP whitespace) in startXMPP.ts so the socket
+// no longer idles out.  Operators who supply `config.resource`
+// explicitly are still honoured verbatim.  Keep these two call sites
+// in sync; do not reintroduce a random suffix.
+
+function sanitizeResource(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^-+|-+$/g, "");
+}
 
 export function createXmppClient(config: XmppConnectConfig) {
   return client({
@@ -39,23 +35,10 @@ export function createXmppClient(config: XmppConnectConfig) {
     domain: config.domain,
     username: config.jid.split("@")[0],
     password: config.password,
-    // SECURITY (2.0.19, regression fix): the previous default
-    // (`config.jid.split("@")[0]`) was the bare-JID local part, which
-    // is NOT unique across reconnections.  Combined with the
-    // @xmpp/client library's internal stream renegotiation (e.g.
-    // when SM is established or an IQ crosses the wire), the XMPP
-    // server would see a re-handshake as a new connection and kill
-    // the old one with `StreamError { condition: 'conflict',
-    // text: 'Replaced by new connection' }`.  The user-visible
-    // symptom: after a single reconnect, messages stop being
-    // dispatched for 2-3 minutes (until the watchdogs fire).
-    //
-    // We now generate a stable-prefix + 6-hex-char random suffix.
-    // 16M possible values; collision requires two connections
-    // from the same JID in the same millisecond — effectively
-    // zero.  Operators who supply `config.resource` explicitly are
-    // honoured verbatim (e.g. for operators who filter their
-    // active-sessions list by resource).
-    resource: config.resource || `openclaw-${crypto.randomBytes(3).toString("hex")}`,
+    // SECURITY (2.11.0): stable, sanitized hostname resource (e.g.
+    // `archbox`).  See the module comment above.  Operators who
+    // supply `config.resource` explicitly are honoured verbatim
+    // (e.g. for filtering the active-sessions list by resource).
+    resource: config.resource || sanitizeResource(os.hostname()) || "openclaw",
   });
 }
