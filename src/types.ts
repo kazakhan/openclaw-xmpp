@@ -225,6 +225,7 @@ export interface XmppClient {
   sendGroupchat(to: string, body: string): Promise<void>;
   send(stanza: StanzaElement | any): Promise<any>;
   sendFile(to: string, filePath: string, text?: string, isGroupChat?: boolean): Promise<void>;
+  setPresence(show?: string, status?: string, priority?: number): Promise<void>;
   joinRoom(roomJid: string, nick?: string): Promise<void>;
   leaveRoom(roomJid: string, nick?: string): Promise<void>;
   getJoinedRooms(): string[];

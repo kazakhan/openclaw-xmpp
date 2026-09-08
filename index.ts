@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-entry-contract";
 import { registerXmppCliMetadata } from "./src/cli-metadata.js";
 
+import { Type } from "typebox";
 import {
   xmppClients,
   contactsStore,
@@ -165,6 +166,46 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
     } catch (err: any) {
       respond(false, { error: err?.message || String(err) });
     }
+  });
+
+  api.registerTool({
+    name: "xmpp_setPresence",
+    label: "Set XMPP Presence",
+    description: "Update the bot's XMPP presence/status. Use this to show your availability (away, busy/dnd, free for chat, etc.) with an optional status message.",
+    promptSnippet: "You can update your XMPP presence to set your availability status with a custom message.",
+    promptGuidelines: [
+      'Use xmpp_setPresence with show="dnd" and a status message when you are working on something and do not want interruptions.',
+      'Use xmpp_setPresence with show="away" when you are idle.',
+      'Use xmpp_setPresence without show (or show="available") when you are ready to respond.',
+      "Use the status field to describe what you are doing, e.g. 'Working on a bug fix'.",
+    ],
+    parameters: Type.Object({
+      show: Type.Optional(Type.Union([
+        Type.Literal("away"),
+        Type.Literal("chat"),
+        Type.Literal("dnd"),
+        Type.Literal("xa"),
+        Type.Literal("available"),
+      ])),
+      status: Type.Optional(Type.String({ description: "Custom status message" })),
+      priority: Type.Optional(Type.Integer({ description: "Presence priority (-128 to 127)", minimum: -128, maximum: 127 })),
+    }),
+    execute: async (toolCallId, params, _signal) => {
+      const client = xmppClients.get("default") || xmppClients.values().next().value;
+      if (!client) {
+        throw new Error("XMPP client not connected");
+      }
+      await client.setPresence(params.show, params.status, params.priority);
+      const parts: string[] = [];
+      if (params.show) parts.push(`show=${params.show}`);
+      if (params.status) parts.push(`status="${params.status}"`);
+      if (params.priority !== undefined) parts.push(`priority=${params.priority}`);
+      if (parts.length === 0) parts.push("available");
+      return {
+        content: [{ type: "text" as const, text: `Presence updated: ${parts.join(", ")}` }],
+        details: undefined,
+      };
+    },
   });
 }
 
