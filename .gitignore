@@ -60,4 +60,8 @@ typecheck-output.txt
 
 # Runtime data (messages, contacts, vcards)
 data/messages/
+# SECURITY: real admin/contact/vcard data is local-only; ship examples
+data/xmpp-admins.json
+data/xmpp-contacts.json
+data/xmpp-vcard.json
 
