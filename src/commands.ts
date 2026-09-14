@@ -897,16 +897,15 @@ Note: Commands run through the running gateway's XMPP connection.`);
     .description("Set or show XMPP presence/status (available|chat|away|xa|busy|dnd|free, or 'clear')")
     .action(async (show?: string, statusParts: string[] = []) => {
       const showArg = (show || "").toLowerCase();
+      const statusText = (statusParts || []).join(" ").trim() || undefined;
       let result: { ok: boolean; presence?: any; error?: string };
       if (showArg === "clear" || showArg === "reset") {
         result = await runPresence("clear");
-      } else if (!showArg) {
+      } else if (!showArg || showArg === "get" || showArg === "show" || showArg === "status") {
+        // Accept `presence`, `presence get`, `presence show`, `presence status`.
         result = await runPresence("get");
       } else {
-        result = await runPresence("set", {
-          show: showArg,
-          status: (statusParts || []).join(" ").trim() || undefined,
-        });
+        result = await runPresence("set", { show: showArg, status: statusText });
       }
       if (!result.ok) {
         console.error("Presence:", result.error || "unknown error");

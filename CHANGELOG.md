@@ -5,6 +5,87 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.1] - 2026-09-14
+
+**Fix: the CLI (`openclaw xmpp vcard/get`, `openclaw xmpp presence/get`) could
+fail with `parse-failed: Unexpected non-whitespace character after JSON` or an
+opaque `gateway not running or unreachable (exit-code-1)`. Both came from the
+plugin's child-spawn transport in `src/gateway-client.ts`; the underlying
+gateway RPC was fine.**
+
+### Root cause
+
+1. **`parse-failed` (vcard get).** `extractJsonFromOutput()` scanned the child's
+   stdout **bottom-up** and treated *any* line that was exactly `{` as the start
+   of the top-level JSON, then joined to the end of the output. A pretty-printed
+   vCard contains a nested object with `{` alone on a line (the `email: [ { … }
+   ]` item), so the scanner returned a **fragment** and `JSON.parse` failed.
+   Reproduced deterministically; pre-existing, not a 2.15.0 regression.
+2. **`exit-code-1` (presence get).** The spawn path (`openclaw gateway call …`)
+   depends on the child resolving `openclaw`, resolving configured auth
+   (incl. SecretRefs) in the service environment, and Windows `cmd.exe` arg
+   quoting; failures surfaced as an opaque exit code. Additionally
+   `openclaw xmpp presence get` treated `get` as a *show value* and tried to set
+   an invalid presence, which the gateway rejected → nonzero child exit.
+
+### Changed
+
+- **`src/gateway-client.ts`** now prefers OpenClaw's own **in-process** gateway
+  client: `openclaw/plugin-sdk/gateway-runtime` → `callGatewayFromCli(method,
+  opts, params, { sharedStateMode: "read-only", progress: false })`. This speaks
+  the Gateway WebSocket protocol directly — **no child process, no argv/env
+  secret, no stdout parsing, works on Windows and Linux**. Gateway errors
+  (auth, unknown method, validation) are surfaced via `err.responsePayload`.
+  The module is located via the bare specifier, then the absolute path inside
+  the running OpenClaw install.
+- The spawn path is retained **only as a fallback** for hosts without the SDK
+  and is hardened: it passes `--json` (no `Gateway call: <method>` heading and
+  structured errors), always passes `--url`, prefers `node <openclaw-entry>`
+  (avoiding `cmd.exe` quoting), and parses output with the new robust extractor.
+- **`src/lib/json-extract.ts`** (new) — `extractFirstJson()` /
+  `parseFirstJson()`: a string/escape-aware, brace-balanced scan that returns
+  the **first complete** JSON value, ignoring preamble, ANSI colour, and
+  trailing logs. Unit-tested against the exact failing vCard output.
+- **`src/commands.ts`** — `openclaw xmpp presence get|show|status` now perform a
+  read (previously `get` was treated as a show value).
+
+### Tests
+
+- `tests/v2.15.1-gateway-client.test.ts` (new): behavioural extractor tests
+  (the reproducing vCard payload, ANSI, compact, array, braces-in-strings,
+  unterminated) and source-level checks (SDK preference, `--json` fallback,
+  `responsePayload` surfacing, entry resolution, preserved public API).
+- `tests/gateway-rpc.test.ts` still passes (the one-time env-var warning text is
+  preserved for the fallback).
+
+### Verification
+
+- Reproduced both bugs on this host, then confirmed after the fix against the
+  running gateway: `openclaw xmpp vcard get` lists fields; `openclaw xmpp
+  presence get` prints the current status; set/read/restore round-trips.
+
+### Files changed
+
+- `src/gateway-client.ts`, `src/lib/json-extract.ts` (new),
+  `src/commands.ts`, `tests/v2.15.1-gateway-client.test.ts` (new),
+  `package.json` — 2.15.1
+
+### Backups
+
+- `_backups/2.15.1_20260914_210318/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.1_20260914_210318"
+cp "$BK/gateway-client.ts" src/gateway-client.ts
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/json-extract.ts
+npx tsc
+```
+
 ## [2.15.0] - 2026-09-14
 
 **Feature: XMPP presence/status. Agents and humans can set built-in or custom
