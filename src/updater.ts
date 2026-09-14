@@ -166,7 +166,8 @@ function ensureSdkLink(dir: string): void {
   }
 }
 
-async function copyTree(src: string, dest: string, exclude: Set<string>): Promise<void> {
+// Exported for tests (the updater is otherwise a private CLI helper).
+export async function copyTree(src: string, dest: string, exclude: Set<string>): Promise<void> {
   await fs.promises.mkdir(dest, { recursive: true });
   await fs.promises.cp(src, dest, {
     recursive: true,
@@ -180,8 +181,30 @@ async function copyTree(src: string, dest: string, exclude: Set<string>): Promis
   });
 }
 
-async function snapshotPlugin(pluginDir: string, dest: string): Promise<void> {
-  await copyTree(pluginDir, dest, EXCLUDE_DIRS);
+// SECURITY (2.15.3): snapshot the plugin for rollback.
+//
+// `fs.cp` refuses to copy a directory into a subdirectory of itself
+// (`ERR_FS_CP_EINVAL: Cannot copy <src> to a subdirectory of self`), and the
+// snapshot destination (`<pluginDir>/_backups/<ver>_<ts>`) is exactly that.
+// The `EXCLUDE_DIRS`/`_backups` filter does NOT help: Node validates
+// `dest` is not inside `src` BEFORE running the filter, so
+// `openclaw xmpp update` always failed at the snapshot step.  Stage the copy
+// OUTSIDE the source tree, then move it into place (falling back to a copy
+// when staging and the destination are on different filesystems, e.g. tmpfs).
+export async function snapshotPlugin(pluginDir: string, dest: string): Promise<void> {
+  const staging = await fs.promises.mkdtemp(path.join(os.tmpdir(), "xmpp-snap-"));
+  try {
+    await copyTree(pluginDir, staging, EXCLUDE_DIRS);
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    try {
+      await fs.promises.rename(staging, dest);
+    } catch (err: any) {
+      if (err?.code !== "EXDEV") throw err;
+      await copyTree(staging, dest, EXCLUDE_DIRS);
+    }
+  } finally {
+    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function restoreSnapshot(pluginDir: string, snapDest: string): Promise<void> {

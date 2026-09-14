@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.15.2)
+## Status: ✅ WORKING (v2.15.3)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -26,6 +26,9 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
 - **v2.15.0–2.15.2** — **presence/status**: built-in/alias shows + custom status
   from the CLI, chat, and the `xmpp_setPresence` agent tool, with an automatic
   **busy** presence while thinking/running tools, persisted across reconnect.
+- **v2.15.3** — fixed `openclaw xmpp update` (the rollback snapshot copied the
+  plugin into a subdirectory of itself, which `fs.cp` rejects with
+  `ERR_FS_CP_EINVAL`).
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -546,7 +549,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.15.2) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.15.3) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.

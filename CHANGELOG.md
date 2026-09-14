@@ -5,6 +5,72 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.3] - 2026-09-15
+
+**Fix: `openclaw xmpp update` failed at the snapshot step on every run.**
+
+### Root cause
+
+`performUpdate()` snapshots the plugin for rollback into
+`<pluginDir>/_backups/<version>_<timestamp>` — a **subdirectory of the copy
+source** — then `snapshotPlugin()` calls `fs.promises.cp(pluginDir, dest)`.
+Node rejects a destination inside the source up front:
+
+```
+ERR_FS_CP_EINVAL: Cannot copy <pluginDir> to a subdirectory of self
+```
+
+`EXCLUDE_DIRS` already contains `_backups`, but that only filters entries; Node
+validates `dest ⊄ src` **before** the filter runs, so the exclusion could never
+help. The failure happens after the version check and before any download /
+`git checkout`, which is why `openclaw xmpp update-check` (dry-run) worked while
+`openclaw xmpp update` always threw.
+
+### Fixed
+
+- **`src/updater.ts`** — `snapshotPlugin()` now stages the copy in a temp
+  directory **outside** the source tree (`fs.mkdtemp(os.tmpdir())`), then moves
+  it into `<pluginDir>/_backups/<version>_<timestamp>` with
+  `fs.promises.rename()`, falling back to a copy on `EXDEV` (e.g. `/tmp` on a
+  different filesystem). The rollback layout is unchanged, so
+  `restoreSnapshot()` and manual rollback keep working. `copyTree` and
+  `snapshotPlugin` are now exported for tests.
+
+### Tests
+
+- **`tests/v2.15.3-updater-snapshot.test.ts`** (new) — builds a temp plugin dir
+  and asserts `snapshotPlugin(dir, dir/_backups/…)` succeeds (reproducing the
+  `ERR_FS_CP_EINVAL` before the fix) and that the snapshot excludes
+  `node_modules`/`dist`/`data`/`_backups`/`_trash`.
+
+### Note
+
+The updater on an affected install is itself broken, so this fix must be
+installed once by other means (e.g. `git pull`/checkout or reinstall); after
+that `openclaw xmpp update` works normally.
+
+### Files changed
+
+- `src/updater.ts`, `tests/v2.15.3-updater-snapshot.test.ts` (new),
+  `README.md`, `package.json` — 2.15.3
+
+### Backups
+
+- `_backups/2.15.3_20260915_083745/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.3_20260915_083745"
+cp "$BK/updater.ts" src/updater.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f tests/v2.15.3-updater-snapshot.test.ts
+npx tsc
+```
+
 ## [2.15.2] - 2026-09-15
 
 **Docs: refresh the README (it had drifted badly), fix the CLI `vcard set`
