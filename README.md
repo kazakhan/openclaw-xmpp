@@ -146,41 +146,32 @@ Configured under `channels.xmpp.accounts.default` in `~/.openclaw/openclaw.json`
 }
 ```
 
-### Groupchat mention gating (v2.13.0)
+### Groupchat mention gating (v2.14.2)
 
-By default the bot only replies in MUC rooms when it is **@mentioned** — it stays
-silent otherwise, and never responds to mentions of other occupants.
+In MUC rooms the agent is invoked **only when this bot is @mentioned** — its own
+room nick (or its vCard nickname/full name or JID local part). Unmentioned
+chatter is still written to the message log, but it is **never sent to the
+agent** (no model call, no cost). A message that mentions other nicks does not
+wake the bot unless one of the mentions is the bot's own name.
 
-```json
-{
-  "channels": {
-    "xmpp": {
-      "groups": { "*": { "requireMention": true } }
-    }
-  }
-}
+To let the bot answer **all** group messages, opt out:
+```bash
+openclaw config set messages.groupChat.unmentionedInbound user_request
 ```
 
-Or via CLI (done automatically by the installers / `openclaw xmpp setup`):
+Installers / `openclaw xmpp setup` also set the mention requirement:
 ```bash
 openclaw config set "channels.xmpp.groups.*.requireMention" true
-openclaw config set messages.groupChat.unmentionedInbound room_event
 ```
 
-`messages.groupChat.unmentionedInbound: "room_event"` is what stops the agent
-answering **every** group message: unmentioned chatter is delivered as passive
-room context, and only an `@mention` (or a control command) wakes the agent.
-Set it to `"user_request"` if you want the bot to respond to all group messages.
-
-- A mention is `@` immediately followed by the bot's **room nick**, its
-  **vCard nickname/full name**, or its **JID local part** (case-insensitive).
-  Bare names without `@` do not count.
-- Per-room override, e.g. always reply in one room:
+- A mention is `@` immediately followed by the bot's own **room nick**, **vCard
+  nickname/full name**, or **JID local part** (case-insensitive, word boundary).
+  A message may mention several nicks; only a mention of the bot's own name
+  counts. Bare names without `@` do not count, and `@othernick` never wakes it.
+- Per-room override (e.g. always reply in one room):
   ```bash
   openclaw config set 'channels.xmpp.groups."room@conference.example".requireMention' false
   ```
-- The agent is told who is present (`group_members`) and can address occupants
-  with `@<nick>`.
 
 ### Password Encryption
 ```bash

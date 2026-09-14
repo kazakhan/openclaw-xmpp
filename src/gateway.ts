@@ -334,7 +334,7 @@ export class GatewayLifecycle {
         config,
         contacts,
         logger,
-        async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean, groupMembers?: string, groupSubject?: string }) => {
+        async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean }) => {
         if (!isRunning) {
           debugLog("XMPP message ignored - plugin not running");
           return;
@@ -436,24 +436,24 @@ export class GatewayLifecycle {
             );
             log.debug(`Store path: ${storePath}`);
 
-            // SECURITY (2.14.1): decide whether this group message should wake
-            // the agent ("user_request") or be passive room context
-            // ("room_event").  Unmentioned group chatter is passive by default
-            // so the bot does not answer every message; an @mention (or a
-            // control command) makes it a request.
+            // SECURITY (2.14.2): groupchat mention-only gate.  The agent is
+            // invoked ONLY when the bot is @mentioned in the room (its own
+            // nick) or a control command is addressed to it.  Unmentioned
+            // group chatter is persisted (above) but NEVER dispatched to the
+            // agent — no model call, no cost, and no replies.  Operators can
+            // opt out with messages.groupChat.unmentionedInbound="user_request".
             const isGroup = !!(roomJid || isGroupChat);
-            let inboundEventKind: "user_request" | "room_event" | undefined;
             if (isGroup) {
               const mentioned = options?.wasMentioned === true;
               const hasControlCommand = /(^|\n)\s*\/\S/.test(body || "");
               const policy = resolveXmppUnmentionedPolicy(ctx.cfg, route.agentId);
-              inboundEventKind =
-                policy !== "room_event"
-                  ? "user_request"
-                  : mentioned || hasControlCommand
-                    ? "user_request"
-                    : "room_event";
-              log.debug(`group event kind=${inboundEventKind} (mentioned=${mentioned} policy=${policy})`);
+              if (!mentioned && !hasControlCommand && policy !== "user_request") {
+                log.debug(
+                  `groupchat: not @mentioned for nick="${options?.botNick || "?"}" — skipping AI dispatch`,
+                );
+                this.queue.markAsProcessed(messageId);
+                return;
+              }
             }
 
             const ctxPayload = channelRuntime.reply.finalizeInboundContext({
@@ -472,21 +472,9 @@ export class GatewayLifecycle {
               SenderId: senderBareJid,
               Provider: "xmpp",
               Surface: "xmpp",
-              // SECURITY (2.13.0/2.14.1): groupchat mention gating + occupant
-              // context.  GroupRequireMention is intentionally NOT set here so
-              // the per-room `channels.xmpp.groups."*".requireMention` config
-              // stays authoritative.  InboundEventKind is what tells OpenClaw
-              // whether an unmentioned group message should wake the agent.
-              ...((roomJid || isGroupChat) ? {
-                BotUsername: options?.botNick || undefined,
-                WasMentioned: options?.wasMentioned === true,
-                ExplicitlyMentionedBot: options?.wasMentioned === true,
-                InboundEventKind: inboundEventKind,
-                ...(options?.groupMembers ? { GroupMembers: options.groupMembers } : {}),
-                ...((options?.groupSubject || options?.roomSubject)
-                  ? { GroupSubject: options.groupSubject || options.roomSubject }
-                  : {}),
-              } : { WasMentioned: false, InboundEventKind: "user_request" }),
+              // SECURITY (2.14.2): only reached when the bot was @mentioned in
+              // a group (or a DM).  No group context is injected.
+              WasMentioned: options?.wasMentioned === true,
               CommandAuthorized: true,
               CommandSource: "text",
               OriginatingChannel: "xmpp",

@@ -5,6 +5,78 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.2] - 2026-09-14
+
+**Fix: groupchat mention-only gate — the agent is no longer invoked on unmentioned
+messages (no cost, no replies), and only the bot's own @nick triggers it.**
+
+### Problem
+
+The 2.13.0 `@<nick>` work injected per-message group context
+(`GroupSystemPrompt`, `BotUsername`, `GroupMembers`, `GroupSubject`) and 2.14.1
+set `InboundEventKind: "room_event"`. Neither stopped the agent from running:
+`room_event` only suppresses **delivery** after the model has run, so every
+"Still holding." still cost a model call and could produce output.
+
+### Fix (revert + gate)
+
+- **Reverted the 2.13.0/2.14.1 group-turn injections** in `src/gateway.ts`:
+  no more `GroupSystemPrompt` / `BotUsername` / `ExplicitlyMentionedBot` /
+  `GroupMembers` / `GroupSubject` / `InboundEventKind`.
+- **Reverted occupant/subject tracking** in `src/startXMPP.ts`
+  (`roomOccupants`, `roomSubjects`).
+- **Added a mention-only gate** in `src/gateway.ts`: for a groupchat message that
+  is not @mentioned (and not a control command addressed to the bot), the message
+  is persisted to the message log and then **`return`ed before
+  `dispatchInboundReplyWithBase`** — the agent is never invoked. No model call,
+  no cost, no reply, no bot-to-bot loop.
+- **Own-nick only:** a mention counts only when `@` is followed by this bot's
+  room nick (or its vCard nickname/full name / JID local part), case-insensitive
+  with a word boundary. A message may mention several nicks; only a mention of
+  the bot's own name counts, and `@othernick` never wakes it.
+- Opt-out: `messages.groupChat.unmentionedInbound: "user_request"` restores
+  "answer all group messages".
+
+### Files changed
+
+- `src/gateway.ts` — removed group context injections; added the pre-dispatch gate
+- `src/startXMPP.ts` — removed occupant/subject tracking; keeps mention detection
+- `README.md` — document mention-only gating
+- `tests/v2.14.2-groupchat-mention-gate.test.ts` (new)
+- removed `tests/v2.13.0-*.test.ts`, `tests/v2.14.1-*.test.ts`
+
+### Backups
+
+- `_backups/2.14.2_20260914_171630/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.2_20260914_171630"
+rm -f tests/v2.14.2-groupchat-mention-gate.test.ts
+cp "$BK/gateway.ts"    src/gateway.ts
+cp "$BK/startXMPP.ts"  src/startXMPP.ts
+cp "$BK/mention.ts"    src/mention.ts
+cp "$BK/install.sh"    install.sh
+cp "$BK/install.ps1"   install.ps1
+cp "$BK/onboarding.ts" src/onboarding.ts
+cp "$BK/README.md"     README.md
+cp "$BK/package.json"  package.json
+cp "$BK/CHANGELOG.md"  CHANGELOG.md
+cp "$BK/v2.13.0-groupchat-mentions.test.ts" tests/v2.13.0-groupchat-mentions.test.ts
+cp "$BK/v2.14.1-groupchat-gating.test.ts"   tests/v2.14.1-groupchat-gating.test.ts
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors.
+- `node --test tests/*.test.ts` — new v2.14.2 suite passes.
+- Runtime: `wasBotMentioned` — `@angrybot`✓, `@alice @angrybot`✓ (multiple),
+  `@alice @bob`✗, `@angrybotx`✗ (boundary), `Still holding.`✗, `hey @Clawd`✓.
+- In production: unmentioned group chatter produces **zero** model-fetch calls.
+
 ## [2.14.1] - 2026-09-14
 
 **Fix: groupchat replies to every message — restored mention-only gating (code

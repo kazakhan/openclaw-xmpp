@@ -55,7 +55,7 @@ process.on('unhandledRejection', (reason: any, promise: any) => {
   log.error(`[UNHANDLED REJECTION] Stack: ${stack}`);
 });
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean, groupMembers?: string, groupSubject?: string }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string, description?: string) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string, description?: string) => void) {
     // SECURITY (2.0.18, L1): per-invocation import of @xmpp/client.
     // Node caches the module so the second call is a no-op.  See
     // the comment on the (now-removed) module-level binding.
@@ -203,12 +203,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     //                     we're a participant.
     const joinedRooms = new Set<string>();
     const roomNicks = new Map<string, string>();
-    // SECURITY (2.13.0): MUC occupant tracking (nick -> full JID) per room,
-    // built from inbound presence.  Used to give the agent awareness of who
-    // is in the room (`GroupMembers`) so it can @mention occupants by nick.
-    const roomOccupants = new Map<string, Map<string, string>>();
-    // SECURITY (2.13.0): last-known MUC room subject per room (for GroupSubject).
-    const roomSubjects = new Map<string, string>();
     const pendingJoins = new Map<string, {
       resolve: () => void;
       reject: (err: Error) => void;
@@ -328,8 +322,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     pendingJoins.clear();
     joinedRooms.clear();
     roomNicks.clear();
-    roomOccupants.clear();
-    roomSubjects.clear();
   });
 
   // SECURITY (2.1.3, restore-old-design): no SM (XEP-0198) keepalive.
@@ -655,12 +647,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         fullName: vcardMentionTokens.fullName,
       });
     }
-    function getGroupMembers(room: string): string {
-      const occ = roomOccupants.get(room);
-      if (!occ || occ.size === 0) return "";
-      return Array.from(occ.keys()).join(", ");
-    }
-
     xmpp.on("stanza", async (stanza: any) => {
      // debugLog("XMPP stanza received: " + stanza.toString().substring(0, 200));
      if (stanza.is("presence")) {
@@ -779,49 +765,15 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       
       if (type === "unavailable") {
         xmppLog.debug("muc", { room, nick, action: "leave" });
-        // SECURITY (2.13.0): maintain the occupant list.
-        if (nick) {
-          const occ = roomOccupants.get(room);
-          if (occ) {
-            occ.delete(nick);
-            if (occ.size === 0) roomOccupants.delete(room);
-          }
-        }
         // Check if bot was removed from room (kicked or left)
         const botNick = roomNicks.get(room);
         if (nick && nick === botNick) {
           xmppLog.debug("muc", { room, action: "bot-removed" });
           joinedRooms.delete(room);
           roomNicks.delete(room);
-          roomOccupants.delete(room);
-          roomSubjects.delete(room);
         }
       } else {
         xmppLog.debug("muc", { room, nick, action: "join" });
-        // SECURITY (2.13.0): track other occupants (exclude the bot itself).
-        // Status 303 = nick change: the payload carries the new nick in an
-        // <item nick="..."> element; move the old entry.
-        if (nick) {
-          const xUser = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
-          const item = xUser ? xUser.getChild('item') : null;
-          const isNickChange = xUser
-            ? xUser.getChildren('status').some((s: any) => s.attrs?.code === "303")
-            : false;
-          let occ = roomOccupants.get(room);
-          if (!occ) { occ = new Map<string, string>(); roomOccupants.set(room, occ); }
-          if (isNickChange && item?.attrs?.nick) {
-            // find and remove the old nick (the one whose full JID matches)
-            for (const [oldNick, fullJid] of occ.entries()) {
-              if (fullJid === from) { occ.delete(oldNick); break; }
-            }
-            occ.set(item.attrs.nick, from);
-          } else {
-            occ.set(nick, from);
-          }
-          // Never list the bot itself.
-          const selfNick = roomNicks.get(room);
-          if (selfNick && occ.has(selfNick)) occ.delete(selfNick);
-        }
     }
     }
     
@@ -1288,8 +1240,6 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          const isGroupChat = messageType === "groupchat";
           if (isGroupChat && subject && !body) {
             xmppLog.debug("room subject", { subject });
-            // SECURITY (2.13.0): remember the subject for GroupSubject context.
-            roomSubjects.set(from.split('/')[0], subject);
            // Forward subject as a special message to the agent
            const botNick = roomNicks.get(from.split('/')[0]);
             onMessage(from.split('/')[0], `[Room Subject: ${subject}]`, { type: messageType, room: from.split('/')[0], nick: '', botNick, roomSubject: subject, mediaUrls: [], mediaPaths: [], isSystemMessage: true });
@@ -1697,15 +1647,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
             return;
           }
           debugLog(`[NORMAL] Forwarding groupchat message from ${nick} to agent`);
-          // SECURITY (2.13.0): compute mention + occupant context so OpenClaw
-          // can gate group replies (mention-only) and inform the agent who is
-          // in the room for @mentions.
+          // SECURITY (2.14.2): mention-only gate.  Compute whether THIS bot is
+          // @mentioned (its own room nick / vCard names / JID localpart).
+          // A message may mention several nicks; only a mention of one of the
+          // bot's own names counts.  The gateway will skip the AI dispatch
+          // entirely when this is false — no model call, no reply.
           const mentionTokens = await getMentionTokens(roomJid);
           const mentioned = wasBotMentioned(body || '', mentionTokens);
-          const groupMembers = getGroupMembers(roomJid);
-          debugLog(`[NORMAL] groupchat mention=${mentioned} members="${groupMembers}"`);
+          debugLog(`[NORMAL] groupchat mention=${mentioned} (tokens=${mentionTokens.join("|")})`);
           // Use actual messageType from stanza - "groupchat" for public, "chat" for private
-          onMessage(roomJid, body || '', { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths, wasMentioned: mentioned, groupMembers, groupSubject: roomSubjects.get(roomJid) });
+          onMessage(roomJid, body || '', { type: messageType, room: roomJid, nick, botNick, mediaUrls, mediaPaths, wasMentioned: mentioned });
         } else {
           // Direct message
           if (await contacts.exists(fromBareJid)) {
