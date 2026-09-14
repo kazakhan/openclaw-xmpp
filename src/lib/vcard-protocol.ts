@@ -197,10 +197,10 @@ export function parseVCard(vcardEl: StanzaElement): VCardData {
   const org = vcardEl.getChild('ORG');
   if (org) {
     const orgname = org.getChild('ORGNAME');
-    const orgunit = org.getChild('ORGUNIT');
+    const orgunits = (org.getChildren('ORGUNIT') || []).map((u: any) => u.text()).filter(Boolean);
     data.org = {
       orgname: orgname ? orgname.text() : undefined,
-      orgunit: orgunit ? [orgunit.text()] : undefined
+      orgunit: orgunits.length > 0 ? orgunits : undefined
     };
   }
 

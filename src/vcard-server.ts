@@ -2,7 +2,7 @@ import { xml } from "@xmpp/client";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
-import { parseVCard, type VCardData } from "./lib/vcard-protocol.js";
+import { parseVCard, buildVCardStanza, type VCardData } from "./lib/vcard-protocol.js";
 import { buildVCard4, parseVCard4, VCARD4_PEP_NODE } from "./lib/vcard4-protocol.js";
 import { safeSend } from "./lib/xmpp-utils.js";
 import { debugLog } from "./shared/index.js";
@@ -86,20 +86,21 @@ export function createVCardServer(deps: VCardServerDeps) {
     };
     
     xmpp.on('stanza', handler);
-    
-    const vcardSet = xml("iq", { type: "set", id: vcardId },
-      xml("vCard", { xmlns: "vcard-temp" },
-        merged.fn ? xml("FN", {}, merged.fn) : null,
-        merged.nickname ? xml("NICKNAME", {}, merged.nickname) : null,
-        merged.url ? xml("URL", {}, merged.url) : null,
-        merged.desc ? xml("DESC", {}, merged.desc) : null,
-        (merged.avatarBinval || merged.avatarUrl) ? xml("PHOTO", {}, 
-          merged.avatarType ? xml("TYPE", {}, merged.avatarType) : null,
-          merged.avatarBinval ? xml("BINVAL", {}, merged.avatarBinval) : null,
-          merged.avatarUrl ? xml("EXTVAL", {}, merged.avatarUrl) : null
-        ) : null
-      )
-    );
+
+    // SECURITY (2.14.6): publish the FULL vCard via buildVCardStanza(), which
+    // emits every field (FN, N, NICKNAME, PHOTO, BDAY, TEL, EMAIL, ADR,
+    // JABBERID, MAILER, TZ, GEO, TITLE, ROLE, ORG, LOGO, CATEGORIES, NOTE, UID,
+    // URL, DESC, REV, PRODID, SORT-STRING).  The previous hand-built stanza
+    // dropped everything except FN/NICKNAME/URL/DESC/PHOTO, so /vcard
+    // email/tel/address/org/... silently failed to persist.
+    if (!merged.photo && (merged.avatarBinval || merged.avatarUrl)) {
+      merged.photo = {
+        ...(merged.avatarType ? { type: merged.avatarType } : {}),
+        ...(merged.avatarBinval ? { binval: merged.avatarBinval } : {}),
+        ...(merged.avatarUrl ? { extval: merged.avatarUrl } : {}),
+      };
+    }
+    const vcardSet = buildVCardStanza(merged, vcardId);
     
     try {
       xmppLog.debug("vCard update sending", { id: vcardId });

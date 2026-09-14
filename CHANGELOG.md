@@ -5,6 +5,78 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.6] - 2026-09-14
+
+**Fix: agents couldn't set most vCard fields (email, tel, address, org, …) from
+chat — the write path dropped everything but FN/NICKNAME/URL/DESC/PHOTO.  All
+vCard fields can now be set from chat or CLI and persist.**
+
+### Root cause
+
+The chat/agent write path (`vcardServer.updateVCardOnServer`, used by
+`/vcard …`) hand-built the vCard stanza with only **five** elements:
+`FN`, `NICKNAME`, `URL`, `DESC`, `PHOTO`. So `EMAIL`, `TEL`, `ADR`, `ORG`,
+`BDAY`, `N`, `JABBERID`, `MAILER`, `TZ`, `GEO`, `TITLE`, `ROLE`, `LOGO`,
+`CATEGORIES`, `NOTE`, `UID`, `PRODID`, `SORT-STRING` were silently dropped. The
+server still returned `result`, so the bot replied "Email added" while nothing
+was stored. (The CLI path used `buildVCardStanza()` and worked, which is why
+CLI and chat behaved differently.)
+
+### Changed
+
+- **`src/vcard-server.ts`** — `updateVCardOnServer()` now builds the full vCard
+  via **`buildVCardStanza(merged, id)`** (all fields), sending it directly
+  (`buildVCardStanza` returns the `<iq>`; no double-wrap). Avatar fields are
+  normalized (`avatarBinval`/`avatarType`/`avatarUrl` → `photo`). This fixes
+  email/tel/address/org/name/etc. for agents and the vCard4 republish.
+- **`src/slash-commands.ts`** — `/vcard set <field> <value>` now covers every
+  field: `fn`, `nickname`, `url`, `desc`, `bday|birthday`, `title`, `role`,
+  `tz|timezone`, `jabberid`, `mailer`, `note`, `uid`, `prodid`,
+  `sortString|sort-string`, `categories` (comma-separated), `geo <lat> <lon>`;
+  local persistence via `vcard.update(updates)`. `/vcard get` prints all fields.
+- **`src/vcard-cli.ts`** — `setVCard()` normalizes aliases
+  (`birthday→bday`, `timezone→tz`, `jabber→jabberid`, `sort-string→sortString`)
+  and handles `geo`/`categories`. CLI `vcard get` prints all fields.
+- **`src/lib/vcard-protocol.ts`** — `parseVCard()` now reads **all** `ORGUNIT`
+  children (was only the first).
+- **`src/lib/vcard4-protocol.ts`** — vCard4 maps `jabberid` → `<impp>` and
+  `geo` → `<geo>` in addition to the standard fields.
+
+### Files changed
+
+- `src/vcard-server.ts`, `src/slash-commands.ts`, `src/vcard-cli.ts`,
+  `src/lib/vcard-protocol.ts`, `src/lib/vcard4-protocol.ts`, `src/commands.ts`
+- `tests/v2.14.6-vcard-all-fields.test.ts` (new)
+- `package.json` — 2.14.6
+
+### Backups
+
+- `_backups/2.14.6_20260914_191659/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.6_20260914_191659"
+rm -f tests/v2.14.6-vcard-all-fields.test.ts
+cp "$BK/vcard-server.ts"        src/vcard-server.ts
+cp "$BK/slash-commands.ts"      src/slash-commands.ts
+cp "$BK/vcard-cli.ts"           src/vcard-cli.ts
+cp "$BK/vcard-protocol.ts"      src/lib/vcard-protocol.ts
+cp "$BK/vcard4-protocol.ts"     src/lib/vcard4-protocol.ts
+cp "$BK/commands.ts"            src/commands.ts
+cp "$BK/package.json"           package.json
+cp "$BK/CHANGELOG.md"           CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors.
+- `node --test tests/*.test.ts` — new v2.14.6 suite passes.
+- Live: `updateVCardOnServer({ email, note, geo })` persists `email` + `note`
+  in vcard-temp and publishes all three to the vCard4 PEP node.
+
 ## [2.14.5] - 2026-09-14
 
 **Feature: publish vCard4 (XEP-0292) over PEP, alongside the legacy vcard-temp

@@ -65,6 +65,11 @@ export function buildVCard4(data: VCardData): any {
   push(textProp("role", data.role));
   push(textProp("tz", data.tz));
 
+  if (data.jabberid) push(xml("impp", {}, xml("uri", {}, `xmpp:${data.jabberid}`)));
+  if (data.geo?.lat && data.geo?.lon) {
+    push(xml("geo", {}, xml("uri", {}, `geo:${data.geo.lat},${data.geo.lon}`)));
+  }
+
   if (data.tel) {
     for (const p of data.tel) {
       const el = xml("tel", {}, []);
@@ -153,6 +158,15 @@ export function parseVCard4(vcardEl: any): VCardData {
   data.role = t(vcardEl, "role");
   data.tz = t(vcardEl, "tz");
   data.uid = t(vcardEl, "uid");
+
+  const impp = vcardEl.getChild?.("impp")?.getChildText("uri");
+  if (impp) data.jabberid = String(impp).replace(/^xmpp:/, "");
+  const geoUri = vcardEl.getChild?.("geo")?.getChildText("uri");
+  if (geoUri) {
+    const parts = String(geoUri).replace(/^geo:/, "").split(",");
+    if (parts.length >= 2) data.geo = { lat: parts[0], lon: parts[1] };
+  }
+  data.prodid = t(vcardEl, "prodid");
 
   const rev = vcardEl.getChild?.("rev");
   if (rev) data.rev = rev.getChildText("timestamp") || undefined;

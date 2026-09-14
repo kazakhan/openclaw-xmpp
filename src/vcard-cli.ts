@@ -151,7 +151,24 @@ export async function setVCard(field: string, value: string): Promise<{ ok: bool
         xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
       );
       const vcard = parseVCard(response?.getChild('vCard'));
-      (vcard as any)[field] = value;
+
+      // SECURITY (2.14.6): accept field aliases and complex fields so every
+      // vCard field can be set from the CLI (previously `birthday`/`timezone`
+      // set wrong keys and geo/categories weren't supported).
+      const f = field.toLowerCase();
+      if (f === 'geo') {
+        const parts = value.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+        if (parts.length < 2) throw new Error("geo requires '<lat> <lon>'");
+        (vcard as any).geo = { lat: parts[0], lon: parts[1] };
+      } else if (f === 'categories' || f === 'category') {
+        (vcard as any).categories = value.split(',').map((s) => s.trim()).filter(Boolean);
+      } else {
+        const key = ({
+          birthday: 'bday', timezone: 'tz', jabber: 'jabberid',
+          'sort-string': 'sortString', sortstring: 'sortString', sort: 'sortString',
+        } as Record<string, string>)[f] || field;
+        (vcard as any)[key] = value;
+      }
 
       // Fire-and-forget SET; the server is expected to process it
       // and any subsequent IQ in the same connection will arrive

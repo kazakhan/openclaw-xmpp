@@ -330,10 +330,18 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
   /vcard set nickname <value> - Set Nickname
   /vcard set url <value> - Set URL
   /vcard set desc <value> - Set Description
-  /vcard set birthday <YYYY-MM-DD> - Set Birthday
+  /vcard set bday <YYYY-MM-DD> - Set Birthday
   /vcard set title <value> - Set Job Title
   /vcard set role <value> - Set Job Role
-  /vcard set timezone <value> - Set Timezone
+  /vcard set tz <value> - Set Timezone
+  /vcard set jabberid <jid> - Set Jabber ID
+  /vcard set mailer <value> - Set Mailer
+  /vcard set note <value> - Set Note
+  /vcard set uid <value> - Set UID
+  /vcard set prodid <value> - Set PRODID
+  /vcard set sortString <value> - Set Sort String
+  /vcard set categories <a,b,c> - Set Categories
+  /vcard set geo <lat> <lon> - Set Geolocation
   /vcard set avatar <url> - Upload image from URL as avatar
   /vcard set avatar - Upload attached image as avatar
   /vcard name <family> <given> [middle] [prefix] [suffix] - Set structured name
@@ -365,6 +373,14 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
               info += `\n  Timezone: ${userVCard.tz || '(not set)'}`;
               info += `\n  URL: ${userVCard.url || '(not set)'}`;
               info += `\n  Desc: ${userVCard.desc || '(not set)'}`;
+              info += `\n  Jabber ID: ${userVCard.jabberid || '(not set)'}`;
+              info += `\n  Mailer: ${userVCard.mailer || '(not set)'}`;
+              info += `\n  Note: ${userVCard.note || '(not set)'}`;
+              info += `\n  UID: ${userVCard.uid || '(not set)'}`;
+              info += `\n  PRODID: ${userVCard.prodid || '(not set)'}`;
+              info += `\n  Sort String: ${userVCard.sortString || '(not set)'}`;
+              info += `\n  Categories: ${userVCard.categories?.length ? userVCard.categories.join(', ') : '(not set)'}`;
+              info += `\n  Geo: ${userVCard.geo ? userVCard.geo.lat + ',' + userVCard.geo.lon : '(not set)'}`;
               info += `\n  Avatar URL: ${userVCard.avatarUrl || '(not set)'}`;
               if (userVCard.tel && userVCard.tel.length > 0) {
                 info += `\n  Phone Numbers:`;
@@ -403,6 +419,14 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
               info += `\n  Timezone: ${botVCard.tz || '(not set)'}`;
               info += `\n  URL: ${botVCard.url || '(not set)'}`;
               info += `\n  Desc: ${botVCard.desc || '(not set)'}`;
+              info += `\n  Jabber ID: ${botVCard.jabberid || '(not set)'}`;
+              info += `\n  Mailer: ${botVCard.mailer || '(not set)'}`;
+              info += `\n  Note: ${botVCard.note || '(not set)'}`;
+              info += `\n  UID: ${botVCard.uid || '(not set)'}`;
+              info += `\n  PRODID: ${botVCard.prodid || '(not set)'}`;
+              info += `\n  Sort String: ${botVCard.sortString || '(not set)'}`;
+              info += `\n  Categories: ${botVCard.categories?.length ? botVCard.categories.join(', ') : '(not set)'}`;
+              info += `\n  Geo: ${botVCard.geo ? botVCard.geo.lat + ',' + botVCard.geo.lon : '(not set)'}`;
               info += `\n  Avatar URL: ${botVCard.avatarUrl || '(not set)'}`;
               if (botVCard.tel && botVCard.tel.length > 0) {
                 info += `\n  Phone Numbers:`;
@@ -544,40 +568,47 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
           }
           
           if (cmdArgs.length < 3) {
-            await sendReply('Usage: /vcard set <field> <value>\nSimple fields: fn, nickname, url, desc, birthday, title, role, timezone');
+            await sendReply('Usage: /vcard set <field> <value>\nFields: fn, nickname, url, desc, bday|birthday, title, role, tz|timezone, jabberid, mailer, note, uid, prodid, sortString, categories (comma-separated), geo <lat> <lon>\nMulti-value: /vcard name|phone|email|address|org|avatar');
             return;
           }
-          
+
           const value = cmdArgs.slice(2).join(' ');
-          
-          if (!['fn', 'nickname', 'url', 'desc', 'birthday', 'title', 'role', 'timezone'].includes(field)) {
-            await sendReply(`Unknown field: ${field}. Available fields: fn, nickname, url, desc, birthday, title, role, timezone, avatar`);
-            return;
-          }
-          
+
           const updates: any = {};
-          if (field === 'fn') updates.fn = value;
-          if (field === 'nickname') updates.nickname = value;
-          if (field === 'url') updates.url = value;
-          if (field === 'desc') updates.desc = value;
-          if (field === 'birthday') updates.bday = value;
-          if (field === 'title') updates.title = value;
-          if (field === 'role') updates.role = value;
-          if (field === 'timezone') updates.tz = value;
-          
+          switch (field) {
+            case 'fn': updates.fn = value; break;
+            case 'nickname': updates.nickname = value; break;
+            case 'url': updates.url = value; break;
+            case 'desc': updates.desc = value; break;
+            case 'bday': case 'birthday': updates.bday = value; break;
+            case 'title': updates.title = value; break;
+            case 'role': updates.role = value; break;
+            case 'tz': case 'timezone': updates.tz = value; break;
+            case 'jabberid': case 'jabber': updates.jabberid = value; break;
+            case 'mailer': updates.mailer = value; break;
+            case 'note': updates.note = value; break;
+            case 'uid': updates.uid = value; break;
+            case 'prodid': updates.prodid = value; break;
+            case 'sortstring': case 'sort-string': case 'sort': updates.sortString = value; break;
+            case 'categories': case 'category':
+              updates.categories = value.split(',').map((s) => s.trim()).filter(Boolean);
+              break;
+            case 'geo': {
+              const parts = value.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+              if (parts.length < 2) { await sendReply('Usage: /vcard set geo <lat> <lon>'); return; }
+              updates.geo = { lat: parts[0], lon: parts[1] };
+              break;
+            }
+            default:
+              await sendReply(`Unknown field: ${field}. Use /vcard help for available fields.`);
+              return;
+          }
+
           const success = await vcardServer.updateVCardOnServer(updates);
-          
+
           if (success) {
-            if (field === 'fn') await vcard.setFN(value);
-            if (field === 'nickname') await vcard.setNickname(value);
-            if (field === 'url') await vcard.setUrl(value);
-            if (field === 'desc') await vcard.setDesc(value);
-            if (field === 'birthday') await vcard.setBday(value);
-            if (field === 'title') await vcard.setTitle(value);
-            if (field === 'role') await vcard.setRole(value);
-            if (field === 'timezone') await vcard.setTz(value);
-            
-            await sendReply(`vCard field '${field}' updated on server: ${value}`);
+            await vcard.update(updates);
+            await sendReply(`vCard field '${field}' updated on server`);
           } else {
             await sendReply("Failed to update vCard on server");
           }

@@ -477,10 +477,18 @@ export function registerXmppCli({
   openclaw xmpp vcard set url <value> - Set URL
   openclaw xmpp vcard set desc <value> - Set Description
   openclaw xmpp vcard set avatar <url-or-path> - Upload image as avatar
-  openclaw xmpp vcard set birthday <YYYY-MM-DD> - Set Birthday
+  openclaw xmpp vcard set birthday <YYYY-MM-DD> - Set Birthday (alias: bday)
   openclaw xmpp vcard set title <value> - Set Job Title
   openclaw xmpp vcard set role <value> - Set Job Role
-  openclaw xmpp vcard set timezone <value> - Set Timezone
+  openclaw xmpp vcard set timezone <value> - Set Timezone (alias: tz)
+  openclaw xmpp vcard set jabberid <jid> - Set Jabber ID
+  openclaw xmpp vcard set mailer <value> - Set Mailer
+  openclaw xmpp vcard set note <value> - Set Note
+  openclaw xmpp vcard set uid <value> - Set UID
+  openclaw xmpp vcard set prodid <value> - Set PRODID
+  openclaw xmpp vcard set sortString <value> - Set Sort String
+  openclaw xmpp vcard set categories <a,b,c> - Set Categories
+  openclaw xmpp vcard set geo <lat> <lon> - Set Geolocation
   openclaw xmpp vcard name <family> <given> [middle] [prefix] [suffix] - Set structured name
   openclaw xmpp vcard phone add <number> [type...] - Add phone (types: home work voice fax cell video pager msg)
   openclaw xmpp vcard phone remove <index> - Remove phone by index
@@ -528,6 +536,14 @@ Note: Commands connect directly to XMPP server.`);
             console.log(`  Timezone: ${result.data.tz || '(not set)'}`);
             console.log(`  URL: ${result.data.url || '(not set)'}`);
             console.log(`  Desc: ${result.data.desc || '(not set)'}`);
+            console.log(`  Jabber ID: ${result.data.jabberid || '(not set)'}`);
+            console.log(`  Mailer: ${result.data.mailer || '(not set)'}`);
+            console.log(`  Note: ${result.data.note || '(not set)'}`);
+            console.log(`  UID: ${result.data.uid || '(not set)'}`);
+            console.log(`  PRODID: ${result.data.prodid || '(not set)'}`);
+            console.log(`  Sort String: ${result.data.sortString || '(not set)'}`);
+            console.log(`  Categories: ${result.data.categories?.length ? result.data.categories.join(', ') : '(not set)'}`);
+            console.log(`  Geo: ${result.data.geo ? `${result.data.geo.lat},${result.data.geo.lon}` : '(not set)'}`);
             console.log(`  Avatar URL: ${result.data.avatarUrl || '(not set)'}`);
 
             // Phone numbers (multi-value)
