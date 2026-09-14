@@ -12,6 +12,32 @@ import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } 
 
 export { type GatewayContext } from "./types.js";
 
+// SECURITY (2.14.1): groupchat unmentioned-message policy.
+//
+// OpenClaw's generic channel dispatch reads `InboundEventKind` from the inbound
+// context and defaults it to "user_request" — meaning EVERY group message wakes
+// the agent and is answered like a direct request.  The channel plugin must set
+// it.  For XMPP the default is "room_event" (passive; the bot stays silent
+// unless @mentioned), matching long-standing behaviour.  Operators can opt back
+// into "user_request" via messages.groupChat.unmentionedInbound (or a per-agent
+// agents.entries.<id>.groupChat.unmentionedInbound override).
+function resolveXmppUnmentionedPolicy(
+  cfg: any,
+  agentId?: string,
+): "user_request" | "room_event" {
+  try {
+    const agentVal = agentId
+      ? cfg?.agents?.entries?.[agentId]?.groupChat?.unmentionedInbound
+      : undefined;
+    const globalVal = cfg?.messages?.groupChat?.unmentionedInbound;
+    const v = agentVal ?? globalVal;
+    if (v === "user_request" || v === "room_event") return v;
+  } catch {
+    /* ignore malformed config */
+  }
+  return "room_event";
+}
+
 interface LifecycleDeps {
   xmppClients: Map<string, XmppClient>;
   contactsStore: Map<string, any>;
@@ -410,6 +436,26 @@ export class GatewayLifecycle {
             );
             log.debug(`Store path: ${storePath}`);
 
+            // SECURITY (2.14.1): decide whether this group message should wake
+            // the agent ("user_request") or be passive room context
+            // ("room_event").  Unmentioned group chatter is passive by default
+            // so the bot does not answer every message; an @mention (or a
+            // control command) makes it a request.
+            const isGroup = !!(roomJid || isGroupChat);
+            let inboundEventKind: "user_request" | "room_event" | undefined;
+            if (isGroup) {
+              const mentioned = options?.wasMentioned === true;
+              const hasControlCommand = /(^|\n)\s*\/\S/.test(body || "");
+              const policy = resolveXmppUnmentionedPolicy(ctx.cfg, route.agentId);
+              inboundEventKind =
+                policy !== "room_event"
+                  ? "user_request"
+                  : mentioned || hasControlCommand
+                    ? "user_request"
+                    : "room_event";
+              log.debug(`group event kind=${inboundEventKind} (mentioned=${mentioned} policy=${policy})`);
+            }
+
             const ctxPayload = channelRuntime.reply.finalizeInboundContext({
               Body: body,
               RawBody: body,
@@ -426,21 +472,21 @@ export class GatewayLifecycle {
               SenderId: senderBareJid,
               Provider: "xmpp",
               Surface: "xmpp",
-              // SECURITY (2.13.0): groupchat mention gating + occupant context.
-              // GroupRequireMention is intentionally NOT set here so the
-              // per-room `channels.xmpp.groups."*".requireMention` config stays
-              // authoritative (per-room overrides possible).
+              // SECURITY (2.13.0/2.14.1): groupchat mention gating + occupant
+              // context.  GroupRequireMention is intentionally NOT set here so
+              // the per-room `channels.xmpp.groups."*".requireMention` config
+              // stays authoritative.  InboundEventKind is what tells OpenClaw
+              // whether an unmentioned group message should wake the agent.
               ...((roomJid || isGroupChat) ? {
                 BotUsername: options?.botNick || undefined,
                 WasMentioned: options?.wasMentioned === true,
                 ExplicitlyMentionedBot: options?.wasMentioned === true,
+                InboundEventKind: inboundEventKind,
                 ...(options?.groupMembers ? { GroupMembers: options.groupMembers } : {}),
                 ...((options?.groupSubject || options?.roomSubject)
                   ? { GroupSubject: options.groupSubject || options.roomSubject }
                   : {}),
-                GroupSystemPrompt:
-                  "Occupants can be addressed with @<nick>. Mention the bot with @<botNick> or @<displayName>.",
-              } : { WasMentioned: false }),
+              } : { WasMentioned: false, InboundEventKind: "user_request" }),
               CommandAuthorized: true,
               CommandSource: "text",
               OriginatingChannel: "xmpp",

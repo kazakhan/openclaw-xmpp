@@ -57,6 +57,7 @@ openclaw config set messages.groupChat.visibleReplies automatic || true
 
 echo "Enforcing groupchat mention gating (reply only when @mentioned)..."
 openclaw config set "channels.xmpp.groups.*.requireMention" true || true
+openclaw config set messages.groupChat.unmentionedInbound room_event || true
 
 echo ""
 echo "============================================"

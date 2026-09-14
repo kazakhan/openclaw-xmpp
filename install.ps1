@@ -91,6 +91,10 @@ Write-Host "Enforcing groupchat mention gating (reply only when @mentioned)..."
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: failed to set channels.xmpp.groups.*.requireMention (exit $LASTEXITCODE)" -ForegroundColor Yellow
 }
+& openclaw config set messages.groupChat.unmentionedInbound room_event
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: failed to set messages.groupChat.unmentionedInbound (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "============================================"

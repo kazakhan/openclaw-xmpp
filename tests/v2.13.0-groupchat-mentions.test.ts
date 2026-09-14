@@ -80,11 +80,10 @@ describe('Fix 2.13.0: gateway context wiring (src/gateway.ts)', () => {
     assert.match(src, /ExplicitlyMentionedBot:\s*options\?\.wasMentioned\s*===\s*true/);
   });
 
-  it('sets GroupMembers only when non-empty and GroupSubject/GroupSystemPrompt', async () => {
+  it('sets GroupMembers only when non-empty and GroupSubject', async () => {
     const src = await readSource('src/gateway.ts');
     assert.match(src, /options\?\.groupMembers\s*\?\s*\{\s*GroupMembers:\s*options\.groupMembers\s*\}/);
     assert.match(src, /GroupSubject:/);
-    assert.match(src, /GroupSystemPrompt:/);
   });
 
   it('does NOT force GroupRequireMention (per-room flexibility)', async () => {

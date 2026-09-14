@@ -164,7 +164,13 @@ silent otherwise, and never responds to mentions of other occupants.
 Or via CLI (done automatically by the installers / `openclaw xmpp setup`):
 ```bash
 openclaw config set "channels.xmpp.groups.*.requireMention" true
+openclaw config set messages.groupChat.unmentionedInbound room_event
 ```
+
+`messages.groupChat.unmentionedInbound: "room_event"` is what stops the agent
+answering **every** group message: unmentioned chatter is delivered as passive
+room context, and only an `@mention` (or a control command) wakes the agent.
+Set it to `"user_request"` if you want the bot to respond to all group messages.
 
 - A mention is `@` immediately followed by the bot's **room nick**, its
   **vCard nickname/full name**, or its **JID local part** (case-insensitive).

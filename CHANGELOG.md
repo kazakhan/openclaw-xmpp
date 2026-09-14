@@ -5,6 +5,85 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.1] - 2026-09-14
+
+**Fix: groupchat replies to every message — restored mention-only gating (code
+fix).**
+
+### Root cause (regression)
+
+The plugin originally computed `wasMentioned` and passed it in the inbound
+context:
+```js
+const wasMentioned = isGroupChat && botNick
+  ? body.includes(botNick) || body.includes(`@${botNick}`) : false;
+WasMentioned: wasMentioned,
+```
+Commit `3218573` ("Shared Session Memory, Vcard", 2026-02-02) deleted that and
+hardcoded `WasMentioned: false`, removing group mention gating.
+
+Independently, OpenClaw's generic channel dispatch reads `InboundEventKind`
+from the inbound context and **defaults it to `"user_request"`**
+(`run-channel-turn: InboundEventKind: params.message.inboundEventKind ??
+"user_request"`); `buildChannelTurnContext` does not classify — the channel
+must. The plugin never set `InboundEventKind`, so **every** group message woke
+the agent as a direct request and it answered all of them.
+
+### Fix (code)
+
+- **`src/gateway.ts`**: for groupchat, compute and set `InboundEventKind`:
+  - `resolveXmppUnmentionedPolicy(cfg, agentId)` — XMPP default is
+    `"room_event"` (passive); honours `messages.groupChat.unmentionedInbound`
+    and `agents.entries.<id>.groupChat.unmentionedInbound` when set.
+  - `mentioned || control-command` → `"user_request"`; otherwise `"room_event"`.
+  - Direct messages → `"user_request"`.
+- **Removed the per-message `GroupSystemPrompt`** introduced in 2.13.0 (it
+  provoked the "I see the context for the group chat…" meta replies).
+- Kept the 2.13.0 mention detection (`@botNick` / vCard nickname / full name /
+  JID localpart) and occupant awareness (`GroupMembers`, `GroupSubject`).
+
+### Defaults
+
+- `install.sh` / `install.ps1` / `openclaw xmpp setup` / README now also set
+  `messages.groupChat.unmentionedInbound = "room_event"` (complements the code
+  fix; the code fix is what makes it work).
+
+### Files changed
+
+- `src/gateway.ts` — `InboundEventKind` classification, drop `GroupSystemPrompt`
+- `install.sh`, `install.ps1` — set `unmentionedInbound`
+- `src/onboarding.ts` — wizard writes `unmentionedInbound: "room_event"`
+- `README.md` — document the setting
+- `tests/v2.14.1-groupchat-gating.test.ts` (new); `tests/v2.13.0-*.test.ts` updated
+
+### Backups
+
+- `_backups/2.14.1_20260914_170339/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.1_20260914_170339"
+rm -f tests/v2.14.1-groupchat-gating.test.ts
+cp "$BK/gateway.ts"    src/gateway.ts
+cp "$BK/startXMPP.ts"  src/startXMPP.ts
+cp "$BK/onboarding.ts" src/onboarding.ts
+cp "$BK/install.sh"    install.sh
+cp "$BK/install.ps1"   install.ps1
+cp "$BK/README.md"     README.md
+cp "$BK/package.json"  package.json
+cp "$BK/CHANGELOG.md"  CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors.
+- `node --test tests/*.test.ts` — new v2.14.1 suite passes.
+- Behaviour: unmentioned group chatter is delivered as a passive room event
+  (no auto-reply); an `@mention` (or control command) wakes the agent.
+
 ## [2.14.0] - 2026-09-14
 
 **Feature: secure SFTP re-introduced (pinned host key, fail closed).**

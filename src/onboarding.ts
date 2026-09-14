@@ -486,6 +486,16 @@ export async function runXmppOnboarding(options: OnboardingOptions = {}): Promis
       requireMention: true,
     };
   }
+  // SECURITY (2.14.1): mark unmentioned group chatter as passive room events
+  // (so the agent doesn't answer every message). Preserve an explicit operator
+  // choice if already set.
+  if (merged.messages == null || typeof merged.messages !== "object") merged.messages = {};
+  if (merged.messages.groupChat == null || typeof merged.messages.groupChat !== "object") {
+    merged.messages.groupChat = {};
+  }
+  if (merged.messages.groupChat.unmentionedInbound == null) {
+    merged.messages.groupChat.unmentionedInbound = "room_event";
+  }
 
   try {
     await writeOpenclawConfig(configPath, merged);
