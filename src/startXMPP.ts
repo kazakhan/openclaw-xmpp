@@ -270,12 +270,20 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   // firewall idle timers from silently killing the TCP socket.
   let whitespaceKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
-  // SECURITY (2.12.0): auto-update timer handle.  Declared before the
-  // offline/online handlers so both can clear/set it.  Periodically
-  // checks the GitHub repo for a newer release and notifies the admin
-  // (notify-only; the operator decides whether to run `openclaw xmpp
-  // update`).  Disabled by config: cfg.autoUpdate.enabled === false.
+  // SECURITY (2.12.0/2.13.1): auto-update.  Periodically checks the
+  // GitHub repo for a newer release, then ASKS the admin(s) via XMPP
+  // ("reply yes to install").  On "yes" it installs the update and
+  // restarts the gateway.  Disabled via cfg.autoUpdate.enabled === false.
   let autoUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  // Pending update prompt: set when a newer release is announced; a
+  // "yes"/"no" reply from an admin acts on it and clears it.
+  let pendingUpdate: {
+    latest: string;
+    current: string;
+    admins: string[];
+    expiresAt: number;
+  } | null = null;
+  const UPDATE_PROMPT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
   // SECURITY (2.1.3, restore-old-design): NO `xmpp.on("disconnect", ...)`
   // handler that triggers reconnection.  The OLD design from
@@ -304,6 +312,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       clearInterval(autoUpdateTimer);
       autoUpdateTimer = null;
     }
+    pendingUpdate = null;
     whiteboardSessionManager.stopCleanup();
     whiteboardSessionManager.destroy();
     // SECURITY (2.1.4): reject any in-flight MUC join
@@ -473,51 +482,76 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         }
       }
 
-      // SECURITY (2.12.0): periodic auto-update check.  notify-only: it
-      // does not auto-install.  On finding a newer release it messages
-      // the admin JID(s) with the `openclaw xmpp update` command.  The
-      // operator decides whether to actually run the update.  Disabled
-      // via cfg.autoUpdate.enabled = false; interval via
-      // cfg.autoUpdate.intervalHours (default 6).
+      // SECURITY (2.12.0/2.13.1): periodic auto-update check that ASKS the
+      // admin(s) before installing.  On a newer release it messages the admin
+      // JID(s): "reply yes to install, no to skip".  An admin's "yes" reply
+      // (intercepted in the message handler) installs the update and restarts
+      // the gateway.  `mode: "auto"` installs without asking.  Disabled via
+      // cfg.autoUpdate.enabled = false; interval via cfg.autoUpdate.intervalHours
+      // (default 6h); restart via cfg.autoUpdate.autoRestart (default true).
       {
         const autoUpdate = cfg?.autoUpdate ?? {};
         if (autoUpdate.enabled !== false) {
           const hours = Number(autoUpdate.intervalHours || 6);
+          const autoMode = String(autoUpdate.mode || "ask").toLowerCase() === "auto";
           if (hours > 0) {
             if (autoUpdateTimer) {
               clearInterval(autoUpdateTimer);
               autoUpdateTimer = null;
             }
+            const collectAdmins = async (): Promise<string[]> => {
+              const admins: string[] = [];
+              if (cfg?.adminJid?.trim()) admins.push(cfg.adminJid.trim());
+              try {
+                const adminList = await contacts.listAdmins();
+                for (const a of (adminList || [])) {
+                  const jid = typeof a === "string" ? a : a?.jid || (a as any)?.address;
+                  if (jid && !admins.includes(jid)) admins.push(jid);
+                }
+              } catch {
+                /* ignore */
+              }
+              if (admins.length === 0 && cfg?.jid) admins.push(String(cfg.jid).split("/")[0]);
+              return admins;
+            };
             const runUpdateCheck = async (): Promise<void> => {
               try {
-                const { checkForUpdate, notifyUpdateAvailable } = await import('./updater.js');
+                const { checkForUpdate, formatAskMessage, performUpdate, restartGateway } = await import('./updater.js');
                 const info = await checkForUpdate();
-                if (info.updateAvailable) {
-                  const admins: string[] = [];
-                  if (cfg?.adminJid?.trim()) admins.push(cfg.adminJid.trim());
-                  try {
-                    const adminList = await contacts.listAdmins();
-                    for (const a of (adminList || [])) {
-                      const jid = typeof a === "string" ? a : a?.jid || (a as any)?.address;
-                      if (jid && !admins.includes(jid)) admins.push(jid);
-                    }
-                  } catch {
-                    /* ignore */
+                if (!info.updateAvailable) return;
+                const admins = await collectAdmins();
+                if (admins.length === 0) return;
+
+                if (autoMode) {
+                  xmppLog.info(`auto-update: installing v${info.latest} (mode=auto)`);
+                  for (const jid of admins) { try { xmpp.send(jid, `[XMPP Update] Installing v${info.latest}...`); } catch { /* ignore */ } }
+                  const result = await performUpdate();
+                  xmppLog.info(`auto-update: install result: ${result.message}`);
+                  for (const jid of admins) { try { xmpp.send(jid, `[XMPP Update] ${result.message}`); } catch { /* ignore */ } }
+                  if (result.ok && result.toVersion && autoUpdate.autoRestart !== false) {
+                    restartGateway();
                   }
-                  if (admins.length === 0 && cfg?.jid) {
-                    admins.push(String(cfg.jid).split("/")[0]);
-                  }
-                  if (admins.length > 0) {
-                    notifyUpdateAvailable(xmpp, admins, info);
-                    xmppLog.info(`auto-update: notified admins of v${info.latest} (current v${info.current})`);
-                  }
+                  return;
                 }
+
+                // mode=ask: prompt and wait for an admin's yes/no reply.
+                pendingUpdate = {
+                  latest: info.latest,
+                  current: info.current,
+                  admins,
+                  expiresAt: Date.now() + UPDATE_PROMPT_TTL_MS,
+                };
+                const ask = formatAskMessage(info);
+                for (const jid of admins) { try { xmpp.send(jid, ask); } catch { /* ignore */ } }
+                xmppLog.info(`auto-update: asked admins to install v${info.latest} (current v${info.current})`);
               } catch (err) {
                 xmppLog.debug(`auto-update check failed: ${err instanceof Error ? err.message : String(err)}`);
               }
             };
             autoUpdateTimer = setInterval(runUpdateCheck, hours * 60 * 60 * 1000);
-            xmppLog.debug(`auto-update: armed (every ${hours}h)`);
+            // Also check shortly after connect so the prompt doesn't wait a full interval.
+            setTimeout(runUpdateCheck, 60 * 1000);
+            xmppLog.debug(`auto-update: armed (every ${hours}h, mode=${autoMode ? "auto" : "ask"})`);
           }
         }
       }
@@ -1675,6 +1709,42 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         } else {
           // Direct message
           if (await contacts.exists(fromBareJid)) {
+            // SECURITY (2.13.1): intercept an admin's yes/no reply to an active
+            // auto-update prompt BEFORE dispatching to the AI.  Only exact
+            // tokens, only from an admin, only while a prompt is pending — all
+            // other messages fall through to normal handling.
+            if (pendingUpdate && Date.now() < pendingUpdate.expiresAt) {
+              const senderBare = fromBareJid.split("/")[0].toLowerCase();
+              const isAdminSender = pendingUpdate.admins.some(
+                (a) => a.split("/")[0].toLowerCase() === senderBare,
+              );
+              if (isAdminSender) {
+                const { isAffirmative, isNegative, performUpdate, restartGateway } =
+                  await import('./updater.js');
+                const text = (body || "").trim();
+                if (isAffirmative(text)) {
+                  const pending = pendingUpdate;
+                  pendingUpdate = null;
+                  debugLog(`auto-update: admin ${senderBare} accepted v${pending.latest}`);
+                  try { xmpp.send(from, `[XMPP Update] Installing v${pending.latest}...`); } catch { /* ignore */ }
+                  const result = await performUpdate();
+                  xmppLog.info(`auto-update: install result: ${result.message}`);
+                  try { xmpp.send(from, `[XMPP Update] ${result.message}`); } catch { /* ignore */ }
+                  if (result.ok && result.toVersion && cfg?.autoUpdate?.autoRestart !== false) {
+                    try { xmpp.send(from, "[XMPP Update] Restarting the gateway to apply the update..."); } catch { /* ignore */ }
+                    setTimeout(() => { try { restartGateway(); } catch { /* ignore */ } }, 3000);
+                  }
+                  return;
+                }
+                if (isNegative(text)) {
+                  pendingUpdate = null;
+                  debugLog(`auto-update: admin ${senderBare} declined`);
+                  try { xmpp.send(from, "[XMPP Update] Okay, skipping this update."); } catch { /* ignore */ }
+                  return;
+                }
+              }
+            }
+
             debugLog(`[NORMAL] Forwarding chat message from ${fromBareJid} to agent`);
 
             // Use bare JID for session

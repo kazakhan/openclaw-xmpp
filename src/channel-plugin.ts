@@ -56,6 +56,8 @@ export const xmppChannelPlugin = {
         properties: {
           enabled: { type: "boolean" },
           intervalHours: { type: "number" },
+          mode: { type: "string", enum: ["ask", "auto"] },
+          autoRestart: { type: "boolean" },
         },
       },
       vcard: {

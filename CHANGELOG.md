@@ -5,6 +5,73 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.1] - 2026-09-14
+
+**Fix: auto-update now actually updates — detect → ASK → install on "yes".**
+
+### Problem
+
+v2.12.0 only *notified* the admin to run a manual `openclaw xmpp update`
+command. That is not an auto-updater. The operator had to run CLI commands to
+apply an update, which defeats the purpose.
+
+### Changes
+
+- **Ask, then install** (`src/startXMPP.ts`): the periodic check now sends the
+  admin(s): *"vX is available (you are on vY). Reply 'yes' to install it now, or
+  'no' to skip."* A `pendingUpdate` prompt (24 h TTL) is tracked.
+- **Reply interception**: an admin's direct-message reply is handled **before**
+  AI dispatch — `yes`/`y`/`ok`/`update`/`install`/`/update` runs the update;
+  `no`/`n`/`skip`/`later`/`cancel`/`/skip` declines. Any other message (even
+  "yes please because…") falls through to normal chat. Only exact tokens, only
+  from an admin, only while a prompt is pending.
+- **Automatic install + restart**: on `yes` the plugin runs `performUpdate()`
+  (snapshot → tarball/git → npm install → rebuild, restoring on failure), replies
+  with the result, and then **auto-restarts the gateway** (`openclaw gateway
+  restart`, detached) so the new build is loaded with no manual steps.
+- **Startup check**: also checks ~60 s after connect (not only on the interval).
+- **Config**: `autoUpdate` gains `mode` (`"ask"` default | `"auto"` install
+  without asking) and `autoRestart` (default `true`).
+- **`src/updater.ts`**: new `isAffirmative()`, `isNegative()`,
+  `formatAskMessage()`, `restartGateway()`.
+
+### Files changed
+
+- `src/updater.ts` — prompt/restart helpers
+- `src/startXMPP.ts` — pendingUpdate state, ask on new release, reply
+  interception, auto-install + auto-restart, startup check
+- `src/types.ts`, `src/channel-plugin.ts`, `src/setup-plugin.ts`,
+  `openclaw.plugin.json` — `autoUpdate.mode` + `autoUpdate.autoRestart`
+- `tests/v2.13.1-auto-update-install.test.ts` (new)
+
+### Backups
+
+- `_backups/2.13.1_20260914_155239/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.13.1_20260914_155239"
+rm -f tests/v2.13.1-auto-update-install.test.ts
+cp "$BK/updater.ts"        src/updater.ts
+cp "$BK/startXMPP.ts"      src/startXMPP.ts
+cp "$BK/types.ts"          src/types.ts
+cp "$BK/channel-plugin.ts" src/channel-plugin.ts
+cp "$BK/setup-plugin.ts"   src/setup-plugin.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json"      package.json
+cp "$BK/CHANGELOG.md"      CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors in the edited files.
+- `node --test tests/*.test.ts` — new v2.13.1 suite passes.
+- Runtime: affirmative/negative token parsing (case-insensitive) and pass-through
+  for other messages verified; ask-message text verified.
+
 ## [2.13.0] - 2026-09-14
 
 **Fix/Feature: groupchat mention gating + occupant awareness.**

@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn } from "child_process";
 
 const REPO = "kazakhan/openclaw-xmpp";
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -293,6 +293,54 @@ export async function performUpdate(
     ok: true,
     fromVersion: current,
     toVersion: latest,
-    message: `Updated v${current} -> v${latest}. Restart the gateway (openclaw gateway restart) to apply.`,
+    message: `Updated v${current} -> v${latest}.`,
   };
 }
+
+// --- auto-update prompt helpers (2.13.1) -----------------------------------
+
+const AFFIRMATIVE = new Set([
+  "yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "confirm",
+  "update", "install", "do it", "go ahead", "please do", "/update",
+]);
+const NEGATIVE = new Set([
+  "no", "n", "nope", "skip", "later", "cancel", "not now", "nevermind",
+  "never mind", "do not", "don't", "/skip",
+]);
+
+export function isAffirmative(text: string): boolean {
+  return AFFIRMATIVE.has((text || "").trim().toLowerCase());
+}
+
+export function isNegative(text: string): boolean {
+  return NEGATIVE.has((text || "").trim().toLowerCase());
+}
+
+export function formatAskMessage(info: UpdateInfo): string {
+  const lines = [
+    `[XMPP Update] v${info.latest} is available (you are on v${info.current}).`,
+    `Reply "yes" to install it now, or "no" to skip.`,
+  ];
+  if (info.releaseBody) lines.push("", "Release notes:", info.releaseBody.slice(0, 800));
+  return lines.join("\n");
+}
+
+/**
+ * Restart the managed OpenClaw gateway (detached, best-effort).  Used after a
+ * successful auto-update so the new build is loaded without manual steps.
+ * The child is detached and unref'd so it survives this process exiting.
+ */
+export function restartGateway(): void {
+  try {
+    const cmd = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
+    const child = spawn(cmd, ["gateway", "restart"], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+  } catch {
+    // best-effort; operator can restart manually
+  }
+}
+

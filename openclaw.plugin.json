@@ -52,7 +52,9 @@
                   "type": "object",
                   "properties": {
                     "enabled": { "type": "boolean" },
-                    "intervalHours": { "type": "number" }
+                    "intervalHours": { "type": "number" },
+                    "mode": { "type": "string", "enum": ["ask", "auto"] },
+                    "autoRestart": { "type": "boolean" }
                   }
                 },
                 "rooms": {

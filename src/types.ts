@@ -16,6 +16,8 @@ export interface XmppConfig {
   autoUpdate?: {
     enabled?: boolean;
     intervalHours?: number;
+    mode?: "ask" | "auto";
+    autoRestart?: boolean;
   };
 }
 
