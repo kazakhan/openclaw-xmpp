@@ -5,6 +5,70 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.3] - 2026-09-14
+
+**Fix: `openclaw xmpp vcard get/set` (and whiteboard CLI) failed with
+`client is not a function`.**
+
+### Root cause
+
+`src/lib/xmpp-connect.ts` imported the XMPP client with a **default** import:
+
+```ts
+import client from "@xmpp/client";   // resolves to the CJS module object
+```
+
+`@xmpp/client` is CommonJS and exports named members
+(`module.exports.client = client`), so the default import is the module
+namespace object, not the function. `createXmppClient()` then called
+`client({...})` → `client is not a function`. This broke every CLI path that
+connects directly to the server (`openclaw xmpp vcard …`, `openclaw xmpp
+whiteboard …`).
+
+### Fix (one line)
+
+```diff
+-import client from "@xmpp/client";
++import { client } from "@xmpp/client";
+```
+
+Every other file already used the named form (`import { xml } from
+"@xmpp/client"`), which is why only this path broke.
+
+### Reconciliation
+
+The bot's local vCard cache (`<dataDir>/xmpp-vcard.json`) and the registered
+server vCard are now identical (`version`, `fn`, `nickname`, `url`, `desc`).
+Note: the server (Prosody vCard-temp) did not retain `PHOTO`/`BDAY`/`ORG` set
+via `vcard-temp`, so neither copy includes them.
+
+### Files changed
+
+- `src/lib/xmpp-connect.ts` — named import
+- `package.json` — 2.14.3
+
+### Backups
+
+- `_backups/2.14.3_20260914_181842/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.3_20260914_181842"
+cp "$BK/xmpp-connect.ts" src/lib/xmpp-connect.ts
+cp "$BK/package.json"    package.json
+cp "$BK/CHANGELOG.md"    CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no errors in the edited file.
+- `openclaw xmpp vcard get` now connects and prints the vCard (no
+  `client is not a function`).
+- Local `xmpp-vcard.json` == server vCard.
+
 ## [2.14.2] - 2026-09-14
 
 **Fix: groupchat mention-only gate — the agent is no longer invoked on unmentioned

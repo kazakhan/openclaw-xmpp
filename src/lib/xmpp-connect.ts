@@ -1,4 +1,4 @@
-import client from "@xmpp/client";
+import { client } from "@xmpp/client";
 import os from "os";
 
 export interface XmppConnectConfig {
