@@ -13,7 +13,7 @@ import { debugLog, checkRateLimit, downloadFile, processInboundFiles, MAX_FILE_S
 import { Config, CapsInfo } from "./config.js";
 import { log } from "./lib/logger.js";
 import { child } from "./lib/logger.js";
-import { parseVCard } from "./lib/vcard-protocol.js";
+import { parseVCard, buildVCardStanza } from "./lib/vcard-protocol.js";
 import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFileWithHTTPUpload, discoverUploadService } from "./lib/upload-protocol.js";
 import { safeSend, findUnderlyingSocket } from "./lib/xmpp-utils.js";
 import { buildMentionTokens, wasBotMentioned } from "./mention.js";
@@ -403,14 +403,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        const desc = vcardData.desc || "OpenClaw XMPP Plugin - AI Assistant";
 
        const vcardId = `vcard-${Date.now()}`;
-       const vcardSet = xml("iq", { type: "set", id: vcardId },
-         xml("vCard", { xmlns: "vcard-temp" },
-           xml("FN", {}, fn),
-           xml("NICKNAME", {}, nickname),
-           xml("URL", {}, url),
-           xml("DESC", {}, desc)
-         )
-       );
+       // SECURITY (2.14.4): publish the FULL vCard via buildVCardStanza
+       // (which returns the complete `<iq type="set">` stanza).  The previous
+       // hand-built stanza dropped PHOTO (avatar URL), BDAY, and ORG on every
+       // connect, wiping the avatar each reconnect.  NOTE:
+       // buildVCardStanza already returns an <iq>; do NOT wrap it again.
+       const vcardSet = buildVCardStanza({ ...vcardData, fn, nickname, url, desc }, vcardId);
 
         await safeXmppSend(xmpp,vcardSet);
          log.info("vCard registered with server");

@@ -220,6 +220,29 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
   let imageUrl: string;
   let isUrlInput = false;
 
+  // SECURITY (2.14.4): when the source is a URL, set the vCard PHOTO
+  // directly as an external URL (EXTVAL) via vcard-temp.  Clients render the
+  // URL and the server persists it; this avoids downloading the image and the
+  // HTTP-upload/PEP path (which fails with 401 Unauthorized on some servers).
+  if (validators.isValidUrl(source)) {
+    try {
+      await withConnection(async (xmpp) => {
+        const response = await sendReceive(
+          xmpp,
+          xml("iq", { type: "get", id: `v1-${Date.now()}` }, xml("vCard", { xmlns: "vcard-temp" })),
+        );
+        const vcard = parseVCard(response?.getChild('vCard'));
+        vcard.photo = { extval: source };
+        (vcard as any).avatarUrl = source;
+        await sendReceive(xmpp, buildVCardStanza(vcard, `s1-${Date.now()}`));
+        await saveVCardLocally(vcard);
+      });
+      return { ok: true, url: source };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  }
+
   try {
     if (validators.isValidUrl(source)) {
       isUrlInput = true;

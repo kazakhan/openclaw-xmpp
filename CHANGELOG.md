@@ -5,6 +5,73 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.4] - 2026-09-14
+
+**Fix: the XMPP vCard avatar (and other fields) were wiped on every
+reconnect; avatar works with a URL.**
+
+### Root cause
+
+The gateway's `online` handler registered the vCard with a hand-built stanza
+containing only `FN`, `NICKNAME`, `URL`, `DESC` — it dropped `PHOTO`
+(the avatar URL/EXTVAL), `BDAY`, and `ORG`. So on every (re)connect the bot
+overwrote the server vCard without the avatar, and any avatar set via the CLI
+was lost at the next reconnect.
+
+### Changes
+
+- **`src/startXMPP.ts`** — register the **full** vCard via
+  `buildVCardStanza()` (includes `PHOTO`, `BDAY`, `ORG`, …) instead of the
+  limited inline stanza. (Note: `buildVCardStanza()` already returns the
+  complete `<iq type="set">`; the earlier attempt double-wrapped it, which the
+  server rejected — now sent as-is.)
+- **`src/vcard-cli.ts`** — `setVCardAvatar()` now handles a **URL** by setting
+  the vCard `PHOTO` directly as an external URL (`EXTVAL`) via `vcard-temp`,
+  persisted with `sendReceive`. This avoids downloading the image and the
+  HTTP-upload/PEP path (which fails with `401 Unauthorized` on this server).
+  Local-file avatars keep the existing upload path.
+
+### Reconciled profile
+
+Local `<dataDir>/xmpp-vcard.json` and the registered server vCard now match:
+
+```json
+{ "version": "3.0", "fn": "Clawd", "nickname": "Clawd",
+  "url": "https://kazakhan.com/openclaw/clawd",
+  "desc": "Clawd 🦊 - Technical AI Assistant for OpenClaw Team",
+  "photo": { "extval": "https://kazakhan.com/openclaw/clawd/ClawdAvatarSmall.jpg" },
+  "avatarUrl": "https://kazakhan.com/openclaw/clawd/ClawdAvatarSmall.jpg" }
+```
+
+### Files changed
+
+- `src/startXMPP.ts` — full vCard registration via `buildVCardStanza`
+- `src/vcard-cli.ts` — URL avatar fast-path
+- `package.json` — 2.14.4
+
+### Backups
+
+- `_backups/2.14.4_20260914_183225/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.4_20260914_183225"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/vcard-cli.ts"  src/vcard-cli.ts
+cp "$BK/package.json"  package.json
+cp "$BK/CHANGELOG.md"  CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no errors in the edited files.
+- After a gateway restart, a fresh server vCard read shows the new `url` and
+  `photo.extval` (avatar URL), identical to the local file
+  (`url match: true | avatar match: true`).
+
 ## [2.14.3] - 2026-09-14
 
 **Fix: `openclaw xmpp vcard get/set` (and whiteboard CLI) failed with
