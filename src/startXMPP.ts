@@ -20,6 +20,7 @@ import { buildMentionTokens, wasBotMentioned } from "./mention.js";
 import { createVCardServer } from "./vcard-server.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { runVCardOp } from "./lib/vcard-ops.js";
+import { installSaslResponseFix } from "./lib/sasl-response.js";
 import { PresenceManager, readPresenceConfig } from "./presence.js";
 
 // Reconnection constants
@@ -131,6 +132,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         password: password,
          resource: getDefaultResource()
        });
+
+    // SECURITY (2.15.4): correct @xmpp/sasl's illegal `mechanism` attribute on
+    // the multi-step SASL <response/> (Prosody rejects it as malformed-request,
+    // which broke SCRAM-SHA-1 auth).  Install before the first stream so the
+    // very first SASL exchange is sanitized.
+    installSaslResponseFix(xmpp);
 
     // Increase connection timeout from 2s default to 30s to handle slower startups
     xmpp.timeout = 30000;

@@ -1,5 +1,6 @@
 import { client } from "@xmpp/client";
 import os from "os";
+import { installSaslResponseFix } from "./sasl-response.js";
 
 export interface XmppConnectConfig {
   service: string;
@@ -30,7 +31,7 @@ function sanitizeResource(s: string): string {
 }
 
 export function createXmppClient(config: XmppConnectConfig) {
-  return client({
+  const xmpp = client({
     service: config.service,
     domain: config.domain,
     username: config.jid.split("@")[0],
@@ -41,4 +42,7 @@ export function createXmppClient(config: XmppConnectConfig) {
     // (e.g. for filtering the active-sessions list by resource).
     resource: config.resource || sanitizeResource(os.hostname()) || "openclaw",
   });
+  // SECURITY (2.15.4): fix @xmpp/sasl's malformed SASL <response/> stanza.
+  installSaslResponseFix(xmpp);
+  return xmpp;
 }

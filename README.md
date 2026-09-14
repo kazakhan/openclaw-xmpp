@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.15.3)
+## Status: ✅ WORKING (v2.15.4)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -29,6 +29,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
 - **v2.15.3** — fixed `openclaw xmpp update` (the rollback snapshot copied the
   plugin into a subdirectory of itself, which `fs.cp` rejects with
   `ERR_FS_CP_EINVAL`).
+- **v2.15.4** — fixed SCRAM-SHA-1 authentication on strict servers (e.g.
+  Prosody). `@xmpp/sasl` 0.13.6 put an illegal `mechanism` attribute on the
+  SASL `<response/>` stanza (RFC 6120 §6.4.2), which Prosody rejects with
+  `malformed-request`; the plugin now strips it.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -549,7 +553,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.15.3) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.15.4) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -574,6 +578,13 @@ This was fixed by checking `xmpp.status` before calling `stop()` in the reconnec
 
 ### Certificate errors (CERT_HAS_EXPIRED)
 Your XMPP server's SSL certificate has expired. Renew it on the server, or use a trusted CA.
+
+### SASL auth fails with `malformed-request` (Prosody), but the password is correct
+`@xmpp/sasl` 0.13.6 puts an illegal `mechanism` attribute on the SASL
+`<response/>` stanza, so a strict server rejects the exchange with
+`malformed-request` before checking the password. This only affects multi-step
+mechanisms (SCRAM-SHA-1); PLAIN is client-first and unaffected. Update to
+**v2.15.4+**, which strips the attribute on the way out.
 
 ## File Layout
 

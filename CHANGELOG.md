@@ -5,6 +5,75 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.4] - 2026-09-15
+
+**Fix: SCRAM-SHA-1 authentication failed on strict servers (Prosody) with
+`SASLError: malformed-request`, even with the correct password.**
+
+### Root cause
+
+`@xmpp/sasl` 0.13.6 builds the second leg of a multi-step SASL exchange as:
+
+```js
+entity.send(xml("response", { xmlns: NS, mechanism: mech.name }, payload));
+```
+
+RFC 6120 §6.4.2 defines `<response/>` with **only** `xmlns`; the extra
+`mechanism` attribute is illegal. Prosody enforces this and replies
+`malformed-request`, so authentication fails before the password is evaluated.
+
+- Only multi-step mechanisms are affected: **SCRAM-SHA-1** (server sends
+  `<challenge/>`, client replies `<response/>`). **PLAIN** is client-first and
+  goes out via `<auth/>`, so it never hits the buggy branch.
+- `@xmpp/client` hardcodes the mechanism order `{ scramsha1, plain, anonymous }`
+  and selects the first server-offered match, so any server advertising
+  SCRAM-SHA-1 (Prosody's default) triggers it. Reproduced with a raw
+  `@xmpp/client` connection outside OpenClaw — not a plugin/config/password
+  problem.
+
+### Fixed
+
+- **`src/lib/sasl-response.ts`** (new) — `stripSaslResponseMechanism()` removes
+  the illegal attribute from an outgoing `<response/>`;
+  `installSaslResponseFix()` wraps `xmpp.send` (idempotent) to sanitize before
+  sending. It lives in plugin code, so it survives reinstalls/updates and does
+  not require patching `node_modules` or forcing a mechanism
+  (`@xmpp/client` exposes no API to restrict mechanisms).
+- **`src/startXMPP.ts`** — installs the fix immediately after `client({…})`,
+  before the first stream. **`src/lib/xmpp-connect.ts`** — same for its helper.
+
+### Tests
+
+- **`tests/v2.15.4-sasl-response.test.ts`** (new) — strips `mechanism` from
+  `<response/>` (plain object and a real `@xmpp/xml` element), leaves `<auth/>`
+  and unrelated stanzas untouched, is a no-op without the attribute and on
+  malformed input; `installSaslResponseFix` wraps `send`, forwards the return
+  value, is idempotent, and no-ops when `send` is missing; plus wiring checks.
+
+### Files changed
+
+- `src/lib/sasl-response.ts` (new), `src/startXMPP.ts`,
+  `src/lib/xmpp-connect.ts`, `tests/v2.15.4-sasl-response.test.ts` (new),
+  `README.md`, `package.json` — 2.15.4
+
+### Backups
+
+- `_backups/2.15.4_20260915_094242/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.4_20260915_094242"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/xmpp-connect.ts" src/lib/xmpp-connect.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/sasl-response.ts tests/v2.15.4-sasl-response.test.ts
+npx tsc
+```
+
 ## [2.15.3] - 2026-09-15
 
 **Fix: `openclaw xmpp update` failed at the snapshot step on every run.**
