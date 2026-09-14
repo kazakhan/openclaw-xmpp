@@ -2,14 +2,19 @@
 
 Audit of XMPP specifications against the OpenClaw XMPP plugin codebase.
 Generated from https://xmpp.org/extensions/ and source code analysis.
-Date: 2026-06-23
+Date: 2026-09-14 (targeted revision; originally 2026-06-23)
+Plugin version: 2.15.2 (OpenClaw 2026.9.4)
+
+> This revision corrects the status of features shipped after the original
+> audit (notably XEP-0292 vCard4 and PEP usage) and adds a compliance /
+> prioritization section. It is a targeted update, not a full re-scan.
 
 ## IETF RFCs
 
 | RFC | Name | Status |
 |-----|------|--------|
 | RFC 6120 | XMPP Core | Supported (via @xmpp/client) |
-| RFC 6121 | XMPP IM | Supported (via @xmpp/client) |
+| RFC 6121 | XMPP IM | Supported (via @xmpp/client) + plugin presence/status (show/status/priority, auto-busy) |
 | RFC 7395 | XMPP over WebSockets | Supported (via @xmpp/client) |
 | RFC 7590 | Use of TLS in XMPP | Supported (TLS enforced) |
 | RFC 7622 | XMPP Address Format | Supported (JID parsing/validation) |
@@ -123,7 +128,7 @@ XEPs with XSF status Obsolete, Rejected, Deprecated, or Retracted are excluded f
 | XEP-0160 | Best Practices for Handling Offline Messages | Active | Not Supported |
 | XEP-0161 | Abuse Reporting | Deferred | Not Supported |
 | XEP-0162 | Best Practices for Roster and Subscription Management | Deferred | Not Supported |
-| XEP-0163 | Personal Eventing Protocol | Stable | Not Supported |
+| XEP-0163 | Personal Eventing Protocol | Stable | Partial ¹ |
 | XEP-0164 | vCard Filtering | Deferred | Not Supported |
 | XEP-0165 | Best Practices to Discourage JID Mimicking | Deferred | Not Supported |
 | XEP-0166 | Jingle | Stable | Not Supported |
@@ -234,7 +239,7 @@ XEPs with XSF status Obsolete, Rejected, Deprecated, or Retracted are excluded f
 | XEP-0289 | Federated MUC for Constrained Environments | Deferred | Not Supported |
 | XEP-0290 | Encapsulated Digital Signatures in XMPP | Deferred | Not Supported |
 | XEP-0291 | Service Delegation | Deferred | Not Supported |
-| XEP-0292 | vCard4 Over XMPP | Experimental | Not Supported |
+| XEP-0292 | vCard4 Over XMPP | Experimental | Supported |
 | XEP-0293 | Jingle RTP Feedback Negotiation | Stable | Not Supported |
 | XEP-0294 | Jingle RTP Header Extensions Negotiation | Stable | Not Supported |
 | XEP-0295 | JSON Encodings for XMPP | Active | Not Supported |
@@ -245,7 +250,7 @@ XEPs with XSF status Obsolete, Rejected, Deprecated, or Retracted are excluded f
 | XEP-0300 | Use of Cryptographic Hash Functions in XMPP | Stable | Not Supported |
 | XEP-0301 | In-Band Real Time Text | Stable | Not Supported |
 | XEP-0303 | Commenting | Deferred | Not Supported |
-| XEP-0304 | Whitespace Keepalive Negotiation | Deferred | Not Supported |
+| XEP-0304 | Whitespace Keepalive Negotiation | Deferred | Not Supported ² |
 | XEP-0305 | XMPP Quickstart | Deferred | Not Supported |
 | XEP-0306 | Extensible Status Conditions for Multi-User Chat | Deferred | Not Supported |
 | XEP-0307 | Unique Room Names for Multi-User Chat | Deferred | Not Supported |
@@ -449,10 +454,10 @@ XEPs with XSF status Obsolete, Rejected, Deprecated, or Retracted are excluded f
 
 | Category | Count |
 |----------|-------|
-| Supported | 15 |
-| Partial | 0 |
+| Supported | 16 |
+| Partial | 1 |
 | Detected | 3 |
-| Not Supported | 398 |
+| Not Supported | 396 |
 | **Total XEPs listed** | 416 |
 
 ### Supported Breakdown
@@ -463,14 +468,75 @@ XEPs with XSF status Obsolete, Rejected, Deprecated, or Retracted are excluded f
 | XEP-0030 | Service Discovery | startXMPP.ts (disco#info responder) |
 | XEP-0045 | Multi-User Chat | startXMPP.ts (join/leave, invites, owner config) |
 | XEP-0047 | In-Band Bytestreams | startXMPP.ts (IBB open/data/close sessions) |
-| XEP-0054 | vcard-temp | startXMPP.ts, vcard.ts, vcard-server.ts, vcard-cli.ts |
-| XEP-0060 | Publish-Subscribe | vcard-server.ts, vcard-cli.ts (PEP avatar pubsub) |
+| XEP-0054 | vcard-temp | startXMPP.ts, vcard.ts, vcard-server.ts, lib/vcard-ops.ts |
+| XEP-0060 | Publish-Subscribe | vcard-server.ts, lib/vcard-ops.ts (PEP avatar/vCard4 pubsub) |
 | XEP-0065 | SOCKS5 Bytestreams | startXMPP.ts (streamhost, SOCKS5 activate) |
 | XEP-0066 | Out of Band Data | startXMPP.ts, upload-protocol.ts (OOB detection & send) |
-| XEP-0084 | User Avatar | vcard-server.ts, vcard-cli.ts (PEP metadata+data nodes) |
+| XEP-0084 | User Avatar | vcard-server.ts, lib/vcard-ops.ts (PEP metadata+data nodes) |
 | XEP-0113 | Simple Whiteboarding | whiteboard.ts, startXMPP.ts (SWB path/move/delete) |
 | XEP-0115 | Entity Capabilities | config.ts, startXMPP.ts (presence caps hash) |
 | XEP-0198 | Stream Management | startXMPP.ts (@xmpp/stream-management) |
 | XEP-0199 | XMPP Ping | startXMPP.ts (iq ping handler) |
 | XEP-0249 | Direct MUC Invitations | startXMPP.ts (jabber:x:conference auto-accept) |
+| XEP-0292 | vCard4 Over XMPP | lib/vcard4-protocol.ts, vcard-server.ts (PEP `urn:xmpp:vcard4`), lib/vcard-ops.ts |
 | XEP-0363 | HTTP File Upload | lib/upload-protocol.ts, slash-commands.ts (full upload flow) |
+
+### Partial Breakdown
+
+| XEP | Feature | Why partial |
+|-----|---------|-------------|
+| XEP-0163 | Personal Eventing Protocol | The plugin publishes to PEP nodes (`urn:xmpp:avatar:metadata`/`:data`, `urn:xmpp:vcard4`) and advertises `+notify` caps, but does not implement the full PEP feature set (subscriptions/config, item retraction semantics beyond avatar). |
+
+### Detected Breakdown
+
+| XEP | Feature | What is parsed |
+|-----|---------|----------------|
+| XEP-0231 | Bits of Binary | `<data xmlns="urn:xmpp:bob">` in inbound shared files (`startXMPP.ts`). |
+| XEP-0385 | Stateless Inline Media Sharing (SIMS) | `<media-sharing xmlns="urn:xmpp:sims:1">` (parsed, not generated). |
+| XEP-0447 | Stateless file sharing | `<file-sharing xmlns="urn:xmpp:sfs:0">` (parsed, not generated). |
+
+### Footnotes
+
+1. **XEP-0163** — counted as Partial (PEP is used for avatar/vCard4 publishing); see Partial Breakdown.
+2. **XEP-0304** — the plugin sends XML **whitespace keepalive** (`startXMPP.ts`, `WHITESPACE_KEEPALIVE_MS`) but does not implement the XEP's disco-based negotiation, so it is not counted as supported.
+
+---
+
+## Compliance & prioritization
+
+This is a **curated recommendation**, not an authoritative mapping to the XEP
+Compliance Suites (e.g. XEP-0479, 2023). It is meant to point at the next
+high-value XEPs for this bot.
+
+### Compliance-relevant capabilities already present
+
+- **Core:** RFC 6120 (TLS via RFC 7590), RFC 7622 (JID format), XEP-0030
+  (disco#info), XEP-0115 (entity caps), XEP-0198 (stream management),
+  XEP-0199 (ping).
+- **IM:** RFC 6121 messaging + presence/status (built-in shows, custom status,
+  persistence, auto-busy while thinking/tooling).
+- **Advanced IM / MUC:** XEP-0045 (MUC), XEP-0249 (direct invites),
+  XEP-0113 (whiteboarding).
+- **File transfer:** XEP-0096/XEP-0065/XEP-0047 (SI/SOCKS5/IBB), XEP-0363
+  (HTTP Upload), XEP-0066 (OOB), plus plugin SFTP (non-XMPP).
+- **Profiles:** XEP-0054 (vcard-temp), XEP-0084 (avatar), XEP-0292 (vCard4).
+
+### Recommended next XEPs (priority order)
+
+| Priority | XEP | Name | Why |
+|----------|-----|------|-----|
+| High | XEP-0410 | MUC Self-Ping (Schrödinger's Chat) | Detect/recover ghost MUC sessions; complements the existing rejoin logic and prevents silent groupchat loss. |
+| Medium | XEP-0085 | Chat State Notifications | Send `composing`/`active` so users see the bot is typing while it works. |
+| Medium | XEP-0184 | Message Delivery Receipts | Mark inbound messages received; useful at-least-once semantics with agents. |
+| Medium | XEP-0203 | Delayed Delivery | Timestamp offline/MUC-history messages so the agent sees correct ordering. |
+| Low | XEP-0333 | Displayed Markers | Read receipts for a chat UI. |
+| Low | XEP-0280 | Message Carbons | Keep multi-client sessions in sync. |
+| Low | XEP-0313 | Message Archive Management | Server-side history / catch-up after downtime. |
+| Low | XEP-0393 / XEP-0444 | Message Styling / Reactions | Nicer formatting and emoji reactions. |
+| Low | XEP-0092 / XEP-0012 | Software Version / Last Activity | Standard client metadata and “last seen”. |
+
+### Administrative XEPs excluded from prioritization
+
+XEP-0001, XEP-0002, XEP-0019, XEP-0053, XEP-0134, XEP-0143, XEP-0458 are
+process/SIG/registry documents, not client features; their “Not Supported”
+status above carries no signal and they are intentionally omitted here.

@@ -1,20 +1,34 @@
 # OpenClaw XMPP Plugin
 
-A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, and comprehensive security features including password encryption at rest and secure file transfer validation.
+A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.11.3)
+## Status: ✅ WORKING (v2.15.2)
 
-Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), password encryption at rest, and enhanced file transfer security.
+Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
-**v2.11.x highlights:** a **stable sanitized-hostname XMPP resource** (no more random
-`openclaw-<hex>` on every reconnect), **re-enabled keepalive** (TCP `setKeepAlive`
-+ XML whitespace) that stops the ~15-minute NAT/firewall dropouts, **MUC rooms
-are re-joined after a reconnect** so groupchat replies keep working, and a
-cross-platform **interactive onboarding** (`openclaw xmpp setup`) together with a
-runtime-readiness **`openclaw xmpp doctor`**. `openclaw.plugin.json` now declares
-`contracts.tools` (`xmpp_setPresence`) to satisfy the OpenClaw 2026.8.x plugin
-contract check.
+**Release highlights:**
+- **v2.11.x** — stable sanitized-hostname resource (no random `openclaw-<hex>` on
+  reconnect), re-enabled keepalive (TCP `setKeepAlive` + XML whitespace) that
+  stops the ~15-minute NAT/firewall dropouts, MUC re-join after reconnect,
+  interactive onboarding (`openclaw xmpp setup`) and `openclaw xmpp doctor`.
+- **v2.12–2.13** — auto-update (`openclaw xmpp update-check` / `update`), and
+  groupchat **mention-only gating** for the agent.
+- **v2.14.0–2.14.2** — secure **SFTP** (pinned host key, `xmpp_sftp` tool +
+  `openclaw xmpp sftp`); groupchat dispatch skipped for unmentioned messages
+  (`messages.groupChat.unmentionedInbound`).
+- **v2.14.4–2.14.6** — full vCard field support (all fields settable and
+  persisted, avatar), and **vCard4 (XEP-0292)** published over PEP
+  (`urn:xmpp:vcard4`) alongside vcard-temp.
+- **v2.14.7 / v2.15.1** — the `vcard`/`vcard4` CLI runs on the gateway's
+  **existing** connection (no second XMPP session, no `conflict` kicks), and the
+  CLI→gateway transport uses OpenClaw's in-process gateway client.
+- **v2.15.0–2.15.2** — **presence/status**: built-in/alias shows + custom status
+  from the CLI, chat, and the `xmpp_setPresence` agent tool, with an automatic
+  **busy** presence while thinking/running tools, persisted across reconnect.
+
+`openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
+`xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
 
 ## Installation
 
@@ -133,6 +147,17 @@ Configured under `channels.xmpp.accounts.default` in `~/.openclaw/openclaw.json`
           "vcard": {
             "fn": "My Bot Name",
             "nickname": "MyBot"
+          },
+          "presence": {
+            "enabled": true,
+            "defaultShow": "available",
+            "thinkingShow": "dnd",
+            "thinkingStatus": "Thinking…",
+            "toolShow": "dnd",
+            "toolStatus": "Running {tool}…",
+            "minIntervalSeconds": 5,
+            "manualTtlSeconds": 0,
+            "restoreOnReconnect": true
           }
         }
       }
@@ -143,6 +168,53 @@ Configured under `channels.xmpp.accounts.default` in `~/.openclaw/openclaw.json`
       "visibleReplies": "automatic"
     }
   }
+}
+```
+
+### Presence / status (v2.15.0)
+
+The bot can show built-in availability and a custom status message, and it
+automatically shows **busy while it is thinking or running tools**:
+
+- Built-in shows: `available` (online), `chat` (free for chat), `away`,
+  `xa` (extended away), `dnd` (busy). Friendly aliases: `online`→available,
+  `busy`→dnd, `free`→chat, `idle`→away.
+- Precedence: a **manual** status (set by the agent or a human) wins over the
+  automatic activity presence until cleared or until `manualTtlSeconds` expires.
+- Auto-activity is **on by default** (`presence.enabled: true`) with a 5s
+  throttle; set `presence.enabled: false` to disable it per account. Status is
+  persisted to `<dataDir>/xmpp-presence.json` and restored on reconnect.
+
+```bash
+openclaw xmpp presence                       # show current presence
+openclaw xmpp presence busy "Deploying"      # set a manual status
+openclaw xmpp presence clear                 # drop the manual status
+```
+
+### SFTP (v2.14.0)
+
+SFTP is configured per account under `channels.xmpp.accounts.<id>.sftp`. It
+**fails closed** unless `hostKeyFingerprint` is set (pinned host key):
+
+```json
+"sftp": {
+  "enabled": true,
+  "host": "sftp.example.com",
+  "port": 2222,
+  "user": "bot",
+  "password": "…",
+  "hostKeyFingerprint": "SHA256:…"
+}
+```
+
+### Auto-update (v2.12.0)
+
+```json
+"autoUpdate": {
+  "enabled": true,
+  "intervalHours": 24,
+  "mode": "ask",         // "ask" | "auto"
+  "autoRestart": true
 }
 ```
 
@@ -223,25 +295,43 @@ Sensitive data automatically redacted from logs:
 
 ### Core Commands
 ```bash
+openclaw xmpp setup               # Interactive onboarding (prompts, masks/encrypts password)
+openclaw xmpp doctor              # Runtime-readiness check (add --fix to repair)
 openclaw xmpp status              # Check connection status
 openclaw xmpp msg <jid> <msg>     # Send direct message
-openclaw xmpp add <jid>           # Whitelist contact (required for bot responses)
-openclaw xmpp roster               # View roster
-openclaw xmpp nick <jid> <name>  # Set nickname
+openclaw xmpp add <jid> [name]    # Whitelist contact (required for bot responses)
+openclaw xmpp remove <jid>        # Remove a contact
+openclaw xmpp contacts            # List contacts
+openclaw xmpp roster              # View roster
+openclaw xmpp nick <jid> <name>   # Set nickname
 openclaw xmpp join <room> [nick]  # Join MUC room
+openclaw xmpp rooms               # List joined rooms
+openclaw xmpp leave <room>        # Leave MUC room
+openclaw xmpp invite <jid> <room> # Invite a contact to a room
 openclaw xmpp poll                # Poll message queue
 openclaw xmpp clear               # Clear message queue
 openclaw xmpp queue               # Show queue status
+openclaw xmpp update-check        # Check GitHub for a newer plugin version
+openclaw xmpp update              # Install the latest plugin version
 ```
 
-### File Transfer Commands
+### File Transfer
 ```bash
-openclaw xmpp upload <local-path> [remote-name]  # Upload a file via HTTP File Upload (XEP-0363)
-openclaw xmpp download <remote-name> [local-path] # Download a previously uploaded file
-openclaw xmpp ls                                 # List uploaded files
-openclaw xmpp rm <remote-name>                   # Delete an uploaded file
-openclaw xmpp msg <jid> "/sendfile <path> [desc]" # Send file via SI/SOCKS5/IBB (native PSI+ transfer) with HTTP Upload fallback
+# Send a file over XMPP (SI/SOCKS5/IBB, XEP-0096/XEP-0065/XEP-0047) with HTTP Upload fallback
+openclaw xmpp msg <jid> "/sendfile <path> [desc]"
 ```
+
+### SFTP Commands (v2.14.0)
+Secure SFTP to the configured server with a **pinned host key** (fails closed if
+`hostKeyFingerprint` is not configured). This is separate from XMPP file
+transfer above.
+```bash
+openclaw xmpp sftp upload <local-path> [remote-name]   # Upload a file
+openclaw xmpp sftp download <remote-name> [local-path] # Download a file
+openclaw xmpp sftp ls [remote-dir]                     # List remote files
+openclaw xmpp sftp rm <remote-name>                    # Delete a remote file
+```
+
 ### Security Commands
 ```bash
 openclaw xmpp encrypt-password  # Encrypt password in config file (hidden input)
@@ -249,16 +339,55 @@ openclaw xmpp encrypt-password  # Encrypt password in config file (hidden input)
 
 ### vCard Commands
 
-XEP-0054 vCard support for bot profile management and querying users.
+XEP-0054 vcard-temp support for bot profile management. Every field below is
+settable (v2.14.6) and runs on the gateway's existing connection.
 
 ```bash
-openclaw xmpp vcard get              # View current vCard
-openclaw xmpp vcard set fn <value>   # Set Full Name
-openclaw xmpp vcard set nickname <value> # Set Nickname
-openclaw xmpp vcard set url <value>  # Set URL
-openclaw xmpp vcard set desc <value> # Set Description
-openclaw xmpp vcard set avatarUrl <value> # Set Avatar URL
-openclaw xmpp vcard get <jid>        # Query vCard from server for any user
+openclaw xmpp vcard get                       # View current vCard (full output)
+openclaw xmpp vcard set fn <value>            # Full Name
+openclaw xmpp vcard set nickname <value>      # Nickname
+openclaw xmpp vcard set url <value>           # URL
+openclaw xmpp vcard set desc <value>          # Description
+openclaw xmpp vcard set bday <YYYY-MM-DD>     # Birthday (alias: birthday)
+openclaw xmpp vcard set title <value>         # Job Title
+openclaw xmpp vcard set role <value>          # Job Role
+openclaw xmpp vcard set tz <value>            # Timezone (alias: timezone)
+openclaw xmpp vcard set jabberid <jid>        # Jabber ID (alias: jabber)
+openclaw xmpp vcard set mailer <value>        # Mailer
+openclaw xmpp vcard set note <value>          # Note
+openclaw xmpp vcard set uid <value>           # UID
+openclaw xmpp vcard set prodid <value>        # PRODID
+openclaw xmpp vcard set sortString <value>    # Sort String (aliases: sort-string, sort)
+openclaw xmpp vcard set categories <a,b,c>    # Categories
+openclaw xmpp vcard set geo <lat> <lon>       # Geolocation
+openclaw xmpp vcard set avatar <url-or-path>  # Avatar (URL, or a local file to upload)
+openclaw xmpp vcard name <family> <given> [middle] [prefix] [suffix]  # Structured name
+openclaw xmpp vcard phone add <number> [type...]    # Add phone (home work voice fax cell video pager msg)
+openclaw xmpp vcard phone remove <index>            # Remove phone by index
+openclaw xmpp vcard email add <address> [type...]   # Add email (home work internet pref)
+openclaw xmpp vcard email remove <index>            # Remove email by index
+openclaw xmpp vcard address add <street> <city> <region> <postal> <country> [type...]
+openclaw xmpp vcard address remove <index>
+openclaw xmpp vcard org <orgname> [orgunit...]      # Organization
+```
+
+### vCard4 Commands (v2.14.5)
+
+XEP-0292 vCard4 published to the PEP node `urn:xmpp:vcard4` (kept in sync with
+vcard-temp on every change).
+
+```bash
+openclaw xmpp vcard4           # Show the published vCard4 (same as: vcard4 get)
+openclaw xmpp vcard4 publish   # Republish the local vCard as vCard4
+```
+
+### Presence Commands (v2.15.0)
+
+```bash
+openclaw xmpp presence                       # Show current presence
+openclaw xmpp presence <show> [status...]    # Set a manual status
+openclaw xmpp presence clear                 # Clear the manual status
+# <show>: available|chat|away|xa|dnd (aliases: online, busy, free, idle)
 ```
 
 ## In-Chat Slash Commands
@@ -269,8 +398,8 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 ```bash
 /whoami                          # Show your info (room/nick in groupchat)
 /help                            # Show available commands
-/whiteboard draw <prompt>        # Request AI image generation
-/whiteboard send <url>           # Share an image URL
+/presence                        # Show the bot's current presence
+/status <text>                   # Set a custom status message (alias for /presence)
 ```
 
 ### Admin Only (Direct Chat)
@@ -282,16 +411,20 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 /join <room> [nick]              # Join a MUC room
 /invite <jid> <room>             # Invite a contact to a MUC room
 /rooms                           # List joined rooms
-/leave <room>                   # Leave a MUC room
-/sendfile <path> [description]  # Send a file via SI/SOCKS5/IBB (native transfer) with HTTP Upload fallback
-/vcard                           # Manage vCard profile
+/leave <room>                    # Leave a MUC room
+/sendfile <path> [description]   # Send a file over XMPP (SI/SOCKS5/IBB) with HTTP Upload fallback
+/presence <show> [status]        # Set presence (available|chat|away|xa|busy)
+/presence clear                  # Clear a manual status
+/vcard                           # Manage vCard profile (see /vcard help)
 /vcard get                       # Show current vCard
-/vcard get <jid>                 # Show any user's vCard
-/vcard set fn <name>             # Set Full Name
-/vcard set nickname <name>       # Set Nickname
-/vcard set url <url>             # Set URL
-/vcard set desc <desc>           # Set Description
-/vcard set avatarUrl <url>       # Set Avatar URL
+/vcard set fn|nickname|url|desc|bday|title|role|tz|jabberid|mailer|note|uid|prodid|sortString <value>
+/vcard set categories <a,b,c>    # Set categories
+/vcard set geo <lat> <lon>       # Set geolocation
+/vcard name <family> <given> [middle] [prefix] [suffix]
+/vcard phone add|remove ...      # Manage phone numbers
+/vcard email add|remove ...      # Manage emails
+/vcard address add|remove ...    # Manage addresses
+/vcard org <orgname> [orgunit...] # Set organization
 ```
 
 ### Notes
@@ -326,14 +459,17 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 ## Features
 
 - Full XMPP protocol with TLS
-- Multi-User Chat (MUC)
+- Multi-User Chat (MUC), with **mention-only gating** for the agent (v2.14.2)
 - Shared sessions between direct chat and groupchat
 - Session memory continuity (experimental)
-- XEP-0327 Occupant-ID support for MUC
 - Contact & roster management
-- vCard support (get/set/query)
+- **Presence/status** (built-in + custom) with automatic **busy while thinking/tooling** and persistence across reconnect (v2.15.0)
+- vCard support (all fields get/set) and **vCard4 over PEP** (XEP-0292)
 - File transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) with HTTP Upload (XEP-0363) fallback
 - In-chat `/sendfile` command (agent response and CLI)
+- **Secure SFTP** transfers with pinned host key (`xmpp_sftp` tool + CLI, v2.14.0)
+- **Auto-update** (`openclaw xmpp update-check` / `update`)
+- CLI vCard/presence operations run on the **gateway's existing connection** (no second XMPP session)
 - Bare JID auto-resolve to full JID via presence/message tracking
 - Password encryption at rest (AES-256-GCM)
 - Comprehensive input validation (JID, filename, URL)
@@ -410,7 +546,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3+ to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.15.2) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -449,19 +585,23 @@ xmpp/
 ├── install.ps1                 # Windows install script
 ├── src/
 │   ├── gateway.ts            # Gateway lifecycle (start/stop account, message dispatch)
-│   ├── startXMPP.ts          # XMPP client setup, stanza handler, reconnection
-│   ├── slash-commands.ts     # In-chat slash command dispatcher (/help, /vcard, /join, etc.)
-│   ├── vcard-server.ts       # vCard query/update/avatar helpers
+│   ├── startXMPP.ts          # XMPP client setup, stanza handler, reconnection, presence
+│   ├── presence.ts           # PresenceManager (shows/status, auto-activity, persistence)
+│   ├── presence-hooks.ts     # Maps OpenClaw agent hooks -> presence activity
+│   ├── slash-commands.ts     # In-chat slash command dispatcher (/help, /vcard, /presence, …)
+│   ├── vcard-server.ts       # vCard/vCard4 query/update/avatar + PEP publish
+│   ├── vcard.ts              # Local vCard storage
 │   ├── outbound.ts           # Outbound message sending
-│   ├── commands.ts           # CLI commands registration
+│   ├── commands.ts           # CLI commands registration (vcard, vcard4, presence, sftp, …)
 │   ├── contacts.ts           # Contact management
 │   ├── roster-store.ts       # Roster storage
 │   ├── whiteboard.ts         # Whiteboard (SXE/SWB) message parsing
 │   ├── whiteboard-session.ts # Whiteboard session manager
-│   ├── whiteboard-cli.ts     # Whiteboard CLI commands
 │   ├── messageStore.ts       # Message persistence
-│   ├── vcard.ts              # vCard handling
-│   ├── vcard-cli.ts          # vCard CLI commands
+│   ├── mention.ts            # Groupchat mention detection
+│   ├── sftp.ts               # SFTP transfers (pinned host key)
+│   ├── updater.ts            # Auto-update (GitHub releases)
+│   ├── onboarding.ts         # `openclaw xmpp setup` wizard
 │   ├── fileTransfer.ts       # HTTP upload/SI file transfer
 │   ├── jsonStore.ts          # JSON storage utilities
 │   ├── types.ts              # TypeScript types
@@ -473,32 +613,38 @@ xmpp/
 │   ├── cli-metadata.ts       # CLI metadata builder
 │   ├── cli-encrypt.ts        # Password encryption CLI
 │   ├── queue-bridge.ts       # Message queue bridge
-│   ├── gateway-client.ts     # Gateway RPC client
-│   └── security/
-│       ├── adapter.ts        # Security adapter for OpenClaw SDK
-│       ├── encryption.ts     # Password encryption (AES-256-GCM)
-│       ├── validation.ts     # Input validation (JID, filename, URL)
-│       ├── fileTransfer.ts   # Secure file transfer (MIME, quarantine)
-│   └── lib/
-│       ├── logger.ts         # Logging utilities
-│       ├── upload-protocol.ts # HTTP File Upload (XEP-0363)
-│       ├── vcard-protocol.ts # vCard protocol helpers
-│       ├── persistent-queue.ts # Persistent message queue
-│       ├── contact-factory.ts # Contact factory
-│       ├── config-loader.ts  # Config loader
-│       ├── xmpp-connect.ts   # XMPP client connection helpers
-│       └── xmpp-utils.ts     # XMPP stanza utility helpers
+│   ├── gateway-client.ts     # Gateway RPC client (in-process SDK + spawn fallback)
+│   ├── security/
+│   │   ├── adapter.ts        # Security adapter for OpenClaw SDK
+│   │   ├── encryption.ts     # Password encryption (AES-256-GCM)
+│   │   ├── validation.ts     # Input validation (JID, filename, URL)
+│   │   └── fileTransfer.ts   # Secure file transfer (MIME, quarantine)
+│   ├── lib/
+│   │   ├── logger.ts         # Logging utilities
+│   │   ├── upload-protocol.ts # HTTP File Upload (XEP-0363)
+│   │   ├── vcard-protocol.ts # vCard (XEP-0054) helpers
+│   │   ├── vcard4-protocol.ts # vCard4 (XEP-0292) helpers
+│   │   ├── vcard-ops.ts      # vCard actions on the live connection
+│   │   ├── json-extract.ts   # Robust JSON extraction from CLI output
+│   │   ├── persistent-queue.ts # Persistent message queue
+│   │   ├── contact-factory.ts # Contact factory
+│   │   ├── config-loader.ts  # Config loader
+│   │   ├── xmpp-connect.ts   # XMPP client connection helpers
+│   │   └── xmpp-utils.ts     # XMPP stanza utility helpers
 │   └── shared/
 │       └── index.ts          # Shared types/constants
 ├── data/                     # Storage (per-install, DO NOT COPY between machines)
 │   ├── xmpp-contacts.json
 │   ├── xmpp-admins.json
 │   ├── xmpp-vcard.json
+│   ├── xmpp-presence.json
 │   └── messages/
 │       ├── direct/
 │       └── group/
+├── tests/                    # node:test suites
 ├── dist/                     # Compiled JS (delete after pulling updates)
 ├── README.md
+├── XMPPAUDIT.md
 └── CHANGELOG.md
 ```
 

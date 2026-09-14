@@ -5,6 +5,83 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.2] - 2026-09-15
+
+**Docs: refresh the README (it had drifted badly), fix the CLI `vcard set`
+whitelist, update XMPPAUDIT.md, and add a guard so the README is checked on
+every release.**
+
+### Fixed
+
+- **`src/commands.ts`** — `openclaw xmpp vcard set <field>` rejected
+  `jabberid`/`jabber`/`mailer`/`note`/`uid`/`prodid`/`sortString`/`sort-string`/
+  `sort`/`categories`/`category`/`geo`/`bday`/`tz` even though the CLI's own help
+  text, chat (`/vcard set`), and the write path (`lib/vcard-ops.ts`) all support
+  them. The whitelist now covers the full set (the 2.14.6 fix updated the write
+  path but not this guard).
+
+### Documentation
+
+- **`README.md`** — refreshed to v2.15.2. Corrected wrong/removed claims:
+  - Status header was `v2.11.3`; highlights now cover 2.11–2.15.2.
+  - File-transfer commands `openclaw xmpp upload|download|ls|rm` don't exist →
+    documented the real `openclaw xmpp sftp upload|download|ls|rm` (SFTP, pinned
+    host key) and kept XMPP `/sendfile` (SI/SOCKS5/IBB + HTTP Upload) separate.
+  - vCard CLI: corrected `vcard get` (no `<jid>`) and `vcard set avatar`
+    (`<url-or-path>`), documented **all** fields plus the `vcard4` command.
+  - Removed the non-existent `/whiteboard draw|send` slash commands; added
+    `/presence` and `/status` and the full `/vcard set` field list.
+  - Removed the false "XEP-0327 Occupant-ID" feature claim.
+  - Added presence/status, SFTP, and auto-update config sections; updated the
+    Features list and File Layout (removed the deleted `vcard-cli.ts`/
+    `whiteboard-cli.ts`, added `presence*.ts`, `sftp.ts`, `updater.ts`,
+    `onboarding.ts`, `mention.ts`, `lib/vcard-ops.ts`, `lib/vcard4-protocol.ts`,
+    `lib/json-extract.ts`, `tests/`, `XMPPAUDIT.md`).
+- **`XMPPAUDIT.md`** — targeted revision: header date/version; **XEP-0292
+  (vCard4) Not Supported → Supported**, **XEP-0163 (PEP) → Partial**, XEP-0304
+  footnote (whitespace keepalive, no negotiation); corrected the breakdown
+  (`vcard-cli.ts` → `lib/vcard-ops.ts`) and added XEP-0292/0163/Detected rows;
+  RFC 6121 presence note; recount (Supported 16, Partial 1, Detected 3, Not 396);
+  new **Compliance & prioritization** section (XEP-0410 MUC Self-Ping first).
+- **`AGENTS.md`** (new) and **`CONTRIBUTING.md`** — release checklist that makes
+  verifying `README.md` (version + command lists) and `XMPPAUDIT.md` an explicit
+  step, plus build/test commands and the documented pre-existing failures.
+
+### Tests
+
+- **`tests/readme.test.ts`** (new) — fails if the README omits the current
+  `package.json` version, key CLI/slash commands, or the presence config, or if
+  it re-introduces known-wrong text (`openclaw xmpp upload `, `vcard-cli.ts`,
+  `whiteboard-cli.ts`, `XEP-0327`, `vcard set avatarUrl`, `vcard get <jid>`).
+- **`tests/v2.15.2-vcard-cli-fields.test.ts`** (new) — asserts the CLI `vcard
+  set` whitelist covers every field/alias the write path supports and matches
+  the CLI help text.
+
+### Files changed
+
+- `src/commands.ts`, `README.md`, `XMPPAUDIT.md`, `AGENTS.md` (new),
+  `CONTRIBUTING.md`, `tests/readme.test.ts` (new),
+  `tests/v2.15.2-vcard-cli-fields.test.ts` (new), `package.json` — 2.15.2
+
+### Backups
+
+- `_backups/2.15.2_20260915_000353/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.2_20260915_000353"
+cp "$BK/commands.ts" src/commands.ts
+cp "$BK/README.md" README.md
+cp "$BK/XMPPAUDIT.md" XMPPAUDIT.md
+cp "$BK/CONTRIBUTING.md" CONTRIBUTING.md
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+cp "$BK/package.json" package.json
+rm -f AGENTS.md tests/readme.test.ts tests/v2.15.2-vcard-cli-fields.test.ts
+npx tsc
+```
+
 ## [2.15.1] - 2026-09-14
 
 **Fix: the CLI (`openclaw xmpp vcard/get`, `openclaw xmpp presence/get`) could

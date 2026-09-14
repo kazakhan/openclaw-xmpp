@@ -636,7 +636,18 @@ Note: Commands run through the running gateway's XMPP connection.`);
       } else if (action === 'set' && args.length >= 1) {
         const field = args[0];
         const value = args.slice(1).join(' ');
-        const validFields = ['fn', 'nickname', 'url', 'desc', 'avatar', 'birthday', 'title', 'role', 'timezone'];
+        // SECURITY (2.15.2): the whitelist must cover everything the write
+        // path (runVCardOp -> applySet) supports, including aliases.  Before
+        // this, the help text advertised jabberid/mailer/note/uid/prodid/
+        // sortString/categories/geo/bday/tz but the CLI rejected them here.
+        const validFields = [
+          'fn', 'nickname', 'url', 'desc', 'avatar',
+          'bday', 'birthday', 'title', 'role',
+          'tz', 'timezone', 'jabberid', 'jabber', 'mailer', 'note',
+          'uid', 'prodid',
+          'sortString', 'sortstring', 'sort-string', 'sort',
+          'categories', 'category', 'geo',
+        ];
 
         if (!validFields.includes(field)) {
           console.log(`Invalid field: ${field}`);
