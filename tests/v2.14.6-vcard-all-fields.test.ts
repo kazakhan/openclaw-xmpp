@@ -55,14 +55,20 @@ describe('Fix 2.14.6: chat /vcard set covers all fields (src/slash-commands.ts)'
   });
 });
 
-describe('Fix 2.14.6: CLI setVCard covers all fields (src/vcard-cli.ts)', () => {
+describe('Fix 2.14.6 + 2.14.7: CLI set covers all fields (src/lib/vcard-ops.ts)', () => {
   it('normalizes aliases and handles geo/categories', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    assert.match(src, /birthday:\s*'bday'/);
-    assert.match(src, /timezone:\s*'tz'/);
-    assert.match(src, /'sort-string':\s*'sortString'/);
-    assert.match(src, /vcard as any\)\.geo\s*=\s*\{\s*lat/);
-    assert.match(src, /vcard as any\)\.categories\s*=/);
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /birthday:\s*"bday"/);
+    assert.match(src, /timezone:\s*"tz"/);
+    assert.match(src, /"sort-string":\s*"sortString"/);
+    assert.match(src, /updates\s*=\s*\{\s*geo:\s*\{\s*lat/);
+    assert.match(src, /updates\s*=\s*\{\s*categories:/);
+  });
+
+  it('routes through the live vcardServer (no direct connection)', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /vcardServer\.updateVCardOnServer\(/);
+    assert.equal(/createXmppClient/.test(src), false);
   });
 });
 

@@ -126,6 +126,33 @@ export function registerXmppCli({
     .command("xmpp")
     .description("XMPP channel plugin commands");
 
+  // SECURITY (2.14.7): vCard operations are routed through the running
+  // gateway's EXISTING XMPP connection — in-process when this CLI shares the
+  // gateway process, otherwise via the `xmpp.vcard` gateway RPC.  Earlier
+  // versions imported `vcard-cli.js`, which opened a SECOND XMPP connection
+  // with the same JID+resource as the gateway, so the server kicked the bot
+  // (`StreamError: conflict, 'Replaced by new connection'`).  There is no
+  // direct-connection fallback: if the gateway is not running the command
+  // fails, exactly like `openclaw xmpp msg`.
+  async function runVCard(
+    action: string,
+    args: any[],
+  ): Promise<{ ok: boolean; data?: any; error?: string; url?: string }> {
+    const local = typeof getXmppClient === "function" ? getXmppClient() : null;
+    if (local && typeof local.vcard === "function") {
+      return await local.vcard(action, args);
+    }
+    const { callGatewayRpc } = await import("./gateway-client.js");
+    const rpc = await callGatewayRpc<{ ok: boolean; data?: any; error?: string; url?: string }>(
+      "xmpp.vcard",
+      { action, args },
+    );
+    if (!rpc.ok) {
+      return { ok: false, error: `gateway not running or unreachable (${rpc.error || "unknown"})` };
+    }
+    return rpc.data ?? { ok: false, error: "empty gateway response" };
+  }
+
   // Subcommand: start - Start the gateway in background
   xmpp
     .command("start")
@@ -513,11 +540,10 @@ Examples:
   openclaw xmpp vcard org "Acme Inc" "Engineering"
   openclaw xmpp vcard set avatar https://example.com/avatar.png
 
-Note: Commands connect directly to XMPP server.`);
+Note: Commands run through the running gateway's XMPP connection.`);
       } else if (action === 'get') {
         try {
-          const { getVCard } = await import('./vcard-cli.js');
-          const result = await getVCard();
+          const result = await runVCard('get', []);
           if (result.ok && result.data) {
             console.log('Current vCard:');
             console.log(`  FN: ${result.data.fn || '(not set)'}`);
@@ -602,8 +628,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { setVCardAvatar } = await import('./vcard-cli.js');
-            const result = await setVCardAvatar(value);
+            const result = await runVCard('avatar', [value]);
             if (result.ok) {
               console.log(`Avatar updated successfully!`);
               console.log(`URL: ${result.url}`);
@@ -622,8 +647,7 @@ Note: Commands connect directly to XMPP server.`);
         }
 
         try {
-          const { setVCard } = await import('./vcard-cli.js');
-          const result = await setVCard(field, value);
+          const result = await runVCard('set', [field, value]);
           if (result.ok) {
             console.log(`vCard field '${field}' updated successfully`);
           } else {
@@ -641,8 +665,7 @@ Note: Commands connect directly to XMPP server.`);
         const suffix = args[4];
 
         try {
-          const { setVCardName } = await import('./vcard-cli.js');
-          const result = await setVCardName(family, given, middle, prefix, suffix);
+          const result = await runVCard('name', [family, given, middle, prefix, suffix]);
           if (result.ok) {
             console.log(`vCard name updated: ${prefix || ''} ${given} ${middle || ''} ${family} ${suffix || ''}`.replace(/\s+/g, ' ').trim());
           } else {
@@ -667,8 +690,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { addVCardPhone } = await import('./vcard-cli.js');
-            const result = await addVCardPhone(types, number);
+            const result = await runVCard('phone-add', [number, ...types]);
             if (result.ok) {
               console.log(`vCard phone added: ${number} (${types.join(', ') || 'default'})`);
             } else {
@@ -685,8 +707,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { removeVCardPhone } = await import('./vcard-cli.js');
-            const result = await removeVCardPhone(index);
+            const result = await runVCard('phone-remove', [String(index)]);
             if (result.ok) {
               console.log(`vCard phone removed at index ${index}`);
             } else {
@@ -714,8 +735,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { addVCardEmail } = await import('./vcard-cli.js');
-            const result = await addVCardEmail(types, address);
+            const result = await runVCard('email-add', [address, ...types]);
             if (result.ok) {
               console.log(`vCard email added: ${address} (${types.join(', ') || 'default'})`);
             } else {
@@ -732,8 +752,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { removeVCardEmail } = await import('./vcard-cli.js');
-            const result = await removeVCardEmail(index);
+            const result = await runVCard('email-remove', [String(index)]);
             if (result.ok) {
               console.log(`vCard email removed at index ${index}`);
             } else {
@@ -765,8 +784,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { addVCardAddress } = await import('./vcard-cli.js');
-            const result = await addVCardAddress(types, street, locality, region, pcode, ctry);
+            const result = await runVCard('address-add', [street, locality, region, pcode, ctry, ...types]);
             if (result.ok) {
               console.log(`vCard address added: ${street}, ${locality}, ${region} ${pcode}, ${ctry} (${types.join(', ') || 'default'})`);
             } else {
@@ -783,8 +801,7 @@ Note: Commands connect directly to XMPP server.`);
           }
 
           try {
-            const { removeVCardAddress } = await import('./vcard-cli.js');
-            const result = await removeVCardAddress(index);
+            const result = await runVCard('address-remove', [String(index)]);
             if (result.ok) {
               console.log(`vCard address removed at index ${index}`);
             } else {
@@ -802,8 +819,7 @@ Note: Commands connect directly to XMPP server.`);
         const orgunits = args.slice(1);
 
         try {
-          const { setVCardOrg } = await import('./vcard-cli.js');
-          const result = await setVCardOrg(orgname, ...orgunits);
+          const result = await runVCard('org', [orgname, ...orgunits]);
           if (result.ok) {
             console.log(`vCard org updated: ${orgname}${orgunits.length > 0 ? ' (' + orgunits.join(', ') + ')' : ''}`);
           } else {
@@ -826,8 +842,7 @@ Note: Commands connect directly to XMPP server.`);
     .action(async (action?: string) => {
       const act = (action || "get").toLowerCase();
       if (act === "get") {
-        const { getVCard4 } = await import('./vcard-cli.js');
-        const result = await getVCard4();
+        const result = await runVCard('vcard4-get', []);
         if (!result.ok) { console.error('vCard4 get failed:', result.error || 'unknown'); process.exit(1); }
         if (!result.data || Object.keys(result.data).length === 0) {
           console.log('No vCard4 published in the PEP node.');
@@ -836,8 +851,7 @@ Note: Commands connect directly to XMPP server.`);
           console.log(JSON.stringify(result.data, null, 2));
         }
       } else if (act === "publish") {
-        const { publishVCard4Now } = await import('./vcard-cli.js');
-        const result = await publishVCard4Now();
+        const result = await runVCard('vcard4-publish', []);
         if (!result.ok) { console.error('vCard4 publish failed:', result.error || 'unknown'); process.exit(1); }
         console.log('vCard4 published to PEP node urn:xmpp:vcard4.');
       } else {

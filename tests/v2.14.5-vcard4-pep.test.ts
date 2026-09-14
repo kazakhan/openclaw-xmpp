@@ -87,10 +87,13 @@ describe('Fix 2.14.5: CLI (src/commands.ts + src/vcard-cli.ts)', () => {
     const src = await readSource('src/commands.ts');
     assert.match(src, /\.command\(\s*["']vcard4 \[action\]["']\s*\)/);
   });
-  it('vcard-cli exports getVCard4/publishVCard4Now and republishes after changes', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    assert.match(src, /export\s+async\s+function\s+getVCard4/);
-    assert.match(src, /export\s+async\s+function\s+publishVCard4Now/);
-    assert.match(src, /publishVCard4Via\(xmpp, vcard\)/);
+  it('vcard4 CLI routes through the live connection (no direct connect)', async () => {
+    const cmds = await readSource('src/commands.ts');
+    assert.match(cmds, /runVCard\(\s*['"]vcard4-get['"]/);
+    assert.match(cmds, /runVCard\(\s*['"]vcard4-publish['"]/);
+    const ops = await readSource('src/lib/vcard-ops.ts');
+    assert.match(ops, /case\s+["']vcard4-get["']/);
+    assert.match(ops, /case\s+["']vcard4-publish["']/);
+    assert.match(ops, /vcardServer\.publishVCard4\(/);
   });
 });

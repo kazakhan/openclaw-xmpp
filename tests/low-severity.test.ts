@@ -205,59 +205,22 @@ describe('Fix L7: whiteboard rawPaths field and standalonePaths removed', () => 
   });
 });
 
-describe('Fix L9: vcard-cli uses sendReceive helper, no hard-coded sleeps', () => {
-  it('has a sendReceive() helper', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    assert.match(
-      src,
-      /async\s+function\s+sendReceive/,
-      'sendReceive helper must be defined',
-    );
+describe('Fix L9 + 2.14.7: vCard ops have no hard-coded IQ sleeps (src/lib/vcard-ops.ts)', () => {
+  it('the old vcard-cli sendReceive helper is gone', async () => {
+    await assert.rejects(readSource('src/vcard-cli.ts'), /ENOENT/);
   });
 
-  it('sendReceive uses clearTimeout and xmpp.off on every path', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const fnMatch = src.match(/async\s+function\s+sendReceive[\s\S]*?\n\}/);
-    if (!fnMatch) return assert.fail('sendReceive not found');
-    const body = fnMatch[0];
-    assert.match(body, /clearTimeout/);
-    assert.match(body, /xmpp\.off\(/g);
+  it('no real `setTimeout(r, 800|300|500)` fixed sleeps remain', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.equal(src.match(/setTimeout\(\s*r\s*,\s*800\s*\)/g), null);
+    assert.equal(src.match(/setTimeout\(\s*r\s*,\s*300\s*\)/g), null);
+    assert.equal(src.match(/setTimeout\(\s*r\s*,\s*500\s*\)/g), null);
   });
 
-  it('no real `setTimeout(r, 800)` after IQ sends in vcard-cli.ts', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    // The helper comment may contain the literal string `setTimeout(r, 800)`;
-    // strip line comments first so the comment doesn't count.
-    const withoutComments = src.replace(/\/\/.*$/gm, '');
-    // The string should not appear OUTSIDE of comments/strings.
-    const matches = withoutComments.match(/setTimeout\(\s*r\s*,\s*800\s*\)/g);
-    assert.equal(
-      matches,
-      null,
-      `expected zero setTimeout(r, 800) outside comments; found ${matches?.length ?? 0}`,
-    );
-  });
-
-  it('no `setTimeout(r, 300)` after IQ sends in vcard-cli.ts', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const withoutComments = src.replace(/\/\/.*$/gm, '');
-    const matches = withoutComments.match(/setTimeout\(\s*r\s*,\s*300\s*\)/g);
-    assert.equal(
-      matches,
-      null,
-      `expected zero setTimeout(r, 300) outside comments; found ${matches?.length ?? 0}`,
-    );
-  });
-
-  it('no `setTimeout(r, 500)` in publishAvatar either', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const withoutComments = src.replace(/\/\/.*$/gm, '');
-    const matches = withoutComments.match(/setTimeout\(\s*r\s*,\s*500\s*\)/g);
-    assert.equal(
-      matches,
-      null,
-      `expected zero setTimeout(r, 500) outside comments; found ${matches?.length ?? 0}`,
-    );
+  it('delegates IQ send/await to the live vcardServer helpers', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /vcardServer\.updateVCardOnServer\(/);
+    assert.match(src, /vcardServer\.queryVCardFromServer\(/);
   });
 });
 
@@ -343,90 +306,34 @@ describe('Fix L12: commands.ts extracts requireJid() helper', () => {
   });
 });
 
-describe('Fix L13: vcard-cli saveVCardLocally is async + uses fsp', () => {
-  it('saveVCardLocally is declared async', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    assert.match(
-      src,
-      /async\s+function\s+saveVCardLocally/,
-      'saveVCardLocally must be async',
-    );
+describe('Fix L13 + 2.14.7: vCard local persistence is async (src/lib/vcard-ops.ts)', () => {
+  it('the old vcard-cli saveVCardLocally helper is gone', async () => {
+    await assert.rejects(readSource('src/vcard-cli.ts'), /ENOENT/);
   });
 
-  it('uses fsp.writeFile (not fs.writeFileSync)', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const fnMatch = src.match(/async\s+function\s+saveVCardLocally[\s\S]*?\n\}/);
-    if (!fnMatch) return assert.fail('saveVCardLocally body not found');
-    assert.match(
-      fnMatch[0],
-      /fsp\.writeFile\(/,
-      'must use fsp.writeFile',
-    );
-    assert.equal(
-      /fs\.writeFileSync/.test(src),
-      false,
-      'fs.writeFileSync must not be used anywhere in vcard-cli.ts',
-    );
+  it('persists locally via the async VCard.update() (never sync writes)', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /vcard\.update\(/);
+    assert.equal(/fs\.writeFileSync/.test(src), false);
+    assert.equal(/saveVCardLocally/.test(src), false);
   });
 
-  it('uses fsp.mkdir with recursive: true (no existsSync guard)', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const fnMatch = src.match(/async\s+function\s+saveVCardLocally[\s\S]*?\n\}/);
-    if (!fnMatch) return assert.fail('saveVCardLocally body not found');
-    assert.match(
-      fnMatch[0],
-      /fsp\.mkdir\([^)]*recursive:\s*true/,
-      'must use fsp.mkdir with recursive: true',
-    );
-  });
-
-  it('all 10 call sites are awaited', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    // Find every saveVCardLocally( occurrence in code (not the declaration).
-    const decl = src.match(/async\s+function\s+saveVCardLocally[\s\S]*?\n\}/);
-    if (!decl) return assert.fail('saveVCardLocally declaration not found');
-    const withoutDecl = src.replace(decl[0], '');
-    // Each call site should be `await saveVCardLocally(`
-    const awaited = withoutDecl.match(/await\s+saveVCardLocally\(/g);
-    const bare = withoutDecl.match(/(?<!await\s)saveVCardLocally\(/g);
-    assert.ok(
-      awaited && awaited.length >= 10,
-      `expected >= 10 awaited call sites; found ${awaited?.length ?? 0}`,
-    );
-    assert.equal(
-      bare,
-      null,
-      `expected zero bare (non-awaited) call sites; found ${bare?.length ?? 0}`,
-    );
+  it('avatar writes use fsp (async), not fs.promises sync APIs', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /fsp\.readFile\(/);
+    assert.match(src, /fsp\.stat\(/);
   });
 });
 
-describe('Fix L14: withConnection wraps xmpp.start() in try/catch', () => {
-  it('has try/catch around xmpp.start() in withConnection', async () => {
-    const src = await readSourceRaw('src/vcard-cli.ts');
-    const fnIdx = src.indexOf('async function withConnection');
-    if (fnIdx < 0) return assert.fail('withConnection function not found');
-    // Slice 1500 chars — plenty for a ~30-line function.
-    const slice = src.substring(fnIdx, fnIdx + 1500);
-    assert.match(
-      slice,
-      /try\s*\{[\s\S]*?await\s+xmpp\.start\(\)[\s\S]*?\}\s*catch\s*\(/,
-      'xmpp.start() must be wrapped in try { ... } catch (...)',
-    );
+describe('Fix L14 + 2.14.7: vCard ops never open/modify an XMPP connection', () => {
+  it('the old withConnection helper is gone', async () => {
+    await assert.rejects(readSourceRaw('src/vcard-cli.ts'), /ENOENT/);
   });
 
-  it('catch block calls xmpp.stop() and rethrows', async () => {
-    const src = await readSourceRaw('src/vcard-cli.ts');
-    const fnIdx = src.indexOf('async function withConnection');
-    if (fnIdx < 0) return assert.fail('withConnection function not found');
-    const slice = src.substring(fnIdx, fnIdx + 1500);
-    // The catch block body — find it, then check for xmpp.stop() and throw.
-    const catchMatch = slice.match(/catch\s*\([^)]*\)\s*\{[\s\S]*?\n\s{2}\}/);
-    if (!catchMatch) {
-      assert.fail('catch block not found');
-    }
-    assert.match(catchMatch[0], /xmpp\.stop\(\)/, 'catch must call xmpp.stop()');
-    assert.match(catchMatch[0], /throw\s+err/, 'catch must rethrow');
+  it('src/lib/vcard-ops.ts does not start or stop an XMPP connection', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.equal(/xmpp\.start\(/.test(src), false, 'must not call xmpp.start()');
+    assert.equal(/xmpp\.stop\(/.test(src), false, 'must not call xmpp.stop()');
   });
 });
 

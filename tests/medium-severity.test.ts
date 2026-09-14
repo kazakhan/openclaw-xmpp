@@ -365,33 +365,18 @@ describe('Fix M9: gateway.ts startXmpp wrapped in Promise.race with 60s timeout'
   });
 });
 
-describe('Fix M12: vcard-cli.ts publishAvatar uses per-step flags, not single success', () => {
-  it('declares per-step flags metadataOk and dataOk', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    assert.match(src, /let\s+metadataOk\s*=\s*false/);
-    assert.match(src, /let\s+dataOk\s*=\s*false/);
+describe('Fix M12 + 2.14.7: avatar publish has no reused single `success` flag', () => {
+  it('the old vcard-cli.ts (with its own publishAvatar) is gone', async () => {
+    await assert.rejects(readSource('src/vcard-cli.ts'), /ENOENT/);
   });
 
-  it('no longer has the single `let success = false` flag', async () => {
-    const src = await readSource('src/vcard-cli.ts');
+  it('avatar publishing routes through the live vcardServer (no second connection)', async () => {
+    const src = await readSource('src/lib/vcard-ops.ts');
+    assert.match(src, /vcardServer\.publishAvatar\(/);
     assert.equal(
       /let\s+success\s*=\s*false/.test(src),
       false,
-      'single `let success = false` must be removed',
+      'single `let success = false` must not be reintroduced',
     );
-  });
-
-  it('returns metadataOk && dataOk', async () => {
-    const src = await readSource('src/vcard-cli.ts');
-    const fnMatch = src.match(/async\s+function\s+publishAvatar[\s\S]*?\n\}/);
-    if (fnMatch) {
-      assert.match(
-        fnMatch[0],
-        /return\s+metadataOk\s*&&\s*dataOk/,
-        'publishAvatar must return metadataOk && dataOk',
-      );
-    } else {
-      assert.fail('publishAvatar function not found');
-    }
   });
 });

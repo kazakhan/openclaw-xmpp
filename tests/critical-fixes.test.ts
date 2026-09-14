@@ -200,49 +200,32 @@ describe('Fix 1.6: HTTPS preserved in upload', () => {
 // template-literal interpolation of `cmd` and `args[0]` goes through
 // the `escapeAttr` helper.
 // ---------------------------------------------------------------------
-describe('Fix 1.7: SVG attribute escaping', () => {
-  const src = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'whiteboard-cli.ts'),
-    'utf8'
-  );
-
-  it('whiteboard-cli.ts defines escapeAttr and uses it everywhere', () => {
-    // The escapeAttr function must be defined.
-    assert.ok(
-      /function escapeAttr\b|^.*const escapeAttr\s*=/m.test(src) ||
-        /const escapeAttr\s*=/.test(src),
-      'escapeAttr must be defined'
-    );
-    // The unsafe pattern `<path d="${cmd}"` must be gone.
+describe('Fix 1.7 + 2.14.7: dead direct-connect CLIs removed', () => {
+  it('whiteboard-cli.ts and vcard-cli.ts are gone', () => {
     assert.equal(
-      /<path d="\$\{cmd\}"/.test(src),
-      false,
-      'raw ${cmd} interpolation into <path d="..."> must be removed'
+      fs.existsSync(path.join(__dirname, '..', 'src', 'whiteboard-cli.ts')),
+      false
     );
-    // The safe pattern `<path d="${escapeAttr(cmd)}"` must be present.
-    assert.ok(
-      /<path d="\$\{escapeAttr\(cmd\)\}"/.test(src),
-      'cmd must be wrapped in escapeAttr() in <path d="...">'
+    assert.equal(
+      fs.existsSync(path.join(__dirname, '..', 'src', 'vcard-cli.ts')),
+      false
     );
   });
 
-  it('sendWhiteboardMessage also escapes pathData, stroke, and strokeWidth', () => {
-    // The whole whiteboard pipeline must be escape-safe.
-    assert.equal(
-      /<path d="\$\{pathData\}"/.test(src),
-      false,
-      'sendWhiteboardMessage must escape pathData'
-    );
-    assert.equal(
-      /<path d="\$\{pathData\}" fill="none" stroke="\$\{stroke\}"/.test(src),
-      false,
-      'sendWhiteboardMessage must escape stroke'
-    );
-    assert.match(
-      src,
-      /<path d="\$\{escapeAttr\(pathData\)\}" fill="none" stroke="\$\{escapeAttr\(stroke\)\}"/,
-      'sendWhiteboardMessage must use escapeAttr for both pathData and stroke'
-    );
+  it('no vCard CLI path opens a direct XMPP connection', () => {
+    // SECURITY (2.14.7): a second connection with the same JID+resource
+    // makes the server kick the gateway (`conflict`).  The vCard CLI must
+    // route through the live client / `xmpp.vcard` RPC instead.
+    for (const rel of ['src/commands.ts', 'src/lib/vcard-ops.ts', 'src/startXMPP.ts']) {
+      const s = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+      assert.equal(
+        /createXmppClient\s*\(/.test(s),
+        false,
+        `${rel} must not call createXmppClient()`
+      );
+    }
+    const ops = fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', 'vcard-ops.ts'), 'utf8');
+    assert.match(ops, /vcardServer\.updateVCardOnServer\(/);
   });
 });
 

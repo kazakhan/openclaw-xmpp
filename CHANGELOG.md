@@ -5,6 +5,99 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.7] - 2026-09-14
+
+**Fix: the `vcard` / `vcard4` CLI no longer opens a SECOND XMPP connection.
+It now runs on the gateway's existing connection (in-process client or the
+new `xmpp.vcard` gateway RPC), so it can no longer kick the bot offline with
+`StreamError: conflict, 'Replaced by new connection'`.**
+
+### Root cause
+
+`openclaw xmpp vcard …` and `openclaw xmpp vcard4 …` imported `vcard-cli.ts`,
+which called `createXmppClient()` and opened its **own** XMPP socket using the
+same JID + resource as the running gateway (v2.11.0 made the resource a stable
+sanitized hostname). XMPP forbids two active sessions with the same
+JID+resource, so Prosody replaced the gateway's session every time a CLI
+command ran — the bot flapped offline. (`openclaw xmpp msg` never had this
+problem: it already routes through the gateway via `callGatewayRpc` /
+`getXmppClient`.)
+
+### Changed
+
+- **`src/lib/vcard-ops.ts`** (new) — `runVCardOp(deps, action, args)` performs
+  all vCard actions **on the live connection** using the in-scope `vcardServer`
+  and `VCard` instances. Actions: `get`, `set`, `avatar`, `name`, `phone-add`,
+  `phone-remove`, `email-add`, `email-remove`, `address-add`, `address-remove`,
+  `org`, `vcard4-get`, `vcard4-publish`. It never creates/starts/stops an XMPP
+  connection. Field aliases (`birthday→bday`, `timezone→tz`,
+  `jabber→jabberid`, `sort-string→sortString`) and `geo`/`categories` handling
+  are preserved from the old CLI.
+- **`src/startXMPP.ts`** — the live client wrapper now exposes
+  `vcard(action, args)` backed by `runVCardOp` (same connection). Added a
+  distinct warning when a **`conflict`** StreamError arrives, naming the
+  resource in use. The bot resource (`sanitizeResource(os.hostname())`) is
+  **unchanged**.
+- **`index.ts`** — new gateway method **`xmpp.vcard`** (`{ action, args }`).
+  Resolves the live client from `xmppClients` and awaits `client.vcard(...)`;
+  fails closed ("XMPP client not connected") when the gateway has no session.
+- **`src/commands.ts`** — every `vcard`/`vcard4` branch now calls a single
+  `runVCard(action, args)` helper that prefers the in-process `getXmppClient()`
+  and otherwise calls `callGatewayRpc("xmpp.vcard", …)`. If the gateway is not
+  running the command **fails** ("gateway not running or unreachable") — there
+  is no direct-connection fallback (matching `openclaw xmpp msg`).
+- **Deleted** `src/vcard-cli.ts` and `src/whiteboard-cli.ts` — both were
+  direct-connect CLI helpers. `whiteboard-cli.ts` was already dead code (no
+  subcommand, no importer) but is removed as a footgun. `createXmppClient`
+  (`src/lib/xmpp-connect.ts`) now has no in-tree callers.
+
+### Security
+
+- Eliminates the JID+resource collision class of dropouts: exactly one XMPP
+  connection per resource (the gateway). CLI vCard commands share that session.
+- The conflict StreamError is now logged distinctly so any future colliding
+  client is easy to identify.
+
+### Tests
+
+- `tests/v2.14.7-vcard-via-gateway.test.ts` (new) — asserts the CLI routes via
+  `runVCard`/`xmpp.vcard`, the wrapper exposes `vcard`, `index.ts` registers
+  `xmpp.vcard`, `vcard-ops.ts` covers every action and never starts a
+  connection, the deleted files are gone, and the `conflict` warning exists.
+- Updated to the new locations/architecture (files that moved out of the
+  deleted `vcard-cli.ts`): `tests/v2.14.6-vcard-all-fields.test.ts`,
+  `tests/v2.14.5-vcard4-pep.test.ts`, `tests/medium-severity.test.ts` (M12),
+  `tests/low-severity.test.ts` (L9, L13, L14),
+  `tests/critical-fixes.test.ts` (Fix 1.7 → dead-CLI guard).
+
+### Files changed
+
+- `src/lib/vcard-ops.ts` (new), `src/startXMPP.ts`, `index.ts`,
+  `src/commands.ts`
+- deleted: `src/vcard-cli.ts`, `src/whiteboard-cli.ts`
+- `tests/v2.14.7-vcard-via-gateway.test.ts` (new) + the four updated suites
+- `package.json` — 2.14.7
+
+### Backups
+
+- `_backups/2.14.7_20260914_194753/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.7_20260914_194753"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/commands.ts" src/commands.ts
+cp "$BK/index.ts" index.ts
+cp "$BK/vcard-cli.ts" src/vcard-cli.ts
+cp "$BK/whiteboard-cli.ts" src/whiteboard-cli.ts
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/vcard-ops.ts
+npx tsc
+```
+
 ## [2.14.6] - 2026-09-14
 
 **Fix: agents couldn't set most vCard fields (email, tel, address, org, …) from

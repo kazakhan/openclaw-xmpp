@@ -19,6 +19,7 @@ import { safeSend, findUnderlyingSocket } from "./lib/xmpp-utils.js";
 import { buildMentionTokens, wasBotMentioned } from "./mention.js";
 import { createVCardServer } from "./vcard-server.js";
 import { handleSlashCommand } from "./slash-commands.js";
+import { runVCardOp } from "./lib/vcard-ops.js";
 
 // Reconnection constants
 const RECONNECT_BASE_MS = Config.RECONNECT_BASE_MS || 1000;
@@ -213,6 +214,21 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   xmpp.on("error", (err: any) => {
     log.error("XMPP error", err);
     xmppLog.error("connection error", err);
+    // SECURITY (2.14.7): a `conflict` StreamError means another session
+    // connected with the SAME JID + resource and the server replaced this
+    // one ("Replaced by new connection").  Log it distinctly so the operator
+    // can find the offending client.  We do NOT add custom reconnect logic
+    // here — @xmpp/reconnect still retries, but with a stable (hostname)
+    // resource the bot will keep getting kicked until the other session
+    // goes away.  The fix for CLI commands is that they no longer open a
+    // second connection (see lib/vcard-ops.ts).
+    const condition = err?.condition || err?.name;
+    if (condition === "conflict") {
+      xmppLog.warn(
+        `Stream conflict: resource "${getDefaultResource()}" for ${cfg?.jid} is already in use by another session; the server replaced this connection. ` +
+        `Ensure only the gateway connects with this JID/resource.`,
+      );
+    }
     // SECURITY (2.1.3, restore-old-design): no liveness manager,
     // no setLastError.  The OLD design from D:\Downloads\xmppOLD
     // just logged errors and let @xmpp/reconnect handle the
@@ -2224,7 +2240,24 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
           }));
           const presence = xml("presence", {}, ...children);
           await safeXmppSend(xmpp, presence);
-        }
+        },
+        // SECURITY (2.14.7): vCard operations run on the EXISTING live
+        // connection (no second XMPP session).  Invoked in-process by the
+        // CLI wrapper or over the `xmpp.vcard` gateway RPC.  See
+        // lib/vcard-ops.ts for the action set.
+        vcard: (action: string, args: string[] = []) =>
+          runVCardOp(
+            {
+              xmpp,
+              vcardServer,
+              vcard,
+              dataDir: cfg.dataDir,
+              domain: cfg.domain,
+              bareJid: cfg.jid.split("/")[0],
+            },
+            action,
+            args,
+          ),
       };
 
   xmppClient.roomNicks = roomNicks;

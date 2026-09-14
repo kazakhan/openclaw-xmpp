@@ -168,6 +168,38 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
     }
   });
 
+  // SECURITY (2.14.7): vCard operations over the gateway RPC.  This lets
+  // `openclaw xmpp vcard` / `vcard4` run on the EXISTING connection instead
+  // of opening a second one with the same JID+resource (which caused the
+  // server to kick the bot with a `conflict` StreamError).
+  api.registerGatewayMethod("xmpp.vcard", async ({ params, respond }) => {
+    const p = (params || {}) as Record<string, unknown>;
+    const action = (p.action as string) || "";
+    const args = Array.isArray(p.args) ? (p.args as any[]) : [];
+    if (!action) {
+      respond(false, { ok: false, error: "Missing required parameter: action" });
+      return;
+    }
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, {
+        ok: false,
+        error: "XMPP client not connected. Make sure the gateway is running and XMPP is enabled.",
+      });
+      return;
+    }
+    if (typeof client.vcard !== "function") {
+      respond(false, { ok: false, error: "vCard operations are not available on this client." });
+      return;
+    }
+    try {
+      const result = await client.vcard(action, args);
+      respond(!!result?.ok, result);
+    } catch (err: any) {
+      respond(false, { ok: false, error: err?.message || String(err) });
+    }
+  });
+
   api.registerTool({
     name: "xmpp_setPresence",
     label: "Set XMPP Presence",
