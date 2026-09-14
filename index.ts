@@ -3,6 +3,7 @@ import {
   type OpenClawPluginApi,
 } from "openclaw/plugin-sdk/channel-entry-contract";
 import { registerXmppCliMetadata } from "./src/cli-metadata.js";
+import { registerPresenceHooks } from "./src/presence-hooks.js";
 
 import { Type } from "typebox";
 import {
@@ -27,6 +28,10 @@ export {
 } from "./src/queue-bridge.js";
 
 export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
+  // SECURITY (2.15.0): auto-activity presence (busy while thinking/tooling),
+  // driven by the OpenClaw agent-lifecycle hooks.
+  registerPresenceHooks(api);
+
   api.registerGatewayMethod("xmpp.joinRoom", async ({ params, respond }) => {
     const { room, nick } = params || {};
     if (!room) {
@@ -200,16 +205,67 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
     }
   });
 
+  // SECURITY (2.15.0): presence/status over the gateway RPC, so the CLI and
+  // other surfaces set status on the EXISTING connection (no second session).
+  api.registerGatewayMethod("xmpp.setPresence", async ({ params, respond }) => {
+    const p = (params || {}) as Record<string, unknown>;
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { ok: false, error: "XMPP client not connected. Make sure the gateway is running and XMPP is enabled." });
+      return;
+    }
+    try {
+      if (p.clear) {
+        await client.clearPresence?.();
+        respond(true, { ok: true, presence: client.getPresence?.() });
+        return;
+      }
+      await client.setPresence?.(
+        (p.show as string) || "available",
+        (p.status as string) || undefined,
+        (p.priority as number) ?? undefined,
+        (p.ttlSeconds as number) ?? undefined,
+      );
+      respond(true, { ok: true, presence: client.getPresence?.() });
+    } catch (err: any) {
+      respond(false, { ok: false, error: err?.message || String(err) });
+    }
+  });
+
+  api.registerGatewayMethod("xmpp.getPresence", ({ respond }) => {
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { ok: false, error: "XMPP client not connected" });
+      return;
+    }
+    respond(true, { ok: true, presence: client.getPresence?.() || null });
+  });
+
+  api.registerGatewayMethod("xmpp.clearPresence", async ({ respond }) => {
+    const client = xmppClients.get("default") || xmppClients.values().next().value;
+    if (!client) {
+      respond(false, { ok: false, error: "XMPP client not connected" });
+      return;
+    }
+    try {
+      await client.clearPresence?.();
+      respond(true, { ok: true, presence: client.getPresence?.() });
+    } catch (err: any) {
+      respond(false, { ok: false, error: err?.message || String(err) });
+    }
+  });
+
   api.registerTool({
     name: "xmpp_setPresence",
     label: "Set XMPP Presence",
-    description: "Update the bot's XMPP presence/status. Use this to show your availability (away, busy/dnd, free for chat, etc.) with an optional status message.",
-    promptSnippet: "You can update your XMPP presence to set your availability status with a custom message.",
+    description: "Update the bot's XMPP presence/status. Set a built-in show (available/chat/away/xa/dnd, aliases free/busy) with an optional custom status message, or clear the manual status. A manual status overrides the automatic busy-while-thinking/tooling presence until cleared or its ttlSeconds expires.",
+    promptSnippet: "You can set your XMPP availability/status (e.g. busy with a custom message) and clear it again.",
     promptGuidelines: [
-      'Use xmpp_setPresence with show="dnd" and a status message when you are working on something and do not want interruptions.',
+      'Thinking and tool use automatically show a busy presence; you do NOT need to set that yourself.',
+      'Use xmpp_setPresence with show="dnd" (or "busy") and a status message to pin a custom status (e.g. "Deploying — back in 10m"); it overrides the automatic presence.',
       'Use xmpp_setPresence with show="away" when you are idle.',
-      'Use xmpp_setPresence without show (or show="available") when you are ready to respond.',
-      "Use the status field to describe what you are doing, e.g. 'Working on a bug fix'.",
+      'Use xmpp_setPresence with clear=true to drop your manual status and let the automatic presence track you again.',
+      "Use the status field for a short human-readable note; keep secrets out of it (contacts can see it).",
     ],
     parameters: Type.Object({
       show: Type.Optional(Type.Union([
@@ -218,20 +274,32 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
         Type.Literal("dnd"),
         Type.Literal("xa"),
         Type.Literal("available"),
+        Type.Literal("busy"),
+        Type.Literal("free"),
       ])),
       status: Type.Optional(Type.String({ description: "Custom status message" })),
       priority: Type.Optional(Type.Integer({ description: "Presence priority (-128 to 127)", minimum: -128, maximum: 127 })),
+      ttlSeconds: Type.Optional(Type.Integer({ description: "Auto-revert this status after N seconds (0 = until cleared)", minimum: 0 })),
+      clear: Type.Optional(Type.Boolean({ description: "Clear the manual status and return to the default/auto presence" })),
     }),
     execute: async (toolCallId, params, _signal) => {
       const client = xmppClients.get("default") || xmppClients.values().next().value;
       if (!client) {
         throw new Error("XMPP client not connected");
       }
-      await client.setPresence(params.show, params.status, params.priority);
+      if (params.clear) {
+        await client.clearPresence?.();
+        return {
+          content: [{ type: "text" as const, text: "Presence cleared (reverted to default/auto)." }],
+          details: undefined,
+        };
+      }
+      await client.setPresence(params.show, params.status, params.priority, params.ttlSeconds);
       const parts: string[] = [];
       if (params.show) parts.push(`show=${params.show}`);
       if (params.status) parts.push(`status="${params.status}"`);
       if (params.priority !== undefined) parts.push(`priority=${params.priority}`);
+      if (params.ttlSeconds) parts.push(`ttl=${params.ttlSeconds}s`);
       if (parts.length === 0) parts.push("available");
       return {
         content: [{ type: "text" as const, text: `Presence updated: ${parts.join(", ")}` }],

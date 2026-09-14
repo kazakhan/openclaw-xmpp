@@ -74,6 +74,22 @@
                     "enabled": { "type": "boolean" }
                   }
                 },
+                "presence": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "defaultShow": { "type": "string", "enum": ["available", "chat", "away", "xa", "dnd"] },
+                    "defaultStatus": { "type": "string" },
+                    "thinkingShow": { "type": "string", "enum": ["available", "chat", "away", "xa", "dnd"] },
+                    "thinkingStatus": { "type": "string" },
+                    "toolShow": { "type": "string", "enum": ["available", "chat", "away", "xa", "dnd"] },
+                    "toolStatus": { "type": "string" },
+                    "minIntervalSeconds": { "type": "number" },
+                    "manualTtlSeconds": { "type": "number" },
+                    "restoreOnReconnect": { "type": "boolean" }
+                  }
+                },
                 "rooms": {
                   "type": "array",
                   "items": { "type": "string" }
@@ -116,7 +132,8 @@
             "nick": { "label": "Bot nickname" },
             "dmPolicy": { "label": "DM policy" },
             "allowFrom": { "label": "Allowed JIDs" },
-            "autoJoinRooms": { "label": "Auto-join rooms" }
+            "autoJoinRooms": { "label": "Auto-join rooms" },
+            "presence": { "label": "Presence / status (show, auto-activity)" }
           }
         }
       }

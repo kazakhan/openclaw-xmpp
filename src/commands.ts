@@ -153,6 +153,34 @@ export function registerXmppCli({
     return rpc.data ?? { ok: false, error: "empty gateway response" };
   }
 
+  // SECURITY (2.15.0): presence/status via the running gateway's existing
+  // connection (in-process client or the xmpp.setPresence/getPresence/
+  // clearPresence RPC).  No direct-connection fallback.
+  async function runPresence(
+    action: "set" | "get" | "clear",
+    payload: { show?: string; status?: string; priority?: number; ttlSeconds?: number } = {},
+  ): Promise<{ ok: boolean; presence?: any; error?: string }> {
+    const local = typeof getXmppClient === "function" ? getXmppClient() : null;
+    if (local && typeof local.setPresence === "function") {
+      if (action === "clear") {
+        await local.clearPresence();
+        return { ok: true, presence: local.getPresence?.() };
+      }
+      if (action === "get") return { ok: true, presence: local.getPresence?.() };
+      await local.setPresence(payload.show, payload.status, payload.priority, payload.ttlSeconds);
+      return { ok: true, presence: local.getPresence?.() };
+    }
+    const { callGatewayRpc } = await import("./gateway-client.js");
+    const method =
+      action === "clear" ? "xmpp.clearPresence" : action === "get" ? "xmpp.getPresence" : "xmpp.setPresence";
+    const rpc = await callGatewayRpc<any>(method, action === "set" ? payload : undefined);
+    if (!rpc.ok) {
+      return { ok: false, error: `gateway not running or unreachable (${rpc.error || "unknown"})` };
+    }
+    const data = rpc.data || {};
+    return { ok: !!data.ok, presence: data.presence, error: data.error };
+  }
+
   // Subcommand: start - Start the gateway in background
   xmpp
     .command("start")
@@ -856,6 +884,40 @@ Note: Commands run through the running gateway's XMPP connection.`);
         console.log('vCard4 published to PEP node urn:xmpp:vcard4.');
       } else {
         console.log('Usage: openclaw xmpp vcard4 [get|publish]');
+      }
+    });
+
+  // Subcommand: presence [show] [status...]
+  // SECURITY (2.15.0): set/show/clear the bot's XMPP presence + status.
+  //   openclaw xmpp presence                       -> show current
+  //   openclaw xmpp presence busy "Deploying"      -> set manual override
+  //   openclaw xmpp presence clear                 -> clear override
+  xmpp
+    .command("presence [show] [status...]")
+    .description("Set or show XMPP presence/status (available|chat|away|xa|busy|dnd|free, or 'clear')")
+    .action(async (show?: string, statusParts: string[] = []) => {
+      const showArg = (show || "").toLowerCase();
+      let result: { ok: boolean; presence?: any; error?: string };
+      if (showArg === "clear" || showArg === "reset") {
+        result = await runPresence("clear");
+      } else if (!showArg) {
+        result = await runPresence("get");
+      } else {
+        result = await runPresence("set", {
+          show: showArg,
+          status: (statusParts || []).join(" ").trim() || undefined,
+        });
+      }
+      if (!result.ok) {
+        console.error("Presence:", result.error || "unknown error");
+        process.exitCode = 1;
+        return;
+      }
+      const p = result.presence;
+      if (p) {
+        console.log(`Presence: ${p.show}${p.status ? ` — ${p.status}` : ""} (${p.source})`);
+      } else {
+        console.log("Presence updated.");
       }
     });
 

@@ -5,6 +5,100 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] - 2026-09-14
+
+**Feature: XMPP presence/status. Agents and humans can set built-in or custom
+status messages, and the bot automatically shows a busy status while it is
+thinking or running tools.**
+
+### Added
+
+- **`src/presence.ts`** (new) — `PresenceManager`, a dependency-free presence
+  state machine:
+  - built-in shows `available|chat|away|xa|dnd` plus friendly aliases
+    (`online`→available, `busy`→dnd, `free`→chat, `idle`→away,
+    `extended-away`→xa).
+  - precedence **manual override > auto-activity > default**; a manual status
+    wins until cleared or until `manualTtlSeconds` expires.
+  - auto-activity: **thinking** (`model_call_started/ended`) and **tool**
+    (`before_tool_call`/`after_tool_call`, status renders the tool name via
+    the `{tool}` placeholder) with run counting so overlapping runs keep the
+    status busy until the last one ends.
+  - coalescing + trailing throttle (`minIntervalSeconds`, default 5s): a
+    presence stanza is only sent when the effective `(show,status)` changes,
+    so a multi-step tool loop does not storm the roster.
+  - persistence to `<dataDir>/xmpp-presence.json` so a manual status survives
+    reconnect/restart.
+- **`src/presence-hooks.ts`** (new) — maps OpenClaw agent-lifecycle hooks
+  (`before_agent_run`, `model_call_started/ended`, `before_tool_call`,
+  `after_tool_call`, `agent_end`, `session_end`) onto `notifyActivity()`.
+  Only runs bound to the XMPP channel (or a configured XMPP account) affect
+  presence, so a Discord/other-channel run never flips the XMPP bot.
+
+### Changed
+
+- **`src/startXMPP.ts`** — the live connection now owns a `PresenceManager`.
+  Initial presence **and presence-probe replies** send the current/persisted
+  `<show>` + `<status>` (plus XEP-0115 caps) instead of caps-only, so a custom
+  status is no longer lost on reconnect. The wrapper gains `getPresence()`,
+  `clearPresence()` and `notifyActivity()`; `setPresence()` now routes through
+  the manager (validation + persistence + manual override).
+- **`index.ts`** — calls `registerPresenceHooks(api)`; new gateway methods
+  **`xmpp.setPresence`**, **`xmpp.getPresence`**, **`xmpp.clearPresence`**;
+  the `xmpp_setPresence` tool gains `clear`, `ttlSeconds` and the `busy`/`free`
+  aliases, with guidelines explaining that thinking/tool busy is automatic.
+- **`src/commands.ts`** — new CLI: `openclaw xmpp presence [show] [status…]`
+  and `openclaw xmpp presence clear`, routed through the live connection
+  (`getXmppClient()` or the `xmpp.*Presence` RPC); fails closed if the gateway
+  is down.
+- **`src/slash-commands.ts`** — new chat commands `/presence <show> [status]`,
+  `/presence clear`, and `/status <text>` (alias).
+- **`src/config.ts`** — `Config.PRESENCE` defaults; **`openclaw.plugin.json`**
+  — per-account `presence` config block (`enabled`, `defaultShow/Status`,
+  `thinkingShow/Status`, `toolShow/Status`, `minIntervalSeconds`,
+  `manualTtlSeconds`, `restoreOnReconnect`) + UI hint.
+- **`src/types.ts`** — extended `XmppClient` presence surface.
+
+### Behaviour
+
+- Auto-activity is **on by default** (`presence.enabled: true`) with a 5s
+  throttle. Set `presence.enabled: false` to disable it per account.
+
+### Tests
+
+- `tests/v2.15.0-presence.test.ts` (new): behavioural tests for aliases,
+  manual/auto/default precedence, clear, TTL expiry, persistence, throttle
+  coalescing, plus source-level wiring checks.
+
+### Files changed
+
+- `src/presence.ts` (new), `src/presence-hooks.ts` (new), `src/startXMPP.ts`,
+  `index.ts`, `src/commands.ts`, `src/slash-commands.ts`, `src/config.ts`,
+  `src/types.ts`, `openclaw.plugin.json`, `tests/v2.15.0-presence.test.ts`
+  (new), `package.json` — 2.15.0
+
+### Backups
+
+- `_backups/2.15.0_20260914_203508/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.0_20260914_203508"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/commands.ts" src/commands.ts
+cp "$BK/slash-commands.ts" src/slash-commands.ts
+cp "$BK/config.ts" src/config.ts
+cp "$BK/types.ts" src/types.ts
+cp "$BK/index.ts" index.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/presence.ts src/presence-hooks.ts
+npx tsc
+```
+
 ## [2.14.7] - 2026-09-14
 
 **Fix: the `vcard` / `vcard4` CLI no longer opens a SECOND XMPP connection.

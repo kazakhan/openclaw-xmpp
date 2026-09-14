@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { validators } from "./security/validation.js";
 import { checkRateLimit, MAX_FILE_SIZE, debugLog } from "./shared/index.js";
+import { normalizeShow } from "./presence.js";
 
 export interface SlashCommandCtx {
   xmpp: any;
@@ -31,6 +32,12 @@ export interface SlashCommandCtx {
   };
   requestUploadSlot: (filename: string, size: number, contentType?: string) => Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}>;
   uploadFileViaHTTP: (filePath: string, putUrl: string, headers?: Record<string, string>) => Promise<void>;
+  // SECURITY (2.15.0): presence/status manager (on the live connection).
+  presence: {
+    setManual: (show: string, status?: string, priority?: number, ttlSeconds?: number) => Promise<{ show: string; status: string; source: string }>;
+    clearManual: () => Promise<{ show: string; status: string; source: string }>;
+    getSnapshot: () => { show: string; status: string; source: string; autoActive?: boolean; manualActive?: boolean };
+  };
 }
 
 export interface SlashCommandArgs {
@@ -44,7 +51,7 @@ export interface SlashCommandArgs {
 
 export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashCommandArgs): Promise<void> {
   const { body, from, fromBareJid, messageType, mediaUrls, mediaPaths } = args;
-  const { xmpp, xmppLog, safeXmppSend, contacts, cfg, resolveRoomJid, getDefaultNick, onMessage, joinedRooms, roomNicks, vcard, vcardServer, requestUploadSlot, uploadFileViaHTTP } = ctx;
+  const { xmpp, xmppLog, safeXmppSend, contacts, cfg, resolveRoomJid, getDefaultNick, onMessage, joinedRooms, roomNicks, vcard, vcardServer, requestUploadSlot, uploadFileViaHTTP, presence } = ctx;
 
   debugLog(`[SLASH] Command: ${body.substring(0, 100)}`);
   
@@ -84,7 +91,7 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
   }
   
   // Define plugin-specific commands
-  const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'vcard', 'help', 'test']);
+  const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'vcard', 'presence', 'status', 'help', 'test']);
   const isPluginCommand = pluginCommands.has(command);
   
   debugLog(`[SLASH] type=${messageType}, cmd=/${command}, isPlugin=${isPluginCommand}`);
@@ -136,6 +143,9 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
   /leave <room> - Leave MUC room (admin only - direct chat)
   /invite <contact> <room> - Invite contact to room (admin only - direct chat)
   /vcard - Manage vCard profile (admin only - direct chat)
+  /presence <online|chat|away|xa|busy> [status] - Set/show status
+  /presence clear - Clear the manual status
+  /status <text> - Set a custom status (alias)
   /help - Show this help`);
         
         if (messageType === "chat" && await contacts.exists(fromBareJid)) {
@@ -143,7 +153,53 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
           onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
         }
         return;
-        
+
+      case 'presence':
+      case 'status': {
+        // SECURITY (2.15.0): presence/status control on the live connection.
+        //   /presence                     -> show current
+        //   /presence <show> [status...]  -> set manual override
+        //   /presence clear               -> clear override
+        //   /status <text>                -> convenience alias
+        if (!presence) {
+          await sendReply("Presence control is unavailable.");
+          return;
+        }
+        const isStatusAlias = command === 'status';
+        const first = isStatusAlias ? 'available' : (cmdArgs[0] || '').toLowerCase();
+        const wantsClear = !isStatusAlias && (first === 'clear' || first === 'reset');
+        const wantsSet = isStatusAlias || (cmdArgs.length >= 1 && !wantsClear && normalizeShow(first));
+
+        if (wantsClear) {
+          try {
+            const eff = await presence.clearManual();
+            await sendReply(`Presence reset to ${eff.show}${eff.status ? ` — ${eff.status}` : ''}`);
+          } catch (err: any) {
+            await sendReply(`Failed to reset presence: ${err?.message || String(err)}`);
+          }
+          return;
+        }
+
+        if (wantsSet) {
+          const show = isStatusAlias ? 'available' : first;
+          const status = (isStatusAlias ? cmdArgs : cmdArgs.slice(1)).join(' ').trim();
+          try {
+            const eff = await presence.setManual(show, status || undefined);
+            await sendReply(`Presence set: ${eff.show}${eff.status ? ` — ${eff.status}` : ''}`);
+          } catch (err: any) {
+            await sendReply(`Failed to set presence: ${err?.message || String(err)}`);
+          }
+          return;
+        }
+
+        const snap = presence.getSnapshot();
+        await sendReply(
+          `Current presence: ${snap.show}${snap.status ? ` — ${snap.status}` : ''} (${snap.source})\n` +
+          `Usage: /presence <online|chat|away|xa|busy> [status] | /presence clear | /status <text>`,
+        );
+        return;
+      }
+
       case 'list':
         if (!(await checkAdminAccess())) {
           await sendReply(messageType === "groupchat" 

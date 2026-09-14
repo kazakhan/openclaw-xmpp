@@ -93,6 +93,21 @@ export const Config = {
   // connection" conflict.
   TCP_KEEPALIVE_MS: 20000,
   WHITESPACE_KEEPALIVE_MS: 25000,
+
+  // Presence / status (2.15.0).  Per-account overrides live in
+  // `xmpp.accounts.<id>.presence`; these are the defaults.
+  PRESENCE: {
+    enabled: true,
+    defaultShow: "available",
+    defaultStatus: "",
+    thinkingShow: "dnd",
+    thinkingStatus: "Thinking…",
+    toolShow: "dnd",
+    toolStatus: "Running {tool}…",
+    minIntervalSeconds: 5,
+    manualTtlSeconds: 0,
+    restoreOnReconnect: true,
+  },
 };
 
 export type Config = typeof Config;

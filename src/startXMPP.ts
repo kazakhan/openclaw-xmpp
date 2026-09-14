@@ -20,6 +20,7 @@ import { buildMentionTokens, wasBotMentioned } from "./mention.js";
 import { createVCardServer } from "./vcard-server.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { runVCardOp } from "./lib/vcard-ops.js";
+import { PresenceManager, readPresenceConfig } from "./presence.js";
 
 // Reconnection constants
 const RECONNECT_BASE_MS = Config.RECONNECT_BASE_MS || 1000;
@@ -264,6 +265,29 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   // to send stanzas; the 42+ call sites use it.
   const safeXmppSend = safeSend;
 
+  // SECURITY (2.15.0): presence/status manager.  It sends status stanzas on
+  // the EXISTING connection (never opens one), persists a manual override so
+  // a custom status survives reconnect, and owns the
+  // manual > auto-activity > default precedence with coalescing/throttling.
+  const rawSendPresence = async (show?: string, status?: string, priority?: number) => {
+    const children: any[] = [];
+    if (show && show !== "available") children.push(xml("show", {}, show));
+    if (status) children.push(xml("status", {}, status));
+    if (priority !== undefined && priority !== null) children.push(xml("priority", {}, String(priority)));
+    children.push(xml("c", {
+      xmlns: CapsInfo.xmlns,
+      hash: CapsInfo.hash,
+      node: CapsInfo.node,
+      ver: CapsInfo.ver
+    }));
+    await safeXmppSend(xmpp, xml("presence", {}, ...children));
+  };
+  const presenceManager = new PresenceManager({
+    dataDir: cfg.dataDir,
+    cfg: readPresenceConfig(cfg),
+    send: rawSendPresence,
+  });
+
   // SECURITY (2.1.3, restore-old-design): no `stopLivenessTimers`
   // helper (the liveness manager is gone).  Code that previously
   // called `stopLivenessTimers(reason)` was for the old liveness
@@ -393,18 +417,15 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     xmppLog.debug("XMPP online (reconnect handled by @xmpp/reconnect)");
     debugLog("XMPP connected successfully");
 
-      // Send initial presence with Entity Capabilities (XEP-0115)
+      // SECURITY (2.15.0): send initial presence with the restored/default
+      // show + status (plus XEP-0115 caps), so a custom status survives a
+      // reconnect instead of silently reverting to "available".
       try {
-        const presence = xml("presence", {},
-          xml("c", {
-            xmlns: CapsInfo.xmlns,
-            hash: CapsInfo.hash,
-            node: CapsInfo.node,
-            ver: CapsInfo.ver
-          })
+        await presenceManager.announce();
+        const snap = presenceManager.getSnapshot();
+        log.info(
+          `Presence sent (${snap.show}${snap.status ? `, ${snap.status}` : ""}) with XEP-0115 caps, ver=${CapsInfo.ver}`,
         );
-        await safeXmppSend(xmpp, presence);
-        log.info("Presence with XEP-0115 caps sent, ver=" + CapsInfo.ver);
       } catch (err) {
         xmppLog.error("presence failed", err);
         log.error("Failed to send presence", err);
@@ -716,16 +737,19 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        // Handle presence probes
        if (type === "probe") {
          xmppLog.debug("presence", { type: "probe", from });
-         // Respond with available presence including Entity Capabilities
+         // Respond with the CURRENT presence (show/status) + Entity Caps
          try {
-           const presence = xml("presence", { to: from },
-             xml("c", {
-               xmlns: CapsInfo.xmlns,
-               hash: CapsInfo.hash,
-               node: CapsInfo.node,
-               ver: CapsInfo.ver
-             })
-           );
+           const snap = presenceManager.getSnapshot();
+           const probeChildren: any[] = [];
+           if (snap.show && snap.show !== "available") probeChildren.push(xml("show", {}, snap.show));
+           if (snap.status) probeChildren.push(xml("status", {}, snap.status));
+           probeChildren.push(xml("c", {
+             xmlns: CapsInfo.xmlns,
+             hash: CapsInfo.hash,
+             node: CapsInfo.node,
+             ver: CapsInfo.ver
+           }));
+           const presence = xml("presence", { to: from }, ...probeChildren);
            await safeXmppSend(xmpp,presence);
          } catch (err) {
            xmppLog.error("presence probe response failed", err);
@@ -1641,7 +1665,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
              xmpp, xmppLog, safeXmppSend, contacts, cfg,
              resolveRoomJid, getDefaultNick, onMessage,
              joinedRooms, roomNicks, vcard, vcardServer,
-             requestUploadSlot, uploadFileViaHTTP
+             requestUploadSlot, uploadFileViaHTTP,
+             presence: presenceManager
            }, {
              body, from, fromBareJid, messageType, mediaUrls, mediaPaths
            });
@@ -2221,25 +2246,23 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          
            await safeXmppSend(xmpp,message);
         },
-        setPresence: async (show?: string, status?: string, priority?: number) => {
-          const children: any[] = [];
-          if (show && show !== "available") {
-            children.push(xml("show", {}, show));
+        // SECURITY (2.15.0): presence goes through the manager (validation,
+        // manual-override precedence, persistence, throttling).  This is the
+        // "manual" source that wins over auto-activity until cleared/TTL.
+        setPresence: async (show?: string, status?: string, priority?: number, ttlSeconds?: number) => {
+          await presenceManager.setManual(show || "available", status, priority, ttlSeconds);
+        },
+        getPresence: () => presenceManager.getSnapshot(),
+        clearPresence: async () => {
+          await presenceManager.clearManual();
+        },
+        // Fed by the OpenClaw agent-lifecycle hooks registered in index.ts.
+        notifyActivity: (event: any) => {
+          try {
+            presenceManager.notifyActivity(event);
+          } catch (err) {
+            xmppLog.debug("notifyActivity failed", err);
           }
-          if (status) {
-            children.push(xml("status", {}, status));
-          }
-          if (priority !== undefined && priority !== null) {
-            children.push(xml("priority", {}, String(priority)));
-          }
-          children.push(xml("c", {
-            xmlns: CapsInfo.xmlns,
-            hash: CapsInfo.hash,
-            node: CapsInfo.node,
-            ver: CapsInfo.ver
-          }));
-          const presence = xml("presence", {}, ...children);
-          await safeXmppSend(xmpp, presence);
         },
         // SECURITY (2.14.7): vCard operations run on the EXISTING live
         // connection (no second XMPP session).  Invoked in-process by the
