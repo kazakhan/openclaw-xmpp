@@ -5,6 +5,93 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - 2026-09-14
+
+**Feature: secure SFTP re-introduced (pinned host key, fail closed).**
+
+### Why
+
+SFTP was removed in 2.0.15 because the old SSH connection used
+`hostVerifier: () => true`, which disabled host-key verification entirely and
+let a man-in-the-middle steal the plaintext XMPP password. This re-adds the
+feature **without** that vulnerability.
+
+### What
+
+- **`src/sftp.ts`** (new): connection + `upload`/`download`/`list`/`remove`.
+  - **Pinned host-key fingerprint is REQUIRED.** It is compared via
+    `verifyFingerprint()` (supports OpenSSH `SHA256:<base64>` and legacy
+    `MD5:<hex>`); the connection **fails closed** if the fingerprint is missing
+    or does not match. There is no insecure fallback.
+  - Host defaults to the XMPP domain; **user** to the JID local part; **port
+    defaults to 2222 and is configurable** (`sftp.port`).
+  - Auth reuses the encrypted XMPP password by default, or a separate
+    `sftp.password` (ENC: supported).
+- **CLI (`src/commands.ts`)**: `openclaw xmpp sftp upload|download|ls|rm`
+  (replaces the removal stub).
+- **Agent tool (`index.ts`)**: new `xmpp_sftp` tool (`action` = upload /
+  download / list / delete) declared in `contracts.tools`.
+- **Config** (`src/types.ts`, `src/channel-plugin.ts`, `src/setup-plugin.ts`,
+  `openclaw.plugin.json`): `sftp: { enabled, host, port, user, password,
+  hostKeyFingerprint }`.
+- **Dependency**: `ssh2` re-added (`@types/ssh2` dev dep).
+
+### Configuration
+
+```json
+"channels": { "xmpp": { "accounts": { "default": {
+  "sftp": {
+    "enabled": true,
+    "port": 2222,
+    "hostKeyFingerprint": "SHA256:AbCd…1234"
+  }
+} } }
+```
+
+Get the fingerprint once with:
+```bash
+ssh-keyscan -p 2222 your-host | ssh-keygen -lf -
+```
+
+### Files changed
+
+- `src/sftp.ts` (new)
+- `src/commands.ts` — real sftp subcommand
+- `index.ts` — `xmpp_sftp` agent tool
+- `openclaw.plugin.json` — `sftp` schema + `contracts.tools` += `xmpp_sftp`
+- `src/types.ts`, `src/channel-plugin.ts`, `src/setup-plugin.ts` — `sftp` schema
+- `package.json` — `ssh2` + `@types/ssh2`
+- `tests/v2.14.0-sftp.test.ts` (new); `tests/critical-fixes.test.ts` updated
+
+### Backups
+
+- `_backups/2.14.0_20260914_162525/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.0_20260914_162525"
+rm -f src/sftp.ts tests/v2.14.0-sftp.test.ts
+cp "$BK/commands.ts"          src/commands.ts
+cp "$BK/index.ts"             index.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json"         package.json
+cp "$BK/types.ts"             src/types.ts
+cp "$BK/channel-plugin.ts"    src/channel-plugin.ts
+cp "$BK/setup-plugin.ts"      src/setup-plugin.ts
+cp "$BK/CHANGELOG.md"         CHANGELOG.md
+npm install && npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors in the edited files.
+- `node --test tests/*.test.ts` — new v2.14.0 suite + updated
+  `critical-fixes` pass.
+- Runtime: `verifyFingerprint` matches SHA256/MD5, rejects a wrong key, and
+  returns false for an empty fingerprint (fail closed).
+
 ## [2.13.1] - 2026-09-14
 
 **Fix: auto-update now actually updates — detect → ASK → install on "yes".**

@@ -9,7 +9,7 @@
   },
   "channels": ["xmpp"],
   "contracts": {
-    "tools": ["xmpp_setPresence"]
+    "tools": ["xmpp_setPresence", "xmpp_sftp"]
   },
   "channelEnvVars": {
     "xmpp": [
@@ -55,6 +55,17 @@
                     "intervalHours": { "type": "number" },
                     "mode": { "type": "string", "enum": ["ask", "auto"] },
                     "autoRestart": { "type": "boolean" }
+                  }
+                },
+                "sftp": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "host": { "type": "string" },
+                    "port": { "type": "number" },
+                    "user": { "type": "string" },
+                    "password": { "type": "string" },
+                    "hostKeyFingerprint": { "type": "string" }
                   }
                 },
                 "rooms": {

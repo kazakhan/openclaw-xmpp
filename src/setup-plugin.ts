@@ -33,6 +33,17 @@ export const xmppSetupPlugin = {
           autoRestart: { type: "boolean" },
         },
       },
+      sftp: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          host: { type: "string" },
+          port: { type: "number" },
+          user: { type: "string" },
+          password: { type: "string" },
+          hostKeyFingerprint: { type: "string" },
+        },
+      },
     },
     required: ["service", "domain", "jid", "password", "dataDir"],
   },

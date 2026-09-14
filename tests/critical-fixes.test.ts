@@ -18,64 +18,65 @@ const __dirname = path.dirname(__filename);
 // =====================================================================
 
 // ---------------------------------------------------------------------
-// Fix 1.1: SFTP feature was removed.  The CLI subcommand still
-// exists but now emits a removal error and exits 1.
+// Fix 1.1 (updated in 2.14.0): SFTP was removed in 2.0.15 for security
+// (host key verification disabled).  It is RE-ADDED in 2.14.0 with a
+// REQUIRED pinned host-key fingerprint (fail closed).
 // ---------------------------------------------------------------------
-describe('Fix 1.1: SFTP removed', () => {
-  it('commands.ts no longer imports ./sftp.js', () => {
+describe('Fix 1.1 / 2.14.0: SFTP removed then re-added securely', () => {
+  it('commands.ts imports the sftp module', () => {
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'src', 'commands.ts'),
       'utf8'
     );
-    // The stub may keep the .command("sftp …") registration but
-    // must not dynamically import the deleted ./sftp.js module.
+    assert.ok(
+      src.includes("import('./sftp.js')") || src.includes("from './sftp.js'"),
+      'commands.ts must use the re-added sftp module'
+    );
+  });
+
+  it('src/sftp.ts exists and requires a pinned host key', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'sftp.ts'), 'utf8');
+    assert.ok(src.includes('hostKeyFingerprint'), 'sftp.ts must support hostKeyFingerprint');
+    assert.ok(src.includes('hostVerifier'), 'sftp.ts must verify the host key');
+    assert.ok(
+      src.includes('verifyFingerprint'),
+      'sftp.ts must compare the presented key against the pinned fingerprint'
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     assert.equal(
-      src.includes("await import('./sftp.js')") ||
-        src.includes("from './sftp.js'") ||
-        src.includes("require('./sftp.js')"),
+      /hostVerifier:\s*\(\s*\)\s*=>\s*true/.test(code),
       false,
-      'commands.ts must not reference the deleted sftp module'
+      'sftp.ts MUST NOT disable host key verification (the 2.0.15 vulnerability)'
     );
   });
 
-  it('sftp.ts file no longer exists', () => {
-    const sftpPath = path.join(__dirname, '..', 'src', 'sftp.ts');
-    assert.equal(fs.existsSync(sftpPath), false, 'src/sftp.ts should be deleted');
-  });
-
-  it('XmppConfig no longer has sftpPort field', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'types.ts'),
-      'utf8'
-    );
-    assert.equal(
-      src.includes('sftpPort'),
-      false,
-      'XmppConfig.sftpPort should be removed'
+  it('sftp fails closed without a fingerprint', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'sftp.ts'), 'utf8');
+    assert.ok(
+      src.includes('refusing to connect without host key verification') ||
+        src.includes('SFTP requires a pinned host key'),
+      'sftp.ts must refuse to connect without a pinned fingerprint'
     );
   });
 
-  it('package.json no longer depends on ssh2', () => {
+  it('package.json depends on ssh2 again', () => {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
     );
     const deps = pkg.dependencies || {};
-    assert.equal('ssh2' in deps, false, 'ssh2 dependency should be removed');
+    assert.ok('ssh2' in deps, 'ssh2 dependency should be re-added');
   });
 
-  it('the sftp subcommand exists but is a removal stub', () => {
+  it('the sftp subcommand is a real command (upload/download/ls/rm)', () => {
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'src', 'commands.ts'),
       'utf8'
     );
-    assert.ok(
-      src.includes('.command("sftp <action> [args...]"'),
-      'sftp subcommand should still be registered (so scripts get a clean error)'
-    );
-    assert.ok(
-      src.includes("removed in 2.0.15"),
-      'sftp stub should reference the 2.0.15 removal message'
-    );
+    assert.ok(src.includes('.command("sftp <action> [args...]"'), 'sftp subcommand should be registered');
+    assert.ok(src.includes('sftpUpload'), 'sftp upload must be wired');
+    assert.ok(src.includes('sftpDownload'), 'sftp download must be wired');
+    assert.ok(src.includes('sftpList'), 'sftp list must be wired');
+    assert.ok(src.includes('sftpRemove'), 'sftp remove must be wired');
   });
 });
 

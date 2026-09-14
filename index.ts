@@ -207,6 +207,66 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
       };
     },
   });
+
+  // SECURITY (2.14.0): agent SFTP tool (pinned host key; config-driven).
+  api.registerTool({
+    name: "xmpp_sftp",
+    label: "XMPP SFTP",
+    description:
+      "Transfer files over SFTP to the configured server (pinned host key). Actions: upload, download, list, delete.",
+    promptSnippet: "You can upload/download/list/delete files on the configured SFTP server via xmpp_sftp.",
+    promptGuidelines: [
+      'Use xmpp_sftp with action="upload" and localPath (and optional remoteName) to send a file to the SFTP server.',
+      'Use xmpp_sftp with action="download" and remoteName (and optional localPath) to fetch a file.',
+      'Use xmpp_sftp with action="list" (optional remoteDir) to list remote files.',
+      'Use xmpp_sftp with action="delete" and remoteName to remove a remote file.',
+      "SFTP must be configured with a pinned hostKeyFingerprint; it fails closed otherwise.",
+    ],
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal("upload"),
+        Type.Literal("download"),
+        Type.Literal("list"),
+        Type.Literal("delete"),
+      ]),
+      localPath: Type.Optional(Type.String({ description: "Local path (upload: source; download: destination)" })),
+      remoteName: Type.Optional(Type.String({ description: "Remote path/name (upload/download/delete)" })),
+      remoteDir: Type.Optional(Type.String({ description: "Remote directory (list); default '.'" })),
+    }),
+    execute: async (_toolCallId, params, _signal) => {
+      const { loadSftpConfigFromDisk, sftpUpload, sftpDownload, sftpList, sftpRemove } = await import(
+        "./src/sftp.js"
+      );
+      let cfg;
+      try {
+        cfg = loadSftpConfigFromDisk();
+      } catch (err: any) {
+        throw new Error(`SFTP config error: ${err?.message || String(err)}`);
+      }
+      let text = "";
+      if (params.action === "upload") {
+        if (!params.localPath) throw new Error("upload requires localPath");
+        const r = await sftpUpload(cfg, params.localPath, params.remoteName);
+        if (!r.ok) throw new Error(r.error || "upload failed");
+        text = `Uploaded ${params.localPath} -> ${r.data}`;
+      } else if (params.action === "download") {
+        if (!params.remoteName) throw new Error("download requires remoteName");
+        const r = await sftpDownload(cfg, params.remoteName, params.localPath);
+        if (!r.ok) throw new Error(r.error || "download failed");
+        text = `Downloaded ${params.remoteName} -> ${r.data}`;
+      } else if (params.action === "list") {
+        const r = await sftpList(cfg, params.remoteDir || params.remoteName || ".");
+        if (!r.ok) throw new Error(r.error || "list failed");
+        text = `Remote files:\n${(r.data || []).join("\n")}`;
+      } else if (params.action === "delete") {
+        if (!params.remoteName) throw new Error("delete requires remoteName");
+        const r = await sftpRemove(cfg, params.remoteName);
+        if (!r.ok) throw new Error(r.error || "delete failed");
+        text = `Removed ${r.data}`;
+      }
+      return { content: [{ type: "text" as const, text }], details: undefined };
+    },
+  });
 }
 
 export default defineBundledChannelEntry({

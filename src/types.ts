@@ -19,6 +19,14 @@ export interface XmppConfig {
     mode?: "ask" | "auto";
     autoRestart?: boolean;
   };
+  sftp?: {
+    enabled?: boolean;
+    host?: string;
+    port?: number;
+    user?: string;
+    password?: string;
+    hostKeyFingerprint?: string;
+  };
 }
 
 export interface VCardConfig {

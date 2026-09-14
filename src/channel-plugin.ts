@@ -60,6 +60,17 @@ export const xmppChannelPlugin = {
           autoRestart: { type: "boolean" },
         },
       },
+      sftp: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          host: { type: "string" },
+          port: { type: "number" },
+          user: { type: "string" },
+          password: { type: "string" },
+          hostKeyFingerprint: { type: "string" },
+        },
+      },
       vcard: {
         type: "object",
         properties: {

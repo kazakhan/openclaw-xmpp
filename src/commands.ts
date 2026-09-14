@@ -803,22 +803,54 @@ Note: Commands connect directly to XMPP server.`);
     });
 
   // Subcommand: sftp <action> [args]
-  // REMOVED in 2.0.15 — SFTP was removed for security reasons (see CHANGELOG).
-  // We keep a stub that emits a clear error so that any script still invoking
-  // `openclaw xmpp sftp …` fails loudly instead of silently no-op'ing.
+  // SECURITY (2.14.0): SFTP re-added with REQUIRED, pinned host-key
+  // fingerprint verification (the 2.0.15 removal was because the old code
+  // disabled host key verification entirely).
   xmpp
     .command("sftp <action> [args...]")
-    .description("SFTP — REMOVED in 2.0.15 (security: SSH host key verification was disabled)")
-    .action((_action: string, _args: string[]) => {
-      console.error("The 'xmpp sftp' subcommand was removed in 2.0.15.");
-      console.error("Reason: the underlying SSH connection had host key verification");
-      console.error("disabled (`hostVerifier: () => true`), which made every SFTP");
-      console.error("connection vulnerable to a man-in-the-middle attack that could");
-      console.error("steal the XMPP account password.");
-      console.error("");
-      console.error("Use your server's native SFTP subsystem, or talk to your admin");
-      console.error("about re-enabling this once a proper known_hosts workflow exists.");
-      process.exit(1);
+    .description("SFTP (pinned host key): upload | download | ls | rm")
+    .action(async (action: string, args: string[]) => {
+      const { loadSftpConfigFromDisk, sftpUpload, sftpDownload, sftpList, sftpRemove } =
+        await import('./sftp.js');
+      let cfg;
+      try {
+        cfg = loadSftpConfigFromDisk();
+      } catch (err: any) {
+        console.error("SFTP config error:", err?.message || String(err));
+        process.exit(1);
+      }
+      const act = (action || "").toLowerCase();
+      try {
+        if (act === "upload") {
+          if (!args[0]) { console.error("Usage: openclaw xmpp sftp upload <local-path> [remote-name]"); process.exit(1); }
+          const r = await sftpUpload(cfg, args[0], args[1]);
+          if (!r.ok) throw new Error(r.error);
+          console.log(`Uploaded: ${args[0]} -> ${r.data}`);
+        } else if (act === "download") {
+          if (!args[0]) { console.error("Usage: openclaw xmpp sftp download <remote-name> [local-path]"); process.exit(1); }
+          const r = await sftpDownload(cfg, args[0], args[1]);
+          if (!r.ok) throw new Error(r.error);
+          console.log(`Downloaded: ${args[0]} -> ${r.data}`);
+        } else if (act === "ls" || act === "list") {
+          const r = await sftpList(cfg, args[0] || ".");
+          if (!r.ok) throw new Error(r.error);
+          for (const f of (r.data || [])) console.log(f);
+        } else if (act === "rm" || act === "delete") {
+          if (!args[0]) { console.error("Usage: openclaw xmpp sftp rm <remote-name>"); process.exit(1); }
+          const r = await sftpRemove(cfg, args[0]);
+          if (!r.ok) throw new Error(r.error);
+          console.log(`Removed: ${r.data}`);
+        } else {
+          console.log("Usage: openclaw xmpp sftp <upload|download|ls|rm> [args]");
+          console.log("  upload <local-path> [remote-name]");
+          console.log("  download <remote-name> [local-path]");
+          console.log("  ls [dir]");
+          console.log("  rm <remote-name>");
+        }
+      } catch (err: any) {
+        console.error("SFTP error:", err?.message || String(err));
+        process.exit(1);
+      }
     });
 
   // Subcommand: encrypt-password
