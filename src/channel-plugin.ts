@@ -71,6 +71,12 @@ export const xmppChannelPlugin = {
           hostKeyFingerprint: { type: "string" },
         },
       },
+      vcard4: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+        },
+      },
       vcard: {
         type: "object",
         properties: {

@@ -27,6 +27,7 @@ export interface SlashCommandCtx {
     queryVCardFromServer: (jid: string) => Promise<any>;
     updateVCardOnServer: (updates: any) => Promise<boolean>;
     publishAvatar: (filePath: string, imageUrl: string) => Promise<boolean>;
+    publishVCard4?: (data: any) => Promise<boolean>;
   };
   requestUploadSlot: (filename: string, size: number, contentType?: string) => Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}>;
   uploadFileViaHTTP: (filePath: string, putUrl: string, headers?: Record<string, string>) => Promise<void>;

@@ -17,7 +17,11 @@ const CAPS_FEATURES = [
   "http://jabber.org/protocol/sxe",
   "http://jabber.org/protocol/swb",
   "http://www.w3.org/2000/svg",
-  "vcard-temp"
+  "vcard-temp",
+  // PEP notifications (XEP-0292 vCard4 + XEP-0084 avatar)
+  "urn:xmpp:vcard4+notify",
+  "urn:xmpp:avatar:metadata+notify",
+  "urn:xmpp:avatar:data+notify"
 ];
 
 function computeCapsVer(): string {

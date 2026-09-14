@@ -2,7 +2,8 @@ import { xml } from "@xmpp/client";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
-import { parseVCard } from "./lib/vcard-protocol.js";
+import { parseVCard, type VCardData } from "./lib/vcard-protocol.js";
+import { buildVCard4, parseVCard4, VCARD4_PEP_NODE } from "./lib/vcard4-protocol.js";
 import { safeSend } from "./lib/xmpp-utils.js";
 import { debugLog } from "./shared/index.js";
 import { child } from "./lib/logger.js";
@@ -113,7 +114,13 @@ export function createVCardServer(deps: VCardServerDeps) {
       if (!responseReceived) {
         xmppLog.warn("vCard update timeout");
       }
-      
+
+      // SECURITY (2.14.5): keep the vCard4 (XEP-0292) PEP node in sync with
+      // every vcard-temp update (slash commands, avatar, etc.).  Best-effort.
+      if (updateSuccess) {
+        try { await publishVCard4(merged); } catch { /* best-effort */ }
+      }
+
       return updateSuccess;
     } catch (err) {
       xmppLog.error("vCard update send failed", err);
@@ -186,5 +193,66 @@ export function createVCardServer(deps: VCardServerDeps) {
     }
   };
 
-  return { queryVCardFromServer, updateVCardOnServer, publishAvatar };
+  // SECURITY (2.14.5): publish the vCard4 (XEP-0292) to the PEP node
+  // `urn:xmpp:vcard4` (item id "current").  Best-effort; awaits the server ack.
+  const publishVCard4 = async (data: VCardData): Promise<boolean> => {
+    const id = `vcard4-${Date.now()}`;
+    let responded = false;
+    let ok = false;
+    const handler = (stanza: any) => {
+      if (stanza.attrs?.id !== id) return;
+      responded = true;
+      ok = stanza.attrs.type === "result";
+      if (!ok) xmppLog.error("vCard4 PEP publish error", { type: stanza.attrs.type });
+    };
+    xmpp.on("stanza", handler);
+    try {
+      await safeSend(xmpp, xml("iq", { type: "set", to: bareJid, id },
+        xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
+          xml("publish", { node: VCARD4_PEP_NODE },
+            xml("item", { id: "current" }, buildVCard4(data))
+          )
+        )
+      ));
+      let waited = 0;
+      while (!responded && waited < 5000) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        waited += 100;
+      }
+      return ok;
+    } catch (err) {
+      xmppLog.error("vCard4 PEP publish failed", err);
+      return false;
+    } finally {
+      xmpp.off("stanza", handler);
+    }
+  };
+
+  // SECURITY (2.14.5): read the vCard4 from the PEP node.
+  const queryVCard4 = async (targetJid?: string): Promise<VCardData | null> => {
+    const id = `vcard4-get-${Date.now()}`;
+    let response: any = null;
+    const handler = (stanza: any) => {
+      if (stanza.attrs?.id === id && stanza.attrs.type === "result") response = stanza;
+    };
+    xmpp.on("stanza", handler);
+    try {
+      await safeSend(xmpp, xml("iq", { type: "get", to: targetJid || bareJid, id },
+        xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
+          xml("items", { node: VCARD4_PEP_NODE })
+        )
+      ));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } catch (err) {
+      xmppLog.error("vCard4 query failed", err);
+    } finally {
+      xmpp.off("stanza", handler);
+    }
+    if (!response) return null;
+    const item = response.getChild("pubsub")?.getChild("items")?.getChild("item");
+    const vcardEl = item?.getChild("vcard");
+    return vcardEl ? parseVCard4(vcardEl) : null;
+  };
+
+  return { queryVCardFromServer, updateVCardOnServer, publishAvatar, publishVCard4, queryVCard4 };
 }

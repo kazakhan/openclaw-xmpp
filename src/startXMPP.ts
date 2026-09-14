@@ -417,6 +417,19 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
        log.error("Failed to register vCard", err);
       }
 
+      // SECURITY (2.14.5): publish vCard4 (XEP-0292) over PEP to the
+      // `urn:xmpp:vcard4` node (parity with the vcard-temp registration and
+      // the avatar).  Best-effort; default on, disabled via cfg.vcard4.enabled.
+      if (cfg?.vcard4?.enabled !== false) {
+        try {
+          const v4Data = await vcard.getData();
+          const published = await vcardServer.publishVCard4(v4Data);
+          log.info(`vCard4 (XEP-0292) PEP publish: ${published ? "ok" : "failed"}`);
+        } catch (err) {
+          xmppLog.error("vCard4 PEP publish threw", err);
+        }
+      }
+
       // SECURITY (2.11.0): re-arm keepalive on every (re)connect.
       // `online` can fire repeatedly (via @xmpp/reconnect), so we
       // clear the previous whitespace timer to avoid leaking duplicate

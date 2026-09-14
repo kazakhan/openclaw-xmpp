@@ -9,8 +9,30 @@ import { loadXmppConfig } from './lib/config-loader.js';
 import { createXmppClient } from './lib/xmpp-connect.js';
 import { log } from "./lib/logger.js";
 import { parseVCard, buildVCardStanza, type VCardData } from "./lib/vcard-protocol.js";
+import { buildVCard4, VCARD4_PEP_NODE } from "./lib/vcard4-protocol.js";
+import { createVCardServer } from './vcard-server.js';
+import { VCard } from './vcard.js';
 import { requestUploadSlot, uploadFileViaHTTP } from "./lib/upload-protocol.js";
 import crypto from 'crypto';
+
+// SECURITY (2.14.5): republish vCard4 (XEP-0292) over PEP after a CLI change
+// so the `urn:xmpp:vcard4` node reflects the new profile without waiting for a
+// reconnect.  Best-effort.
+async function publishVCard4Via(xmpp: any, data: VCardData): Promise<void> {
+  try {
+    const bare = (loadXmppConfig().jid || "").split("/")[0];
+    const id = `vcard4-${Date.now()}`;
+    await xmpp.send(xml("iq", { type: "set", to: bare, id },
+      xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
+        xml("publish", { node: VCARD4_PEP_NODE },
+          xml("item", { id: "current" }, buildVCard4(data))
+        )
+      )
+    ));
+  } catch {
+    /* best-effort */
+  }
+}
 
 async function saveVCardLocally(vcardData: VCardData): Promise<void> {
   // SECURITY (2.0.18, L13): was previously sync (writeFileSync +
@@ -135,7 +157,7 @@ export async function setVCard(field: string, value: string): Promise<{ ok: bool
       // and any subsequent IQ in the same connection will arrive
       // after.  No more 300ms wait.
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
 
     return { ok: true };
@@ -235,7 +257,7 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
         vcard.photo = { extval: source };
         (vcard as any).avatarUrl = source;
         await sendReceive(xmpp, buildVCardStanza(vcard, `s1-${Date.now()}`));
-        await saveVCardLocally(vcard);
+        await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
       });
       return { ok: true, url: source };
     } catch (err: any) {
@@ -348,7 +370,7 @@ export async function setVCardAvatar(source: string): Promise<{ ok: boolean; err
       // No more 300ms hard-coded wait — `sendReceive` ensures
       // ordered I/O via the stanzas event stream.
 
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -394,7 +416,7 @@ export async function setVCardName(
       vcard.n = { family, given, middle, prefix, suffix };
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -420,7 +442,7 @@ export async function addVCardPhone(
       vcard.tel.push({ types, number });
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -444,7 +466,7 @@ export async function removeVCardPhone(index: number): Promise<{ ok: boolean; er
       }
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -470,7 +492,7 @@ export async function addVCardEmail(
       vcard.email.push({ types, userid });
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -494,7 +516,7 @@ export async function removeVCardEmail(index: number): Promise<{ ok: boolean; er
       }
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -526,7 +548,7 @@ export async function addVCardAddress(
       vcard.adr.push({ types, street, locality, region, pcode, ctry, pobox, extadd });
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -550,7 +572,7 @@ export async function removeVCardAddress(index: number): Promise<{ ok: boolean; 
       }
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
     return { ok: true };
@@ -575,9 +597,41 @@ export async function setVCardOrg(
       vcard.org = { orgname, orgunit: orgunits.length > 0 ? orgunits : undefined };
 
       await xmpp.send(buildVCardStanza(vcard, `s1-${Date.now()}`));
-      await saveVCardLocally(vcard);
+      await saveVCardLocally(vcard); await publishVCard4Via(xmpp, vcard);
     });
     
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// SECURITY (2.14.5): CLI access to the vCard4 (XEP-0292) PEP node.
+export async function getVCard4(): Promise<{ ok: boolean; data?: VCardData; error?: string }> {
+  try {
+    const cfg = loadXmppConfig();
+    const bare = (cfg.jid || '').split('/')[0];
+    const data = await withConnection(async (xmpp) => {
+      const server = createVCardServer({ xmpp, bareJid: bare });
+      return await server.queryVCard4();
+    });
+    return { ok: true, data: data || undefined };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function publishVCard4Now(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const cfg = loadXmppConfig();
+    const bare = (cfg.jid || '').split('/')[0];
+    const data = await new VCard(cfg.dataDir || '').getData();
+    let published = false;
+    await withConnection(async (xmpp) => {
+      const server = createVCardServer({ xmpp, bareJid: bare });
+      published = await server.publishVCard4(data);
+    });
+    if (!published) return { ok: false, error: 'vCard4 publish failed (no server ack)' };
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err.message };

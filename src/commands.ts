@@ -802,6 +802,33 @@ Note: Commands connect directly to XMPP server.`);
       }
     });
 
+  // Subcommand: vcard4 <action> [args]
+  // SECURITY (2.14.5): XEP-0292 vCard4 over PEP (node `urn:xmpp:vcard4`).
+  xmpp
+    .command("vcard4 [action]")
+    .description("vCard4 (XEP-0292) over PEP: get | publish")
+    .action(async (action?: string) => {
+      const act = (action || "get").toLowerCase();
+      if (act === "get") {
+        const { getVCard4 } = await import('./vcard-cli.js');
+        const result = await getVCard4();
+        if (!result.ok) { console.error('vCard4 get failed:', result.error || 'unknown'); process.exit(1); }
+        if (!result.data || Object.keys(result.data).length === 0) {
+          console.log('No vCard4 published in the PEP node.');
+        } else {
+          console.log('vCard4 (XEP-0292, urn:xmpp:vcard4):');
+          console.log(JSON.stringify(result.data, null, 2));
+        }
+      } else if (act === "publish") {
+        const { publishVCard4Now } = await import('./vcard-cli.js');
+        const result = await publishVCard4Now();
+        if (!result.ok) { console.error('vCard4 publish failed:', result.error || 'unknown'); process.exit(1); }
+        console.log('vCard4 published to PEP node urn:xmpp:vcard4.');
+      } else {
+        console.log('Usage: openclaw xmpp vcard4 [get|publish]');
+      }
+    });
+
   // Subcommand: sftp <action> [args]
   // SECURITY (2.14.0): SFTP re-added with REQUIRED, pinned host-key
   // fingerprint verification (the 2.0.15 removal was because the old code

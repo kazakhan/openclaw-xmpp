@@ -27,6 +27,9 @@ export interface XmppConfig {
     password?: string;
     hostKeyFingerprint?: string;
   };
+  vcard4?: {
+    enabled?: boolean;
+  };
 }
 
 export interface VCardConfig {

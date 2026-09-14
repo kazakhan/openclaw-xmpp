@@ -44,6 +44,12 @@ export const xmppSetupPlugin = {
           hostKeyFingerprint: { type: "string" },
         },
       },
+      vcard4: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+        },
+      },
     },
     required: ["service", "domain", "jid", "password", "dataDir"],
   },

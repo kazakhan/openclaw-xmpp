@@ -5,6 +5,83 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.5] - 2026-09-14
+
+**Feature: publish vCard4 (XEP-0292) over PEP, alongside the legacy vcard-temp
+(XEP-0054).**
+
+### Context
+
+`vcard-temp` (XEP-0054) is the legacy vCard; **vCard4** (RFC 6350 XML, XEP-0292)
+is the modern one, published to the PEP node `urn:xmpp:vcard4`. The plugin only
+implemented vcard-temp (+ XEP-0084 avatar PEP). vCard4 was disabled **in Prosody**
+until recently; it is now enabled, so the plugin publishes it too.
+
+### Added
+
+- **`src/lib/vcard4-protocol.ts`** (new): `buildVCard4()` / `parseVCard4()` for
+  `urn:ietf:params:xml:ns:vcard-4.0`. Maps **all available fields** — `fn`, `n`,
+  `nickname`, `photo` (URL/`<uri>` only), `bday`, `url`, `note` (desc), `org`,
+  `title`, `role`, `tz`, `tel`, `email`, `adr`, `categories`, `uid`, `rev`,
+  `prodid`.
+- **`src/vcard-server.ts`**: `publishVCard4()` (PEP `publish` to node
+  `urn:xmpp:vcard4`, item id `current`) and `queryVCard4()`. Every successful
+  `updateVCardOnServer()` now also republishes vCard4 (covers slash-command
+  edits + avatar).
+- **`src/startXMPP.ts`**: on each `online`, after the vcard-temp registration,
+  publish vCard4 from `<dataDir>/xmpp-vcard.json` — **default on**, disabled
+  with `cfg.vcard4.enabled = false`.
+- **`src/vcard-cli.ts`**: `getVCard4()` / `publishVCard4Now()`; every `vcard set`
+  / avatar change also republishes vCard4.
+- **CLI**: `openclaw xmpp vcard4 get | publish`.
+- **`src/config.ts`**: advertise `urn:xmpp:vcard4+notify`,
+  `urn:xmpp:avatar:metadata+notify`, `urn:xmpp:avatar:data+notify`.
+- **Config**: `vcard4: { enabled?: boolean }` (default true) in `src/types.ts`,
+  `src/channel-plugin.ts`, `src/setup-plugin.ts`, `openclaw.plugin.json`.
+
+### Files changed
+
+- `src/lib/vcard4-protocol.ts` (new)
+- `src/vcard-server.ts`, `src/startXMPP.ts`, `src/vcard-cli.ts`,
+  `src/commands.ts`, `src/slash-commands.ts`, `src/config.ts`, `src/types.ts`,
+  `src/channel-plugin.ts`, `src/setup-plugin.ts`, `openclaw.plugin.json`
+- `tests/v2.14.5-vcard4-pep.test.ts` (new)
+- `package.json` — 2.14.5
+
+### Backups
+
+- `_backups/2.14.5_20260914_184745/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.14.5_20260914_184745"
+rm -f src/lib/vcard4-protocol.ts tests/v2.14.5-vcard4-pep.test.ts
+cp "$BK/vcard-server.ts"    src/vcard-server.ts
+cp "$BK/startXMPP.ts"       src/startXMPP.ts
+cp "$BK/vcard-cli.ts"       src/vcard-cli.ts
+cp "$BK/commands.ts"        src/commands.ts
+cp "$BK/slash-commands.ts"  src/slash-commands.ts
+cp "$BK/config.ts"          src/config.ts
+cp "$BK/types.ts"           src/types.ts
+cp "$BK/channel-plugin.ts"  src/channel-plugin.ts
+cp "$BK/setup-plugin.ts"    src/setup-plugin.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/package.json"       package.json
+cp "$BK/CHANGELOG.md"       CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors.
+- `node --test tests/*.test.ts` — new v2.14.5 suite passes.
+- Runtime: `buildVCard4()` produces valid vCard4 XML and round-trips.
+- Live (Prosody): `openclaw xmpp vcard4 publish` then `openclaw xmpp vcard4 get`
+  returns the published vCard4 from the `urn:xmpp:vcard4` PEP node
+  (`fn`, `nickname`, `photo.uri`, `url`, `note`, …).
+
 ## [2.14.4] - 2026-09-14
 
 **Fix: the XMPP vCard avatar (and other fields) were wiped on every
