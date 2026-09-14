@@ -476,6 +476,17 @@ export async function runXmppOnboarding(options: OnboardingOptions = {}): Promis
   // 5. Merge into config (preserve other keys/accounts)
   const { config: merged } = mergeAccountConfig(config, account, accountConfig);
 
+  // SECURITY (2.13.0): enforce groupchat mention-gating by default so the bot
+  // only replies in MUC rooms when @mentioned (per-room overrides remain
+  // possible under channels.xmpp.groups.*).
+  if (merged.channels?.xmpp) {
+    merged.channels.xmpp.groups = merged.channels.xmpp.groups || {};
+    merged.channels.xmpp.groups["*"] = {
+      ...(merged.channels.xmpp.groups["*"] || {}),
+      requireMention: true,
+    };
+  }
+
   try {
     await writeOpenclawConfig(configPath, merged);
   } catch (err) {

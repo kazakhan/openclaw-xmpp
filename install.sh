@@ -55,6 +55,9 @@ openclaw config set plugins.entries.xmpp.enabled true || true
 echo "Enabling groupchat reply delivery..."
 openclaw config set messages.groupChat.visibleReplies automatic || true
 
+echo "Enforcing groupchat mention gating (reply only when @mentioned)..."
+openclaw config set "channels.xmpp.groups.*.requireMention" true || true
+
 echo ""
 echo "============================================"
 echo " Running interactive onboarding..."

@@ -5,6 +5,77 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - 2026-09-14
+
+**Fix/Feature: groupchat mention gating + occupant awareness.**
+
+### Problem
+
+In MUC rooms the agent replied to **every** groupchat message, and responded to
+`@othernick` mentions meant for other occupants. OpenClaw 2026.8.x gates group
+replies on channel-supplied mention facts (`BotUsername`, `WasMentioned`,
+`ExplicitlyMentionedBot`) — the XMPP plugin hardcoded `WasMentioned: false` and
+supplied none of them, so `canDetectMention` was false and gating never fired.
+
+### Changes
+
+- **Mention detection** (`src/mention.ts`, new): `buildMentionTokens()` and
+  `wasBotMentioned()`. A message mentions the bot only when it contains `@`
+  immediately followed by the bot's **room nick**, **vCard nickname**, **vCard
+  full name**, or **JID local part** (case-insensitive, word-boundary). Bare
+  names without `@` do not count; `@othernick` never matches the bot.
+- **Occupant tracking** (`src/startXMPP.ts`): new `roomOccupants` map built from
+  inbound MUC presence (available/unavailable/status-303 nick change; the bot's
+  own nick excluded), plus `roomSubjects` for the room subject. Both cleared on
+  leave/offline. The groupchat dispatch now passes `wasMentioned`,
+  `groupMembers` (omitted when empty), and `groupSubject`.
+- **Context wiring** (`src/gateway.ts`): for groupchat, set `BotUsername`,
+  `WasMentioned`, `ExplicitlyMentionedBot`, `GroupMembers` (only when
+  non-empty), `GroupSubject`, and a `GroupSystemPrompt` telling the agent it can
+  address occupants with `@<nick>`. `GroupRequireMention` is intentionally **not**
+  set so the per-room `channels.xmpp.groups` config stays authoritative.
+- **Default config** (`install.sh`, `install.ps1`, `openclaw xmpp setup`,
+  README): set `channels.xmpp.groups."*".requireMention: true` so the bot only
+  replies when mentioned; per-room overrides remain possible.
+
+### Files changed
+
+- `src/mention.ts` (new)
+- `src/startXMPP.ts` — occupant/subject tracking, mention computation, dispatch options
+- `src/gateway.ts` — groupchat mention/occupant context
+- `src/onboarding.ts` — wizard writes groups."*".requireMention
+- `install.sh`, `install.ps1`, `README.md`
+- `tests/v2.13.0-groupchat-mentions.test.ts` (new)
+
+### Backups
+
+- `_backups/2.13.0_20260914_141421/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.13.0_20260914_141421"
+rm -f src/mention.ts tests/v2.13.0-groupchat-mentions.test.ts
+cp "$BK/startXMPP.ts"  src/startXMPP.ts
+cp "$BK/gateway.ts"    src/gateway.ts
+cp "$BK/onboarding.ts" src/onboarding.ts
+cp "$BK/install.sh"    install.sh
+cp "$BK/install.ps1"   install.ps1
+cp "$BK/README.md"     README.md
+cp "$BK/package.json"  package.json
+cp "$BK/CHANGELOG.md"  CHANGELOG.md
+npx tsc
+```
+
+### Verification
+
+- `npx tsc --noEmit` — no new type errors (only pre-existing `openclaw/plugin-sdk`
+  moduleResolution + one pre-existing gateway comparison).
+- `node --test tests/*.test.ts` — new v2.13.0 suite passes.
+- Runtime mention checks: `@botNick`✓ `@Nickname`✓ `@Full Name`✓ `@localpart`✓
+  `@othernick`✗ bare-name✗ `@botNickX`✗ (case-insensitive).
+
 ## [2.12.0] - 2026-09-08
 
 **Feature: auto-update — periodic GitHub release check that notifies the admin

@@ -308,7 +308,7 @@ export class GatewayLifecycle {
         config,
         contacts,
         logger,
-        async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean }) => {
+        async (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean, groupMembers?: string, groupSubject?: string }) => {
         if (!isRunning) {
           debugLog("XMPP message ignored - plugin not running");
           return;
@@ -426,7 +426,21 @@ export class GatewayLifecycle {
               SenderId: senderBareJid,
               Provider: "xmpp",
               Surface: "xmpp",
-              WasMentioned: false,
+              // SECURITY (2.13.0): groupchat mention gating + occupant context.
+              // GroupRequireMention is intentionally NOT set here so the
+              // per-room `channels.xmpp.groups."*".requireMention` config stays
+              // authoritative (per-room overrides possible).
+              ...((roomJid || isGroupChat) ? {
+                BotUsername: options?.botNick || undefined,
+                WasMentioned: options?.wasMentioned === true,
+                ExplicitlyMentionedBot: options?.wasMentioned === true,
+                ...(options?.groupMembers ? { GroupMembers: options.groupMembers } : {}),
+                ...((options?.groupSubject || options?.roomSubject)
+                  ? { GroupSubject: options.groupSubject || options.roomSubject }
+                  : {}),
+                GroupSystemPrompt:
+                  "Occupants can be addressed with @<nick>. Mention the bot with @<botNick> or @<displayName>.",
+              } : { WasMentioned: false }),
               CommandAuthorized: true,
               CommandSource: "text",
               OriginatingChannel: "xmpp",

@@ -86,6 +86,12 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: failed to set messages.groupChat.visibleReplies (exit $LASTEXITCODE)" -ForegroundColor Yellow
 }
 
+Write-Host "Enforcing groupchat mention gating (reply only when @mentioned)..."
+& openclaw config set "channels.xmpp.groups.*.requireMention" true
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: failed to set channels.xmpp.groups.*.requireMention (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "============================================"
 Write-Host " Running interactive onboarding..."

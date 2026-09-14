@@ -146,6 +146,36 @@ Configured under `channels.xmpp.accounts.default` in `~/.openclaw/openclaw.json`
 }
 ```
 
+### Groupchat mention gating (v2.13.0)
+
+By default the bot only replies in MUC rooms when it is **@mentioned** — it stays
+silent otherwise, and never responds to mentions of other occupants.
+
+```json
+{
+  "channels": {
+    "xmpp": {
+      "groups": { "*": { "requireMention": true } }
+    }
+  }
+}
+```
+
+Or via CLI (done automatically by the installers / `openclaw xmpp setup`):
+```bash
+openclaw config set "channels.xmpp.groups.*.requireMention" true
+```
+
+- A mention is `@` immediately followed by the bot's **room nick**, its
+  **vCard nickname/full name**, or its **JID local part** (case-insensitive).
+  Bare names without `@` do not count.
+- Per-room override, e.g. always reply in one room:
+  ```bash
+  openclaw config set 'channels.xmpp.groups."room@conference.example".requireMention' false
+  ```
+- The agent is told who is present (`group_members`) and can address occupants
+  with `@<nick>`.
+
 ### Password Encryption
 ```bash
 openclaw xmpp encrypt-password
