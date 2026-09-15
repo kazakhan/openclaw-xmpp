@@ -178,7 +178,11 @@ async function loadSdkCaller(): Promise<SdkCaller | null> {
   return null;
 }
 
-async function callGatewayViaSdk<T>(method: string, params?: Record<string, any>): Promise<{ ok: boolean; data?: T; error?: string } | null> {
+async function callGatewayViaSdk<T>(
+  method: string,
+  params?: Record<string, any>,
+  scopes?: string[],
+): Promise<{ ok: boolean; data?: T; error?: string } | null> {
   const caller = await loadSdkCaller();
   if (!caller) return null;
 
@@ -192,6 +196,7 @@ async function callGatewayViaSdk<T>(method: string, params?: Record<string, any>
     const data = (await caller(method, opts, params, {
       sharedStateMode: "read-only",
       progress: false,
+      ...(scopes && scopes.length > 0 ? { scopes } : {}),
     })) as T;
     return { ok: true, data };
   } catch (err: any) {
@@ -199,7 +204,8 @@ async function callGatewayViaSdk<T>(method: string, params?: Record<string, any>
     // unknown method, validation failure, transport) rather than falling back
     // to the opaque spawn.  `respond(false, {error})` arrives as
     // `err.responsePayload.error`.
-    return { ok: false, error: formatGatewayError(err) };
+    const details = err?.details ?? err?.responsePayload?.error?.details ?? err?.responsePayload?.details;
+    return { ok: false, error: formatGatewayError(err), ...(details !== undefined ? { details } : {}) };
   }
 }
 
@@ -334,11 +340,17 @@ export interface RpcResult<T = any> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Structured gateway error details (e.g. `{ reason: "QUESTION_ALREADY_TERMINAL" }`). */
+  details?: any;
 }
 
-export async function callGatewayRpc<T = any>(method: string, params?: Record<string, any>): Promise<RpcResult<T>> {
+export async function callGatewayRpc<T = any>(
+  method: string,
+  params?: Record<string, any>,
+  scopes?: string[],
+): Promise<RpcResult<T>> {
   // SECURITY (2.15.1): prefer the in-process SDK (no spawn/auth/quoting/parsing).
-  const viaSdk = await callGatewayViaSdk<T>(method, params);
+  const viaSdk = await callGatewayViaSdk<T>(method, params, scopes);
   if (viaSdk) return viaSdk;
 
   // Fallback for hosts without the plugin-SDK gateway runtime.

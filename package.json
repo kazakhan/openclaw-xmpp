@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/xmpp",
-  "version": "2.16.1",
+  "version": "2.16.2",
   "description": "XMPP channel plugin for OpenClaw with file transfer and whiteboard support",
   "private": false,
   "type": "module",

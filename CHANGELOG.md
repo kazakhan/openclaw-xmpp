@@ -5,6 +5,70 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.2] - 2026-09-15
+
+**Fix: ask_user answers never resolved (no reply). The gateway call hung.**
+
+### Root cause
+
+To answer a question, v2.16.1 fetched the record via
+`runtime.gateway.request("question.get")` and resolved via
+`question.resolve`. `PluginRuntime.gateway.request` requires an **active
+gateway request context**, which does not exist on the inbound (XMPP stanza) or
+outbound delivery paths — the call hung, so the user's answer was never
+processed and they got no reply. (Multi-question prompts have no `presentation`,
+so the pending record had no questions to fall back on either.)
+
+### Fixed
+
+- **`src/gateway-client.ts`** — `callGatewayRpc(method, params, scopes?)` now
+  forwards an optional scope list to the in-process SDK caller, and
+  `RpcResult` carries `details` (e.g. `{ reason: "QUESTION_ALREADY_TERMINAL" }`).
+- **`src/lib/ask-user.ts`** — `question.get`/`question.resolve` now go through
+  the in-process gateway client (`callGatewayFromCli`) with the
+  `operator.questions` scope (works from inside the plugin), each with a 10s
+  timeout. Capture still registers synchronously; the real questions are
+  enriched in the background and fetched (with a timeout) at answer time, so a
+  slow call can't hang the message.
+- **`src/lib/questions.ts`** — `parseAnswer` returns `null` when there are no
+  questions (defensive) and accepts `1`, `q1`, the question id, or the header as
+  a prefix. Answers are **accumulated across messages**: a partial reply stores
+  the answered values and the bot replies "Still need: …" until all questions
+  are answered; then it resolves. A bare value is only accepted when exactly one
+  question remains (no guessing).
+
+### Tests
+
+- `tests/v2.16.2-ask-user-answers.test.ts` (new) — the reported two-line reply
+  (`q1. 1` / `q2. 1`), numeric/id prefixes, per-message accumulation, the
+  bare-value rule, the empty-questions guard, and the gateway transport
+  (in-process client + `operator.questions`, not `runtime.gateway.request`).
+
+### Files changed
+
+- `src/gateway-client.ts`, `src/lib/ask-user.ts`, `src/lib/questions.ts`,
+  `tests/v2.16.2-ask-user-answers.test.ts` (new), `README.md`, `package.json`
+  — 2.16.2
+
+### Backups
+
+- `_backups/2.16.2_20260915_170028/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.2_20260915_170028"
+cp "$BK/ask-user.ts" src/lib/ask-user.ts
+cp "$BK/questions.ts" src/lib/questions.ts
+cp "$BK/gateway-client.ts" src/gateway-client.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f tests/v2.16.2-ask-user-answers.test.ts
+npx tsc
+```
+
 ## [2.16.1] - 2026-09-15
 
 **Fix: ask_user prompts rendered too late and late answers were dropped.**
