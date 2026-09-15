@@ -1,6 +1,12 @@
-// SECURITY (2.16.0): gateway/SDK side of ask_user support (see questions.ts for
-// the pure store/parser).  Captures question prompts delivered to XMPP,
-// registers them, and turns a user's reply into a `question.resolve` call.
+// SECURITY (2.16.0, revised 2.16.1): gateway/SDK side of ask_user support.
+//
+// 2.16.1 fixes:
+//   - Rendering must NOT do a gateway RPC: `question.get` during outbound
+//     delivery blocked the prompt (no active request scope) and the answer
+//     arrived after the ask_user timeout.  Capture is now synchronous; the
+//     authoritative questions are fetched lazily at answer time.
+//   - A late answer (question already terminal) is no longer swallowed: the
+//     caller is told `closed` so it can note it and dispatch the message.
 
 import { getPluginRuntime } from "../state.js";
 import { log } from "./logger.js";
@@ -23,10 +29,6 @@ function readQuestionId(payload: any): string | undefined {
   return typeof id === "string" && QUESTION_RECORD_RE.test(id) ? id : undefined;
 }
 
-function stripXmpp(to: string): string {
-  return String(to || "").replace(/^xmpp:/, "").split("/")[0];
-}
-
 async function gatewayRequest(method: string, params: Record<string, unknown>): Promise<any> {
   const runtime: any = getPluginRuntime();
   const gateway = runtime?.gateway;
@@ -36,7 +38,11 @@ async function gatewayRequest(method: string, params: Record<string, unknown>): 
   throw new Error("gateway.request unavailable");
 }
 
-/** Map a gateway question record into our QuestionSpec[] (best effort). */
+function isTerminalError(err: any): boolean {
+  const reason = err?.details?.reason ?? err?.responsePayload?.error?.details?.reason;
+  return reason === "QUESTION_ALREADY_TERMINAL" || reason === "QUESTION_NOT_FOUND";
+}
+
 function normalizeQuestions(raw: any): QuestionSpec[] {
   const list = Array.isArray(raw) ? raw : [];
   const out: QuestionSpec[] = [];
@@ -46,7 +52,11 @@ function normalizeQuestions(raw: any): QuestionSpec[] {
     if (!questionId) continue;
     const options = Array.isArray(q.options)
       ? q.options
-          .map((o: any) => (o && typeof o === "object" && typeof o.label === "string" ? { label: o.label, description: typeof o.description === "string" ? o.description : undefined } : undefined))
+          .map((o: any) =>
+            o && typeof o === "object" && typeof o.label === "string"
+              ? { label: o.label, description: typeof o.description === "string" ? o.description : undefined }
+              : undefined,
+          )
           .filter(Boolean)
       : [];
     out.push({
@@ -62,73 +72,75 @@ function normalizeQuestions(raw: any): QuestionSpec[] {
   return out;
 }
 
-/** Fallback: derive a single question from the delivered presentation buttons. */
-function deriveFromPayload(payload: any, recordId: string): QuestionSpec[] | undefined {
+/** Best-effort questions derived from the delivered presentation (no RPC). */
+function questionsFromPayload(payload: any, recordId: string): QuestionSpec[] {
   const blocks = payload?.presentation?.blocks;
-  if (!Array.isArray(blocks)) return undefined;
+  if (!Array.isArray(blocks)) return [];
   const buttonsBlock = blocks.find((b: any) => b?.type === "buttons");
-  const textBlock = blocks.find((b: any) => b?.type === "text" && typeof b.text === "string");
-  if (!buttonsBlock || !Array.isArray(buttonsBlock.buttons)) return undefined;
+  const textBlocks = blocks.filter((b: any) => b?.type === "text" && typeof b.text === "string");
+  if (!buttonsBlock || !Array.isArray(buttonsBlock.buttons)) return [];
   const labels = buttonsBlock.buttons
-    .filter((b: any) => b?.action?.type === "question" && b.action.questionId === recordId && typeof b.action.optionValue === "string")
+    .filter(
+      (b: any) =>
+        b?.action?.type === "question" && b.action.questionId === recordId && typeof b.action.optionValue === "string",
+    )
     .map((b: any) => b.action.optionValue as string);
-  if (labels.length === 0) return undefined;
+  if (labels.length === 0) return [];
   return [
     {
       questionId: recordId,
-      question: textBlock?.text || "Agent question",
+      question: textBlocks[0]?.text || "Agent question",
       options: labels.map((label) => ({ label })),
       isOther: true,
     },
   ];
 }
 
-export interface CaptureResult {
+export interface RegisterResult {
   handled: boolean;
   text?: string;
-  recordId?: string;
 }
 
 /**
- * Register an ask_user prompt for `conversation` and return the text to render.
- * Safe to call more than once for the same payload.
+ * Register an ask_user prompt synchronously (no network) and return the text to
+ * render.  Safe to call from the delivery path.
  */
-export async function captureAskUser(
-  payload: any,
-  opts: { accountId: string; conversation: string },
-): Promise<CaptureResult> {
+export function registerAskUser(payload: any, opts: { accountId: string; conversation: string }): RegisterResult {
   const recordId = readQuestionId(payload);
   if (!recordId) return { handled: false };
 
-  let questions: QuestionSpec[] = [];
-  try {
-    const res = await gatewayRequest("question.get", { id: recordId });
-    const record = res?.question;
-    if (!record || record.status !== "pending") return { handled: false };
-    questions = normalizeQuestions(record.questions);
-  } catch (err) {
-    log.debug("ask_user: question.get failed, deriving from payload", err);
-  }
-  if (questions.length === 0) {
-    questions = deriveFromPayload(payload, recordId) ?? [];
-  }
-  if (questions.length === 0) return { handled: false };
+  const questions = questionsFromPayload(payload, recordId);
+  registerPending(makePending({ recordId, questions, accountId: opts.accountId, conversation: opts.conversation }));
 
-  registerPending(
-    makePending({ recordId, questions, accountId: opts.accountId, conversation: opts.conversation }),
-  );
-  return { handled: true, text: formatPrompt(questions), recordId };
+  const payloadText = typeof payload?.text === "string" ? payload.text.trim() : "";
+  const text = payloadText || (questions.length > 0 ? formatPrompt(questions) : undefined);
+  return { handled: true, text };
 }
 
 export interface AnswerResult {
   handled: boolean;
   reply?: string;
   error?: string;
+  /** The question is gone (timed out/resolved) — note it and dispatch normally. */
+  closed?: boolean;
+}
+
+/** Fetch authoritative questions; throws a terminal error when the record is gone. */
+async function fetchQuestions(recordId: string): Promise<QuestionSpec[] | undefined> {
+  const res = await gatewayRequest("question.get", { id: recordId });
+  const record = res?.question;
+  if (!record || record.status !== "pending") {
+    const err: any = new Error("question is no longer pending");
+    err.details = { reason: record ? "QUESTION_ALREADY_TERMINAL" : "QUESTION_NOT_FOUND" };
+    throw err;
+  }
+  return normalizeQuestions(record.questions);
 }
 
 /**
  * If a question is pending for this conversation, resolve it from the reply.
- * Returns handled=true (with a reply to send) or handled=false (dispatch normally).
+ * `handled` = answered (reply to send). `closed` = question is gone (note + let
+ * the caller dispatch the message). `handled:false` = no question pending.
  */
 export async function tryAnswerPending(opts: {
   accountId: string;
@@ -139,9 +151,21 @@ export async function tryAnswerPending(opts: {
   const q = getPending(opts.accountId, opts.conversation);
   if (!q) return { handled: false };
 
-  const parsed = parseAnswer(opts.body, q.questions);
+  let questions = q.questions;
+  try {
+    const fetched = await fetchQuestions(q.recordId);
+    if (fetched && fetched.length > 0) questions = fetched;
+  } catch (err) {
+    if (isTerminalError(err)) {
+      clearPending(opts.accountId, opts.conversation);
+      return { handled: false, closed: true };
+    }
+    log.debug("ask_user: question.get failed at answer time; using stored questions", err);
+  }
+
+  const parsed = parseAnswer(opts.body, questions);
   if (!parsed) {
-    return { handled: true, reply: `Sorry, I didn't understand that.\n\n${formatPrompt(q.questions)}` };
+    return { handled: true, reply: `Sorry, I didn't understand that.\n\n${formatPrompt(questions)}` };
   }
 
   try {
@@ -150,6 +174,7 @@ export async function tryAnswerPending(opts: {
     return { handled: true, reply: `Answered: ${parsed.summary}` };
   } catch (err: any) {
     clearPending(opts.accountId, opts.conversation);
+    if (isTerminalError(err)) return { handled: false, closed: true };
     return { handled: true, error: err?.message || String(err) };
   }
 }

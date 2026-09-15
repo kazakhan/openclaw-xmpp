@@ -74,6 +74,7 @@
                     "enabled": { "type": "boolean" }
                   }
                 },
+                "askUserMinTimeoutSeconds": { "type": "number" },
                 "presence": {
                   "type": "object",
                   "additionalProperties": false,

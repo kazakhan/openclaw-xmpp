@@ -94,6 +94,11 @@ export const Config = {
   TCP_KEEPALIVE_MS: 20000,
   WHITESPACE_KEEPALIVE_MS: 25000,
 
+  // ask_user (2.16.1): minimum timeout the plugin enforces via a
+  // `before_tool_call` hook, so an XMPP round-trip has time to answer.
+  // OpenClaw's own default is 900s (clamp 30-3600).
+  ASK_USER_MIN_TIMEOUT_SECONDS: 900,
+
   // Presence / status (2.15.0).  Per-account overrides live in
   // `xmpp.accounts.<id>.presence`; these are the defaults.
   PRESENCE: {

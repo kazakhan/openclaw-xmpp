@@ -121,14 +121,14 @@ describe('2.16.0: wiring', () => {
   it('gateway intercepts answers and captures prompts', async () => {
     const src = await readSource('src/gateway.ts');
     assert.match(src, /tryAnswerPending\(/);
-    assert.match(src, /captureAskUser\(/);
+    assert.match(src, /registerAskUser\(/);
   });
 
   it('outbound adapter renders ask_user prompts', async () => {
     const src = await readSource('src/channel-plugin.ts');
     assert.match(src, /renderPresentation:/);
     assert.match(src, /beforeDeliverPayload:/);
-    assert.match(src, /captureAskUser\(/);
+    assert.match(src, /registerAskUser\(/);
   });
 
   it('ask-user resolves via the gateway question API', async () => {

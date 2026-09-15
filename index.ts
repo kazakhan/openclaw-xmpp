@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-entry-contract";
 import { registerXmppCliMetadata } from "./src/cli-metadata.js";
 import { registerPresenceHooks } from "./src/presence-hooks.js";
+import { registerAskUserHooks } from "./src/lib/ask-user-hooks.js";
 
 import { Type } from "typebox";
 import {
@@ -31,6 +32,10 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
   // SECURITY (2.15.0): auto-activity presence (busy while thinking/tooling),
   // driven by the OpenClaw agent-lifecycle hooks.
   registerPresenceHooks(api);
+
+  // SECURITY (2.16.1): raise the ask_user timeout floor so an XMPP round-trip
+  // has time to render the prompt and receive the answer.
+  registerAskUserHooks(api);
 
   api.registerGatewayMethod("xmpp.joinRoom", async ({ params, respond }) => {
     const { room, nick } = params || {};

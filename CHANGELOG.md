@@ -5,6 +5,75 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.1] - 2026-09-15
+
+**Fix: ask_user prompts rendered too late and late answers were dropped.**
+
+### Root cause
+
+v2.16.0 rendered the ask_user prompt but did it by awaiting a gateway RPC
+(`question.get`) inside the outbound delivery path. There is no active gateway
+request scope during delivery, so the call blocked until its timeout, and the
+prompt only reached XMPP after the tool's (short) `timeoutSeconds` had already
+fired — the tool returned `no_answer`, and the user's answer was then either
+discarded or arrived as a fresh message.
+
+### Fixed
+
+- **`src/lib/ask-user.ts`** — `registerAskUser()` is now **synchronous**: it reads
+  `channelData.askUser.questionId` and registers the pending question with no
+  network call, so the prompt renders immediately. `payload.text` (OpenClaw's
+  fallback, which already lists the questions + numbered options) is used as-is;
+  the authoritative questions are fetched lazily via `question.get` **at answer
+  time** (falling back to the presentation-derived options).
+- **`src/lib/ask-user-hooks.ts`** (new) — a `before_tool_call` hook with the
+  `ask_user` matcher raises `timeoutSeconds` to a floor (default **900s**, clamp
+  30–3600) via `applyAskUserTimeoutFloor()`. Configurable per account with
+  `askUserMinTimeoutSeconds`. Applies to future `ask_user` calls.
+- **`src/gateway.ts`** — a **late answer** is no longer swallowed: when the
+  question is terminal (`QUESTION_ALREADY_TERMINAL`/`QUESTION_NOT_FOUND`), the
+  plugin sends a short note and **dispatches the message to the agent** so the
+  answer is not lost.
+- **`src/channel-plugin.ts`** — outbound `beforeDeliverPayload`/`renderPresentation`
+  use the synchronous register (no RPC in the delivery path).
+- **`index.ts`** registers the new hook; **`openclaw.plugin.json`** / `src/config.ts`
+  add `askUserMinTimeoutSeconds` (default 900).
+
+### Tests
+
+- `tests/v2.16.1-ask-user-timeout.test.ts` (new) — timeout-floor logic,
+  synchronous capture (no gateway call in `registerAskUser`), hook wiring, and
+  the late-answer dispatch path. `tests/v2.16.0-ask-user.test.ts` updated.
+
+### Files changed
+
+- `src/lib/ask-user.ts`, `src/lib/ask-user-hooks.ts` (new), `src/gateway.ts`,
+  `src/channel-plugin.ts`, `index.ts`, `openclaw.plugin.json`, `src/config.ts`,
+  `tests/v2.16.1-ask-user-timeout.test.ts` (new),
+  `tests/v2.16.0-ask-user.test.ts`, `README.md`, `package.json` — 2.16.1
+
+### Backups
+
+- `_backups/2.16.1_20260915_164404/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.1_20260915_164404"
+cp "$BK/ask-user.ts" src/lib/ask-user.ts
+cp "$BK/gateway.ts" src/gateway.ts
+cp "$BK/channel-plugin.ts" src/channel-plugin.ts
+cp "$BK/index.ts" index.ts
+cp "$BK/openclaw.plugin.json" openclaw.plugin.json
+cp "$BK/config.ts" src/config.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/ask-user-hooks.ts tests/v2.16.1-ask-user-timeout.test.ts
+npx tsc
+```
+
 ## [2.16.0] - 2026-09-15
 
 **Feature: `ask_user` questions are now delivered and answerable in XMPP.

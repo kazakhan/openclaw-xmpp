@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.16.0)
+## Status: ✅ WORKING (v2.16.1)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -42,6 +42,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   blocked). Questions and numbered options are rendered as a message; reply with
   a number, the option text, or type your own answer (multiple questions use
   `1: 2, 2: 1`).
+- **v2.16.1** — ask_user render is **immediate** (no gateway RPC in the delivery
+  path), the plugin enforces a **900s minimum** `ask_user` timeout
+  (`askUserMinTimeoutSeconds`), and a **late answer** is no longer dropped — it
+  is noted and dispatched to the agent.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -473,6 +477,13 @@ Reply with a number, the option text, or type your own answer.
 - **Multi-select** questions accept comma-separated numbers/labels.
 - Only the conversation that received the question can answer it. The question
   expires after ~15 minutes (the gateway's own timeout also applies).
+- The plugin enforces a **minimum `ask_user` timeout** so the XMPP round-trip
+  has time to complete. Default **900s**; override per account:
+  ```bash
+  openclaw config set channels.xmpp.accounts.default.askUserMinTimeoutSeconds 1800
+  ```
+- If you answer **after** the tool timed out, the plugin notes it and passes
+  your message through to the agent (the answer isn't dropped).
 
 ## File Management
 
@@ -507,7 +518,7 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 - Session memory continuity (experimental)
 - Contact & roster management
 - **Presence/status** (built-in + custom) with automatic **busy while thinking/tooling** and persistence across reconnect (v2.15.0)
-- **Agent questions (`ask_user`)** rendered in chat and answerable by number, option text, or a typed custom answer (v2.16.0)
+- **Agent questions (`ask_user`)** rendered in chat and answerable by number, option text, or a typed custom answer (v2.16.0; instant render + 900s timeout floor in v2.16.1)
 - vCard support (all fields get/set) and **vCard4 over PEP** (XEP-0292)
 - File transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) with HTTP Upload (XEP-0363) fallback
 - In-chat `/sendfile` command (agent response and CLI)
@@ -590,7 +601,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.16.0) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.16.1) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.

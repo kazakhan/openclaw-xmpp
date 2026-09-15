@@ -6,7 +6,7 @@ import { debugLog } from "./shared/index.js";
 import { MessageStore } from "./messageStore.js";
 import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
 import { safeSend } from "./lib/xmpp-utils.js";
-import { captureAskUser, tryAnswerPending } from "./lib/ask-user.js";
+import { registerAskUser, tryAnswerPending } from "./lib/ask-user.js";
 import { xml } from "@xmpp/client";
 
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
@@ -283,7 +283,7 @@ export class GatewayLifecycle {
             deliver: async (payload: any) => {
               let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
               try {
-                const ask = await captureAskUser(payload, {
+                const ask = registerAskUser(payload, {
                   accountId: account.accountId,
                   conversation: fromJidStr.split("/")[0],
                 });
@@ -380,12 +380,12 @@ export class GatewayLifecycle {
               sender: senderBareJid,
               body,
             });
+            const client =
+              this.deps.xmppClients.get(account.accountId) || this.deps.xmppClients.values().next().value;
             if (answer.handled) {
               const replyText = answer.error
                 ? `Could not submit answer: ${answer.error}`
                 : answer.reply || "Answered.";
-              const client =
-                this.deps.xmppClients.get(account.accountId) || this.deps.xmppClients.values().next().value;
               try {
                 await client?.send(options?.room || from, replyText);
               } catch (sendErr) {
@@ -393,6 +393,18 @@ export class GatewayLifecycle {
               }
               this.queue.markAsProcessed(messageId);
               return;
+            }
+            if (answer.closed) {
+              // The question already timed out/was answered: note it, then let
+              // the message dispatch normally so the answer isn't lost.
+              try {
+                await client?.send(
+                  options?.room || from,
+                  "Note: that question already closed (timed out) — passing your message through.",
+                );
+              } catch (sendErr) {
+                log.debug("ask_user closed note failed", sendErr);
+              }
             }
           } catch (err) {
             log.debug("ask_user answer handling failed", err);
@@ -560,7 +572,7 @@ export class GatewayLifecycle {
                 // SECURITY (2.16.0): register/render ask_user prompts so the
                 // user can answer them from XMPP.
                 try {
-                  const ask = await captureAskUser(payload, {
+                  const ask = registerAskUser(payload, {
                     accountId: account.accountId,
                     conversation: jid.split("/")[0],
                   });

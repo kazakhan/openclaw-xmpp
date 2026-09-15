@@ -1,5 +1,5 @@
 import { sendText, sendMedia } from "./outbound.js";
-import { captureAskUser } from "./lib/ask-user.js";
+import { registerAskUser } from "./lib/ask-user.js";
 import { xmppSecurityAdapter } from "./security/adapter.js";
 import { GatewayLifecycle } from "./gateway.js";
 import { MessageStore } from "./messageStore.js";
@@ -131,11 +131,12 @@ export const xmppChannelPlugin = {
     deliveryMode: "gateway",
     sendText,
     sendMedia,
-    // SECURITY (2.16.0): capture + render ask_user prompts (text-only channel)
-    // so the question is visible and the user can answer it from XMPP.
-    beforeDeliverPayload: async ({ target, payload }: any) => {
+    // SECURITY (2.16.0/2.16.1): register + render ask_user prompts (text-only
+    // channel).  Synchronous — no gateway RPC in the delivery path (that was
+    // the 2.16.0 lag).
+    beforeDeliverPayload: ({ target, payload }: any) => {
       try {
-        await captureAskUser(payload, {
+        registerAskUser(payload, {
           accountId: target?.accountId || "default",
           conversation: String(target?.to || "").replace(/^xmpp:/, "").split("/")[0],
         });
@@ -143,14 +144,14 @@ export const xmppChannelPlugin = {
         /* best-effort */
       }
     },
-    renderPresentation: async ({ payload, ctx }: any) => {
+    renderPresentation: ({ payload, ctx }: any) => {
       try {
-        const ask = await captureAskUser(payload, {
+        const ask = registerAskUser(payload, {
           accountId: ctx?.accountId || "default",
           conversation: String(ctx?.to || "").replace(/^xmpp:/, "").split("/")[0],
         });
-        if (ask.handled && ask.text) {
-          return { ...payload, text: ask.text, presentation: undefined, presentationTextMode: undefined };
+        if (ask.handled) {
+          return { ...payload, text: ask.text ?? payload.text, presentation: undefined, presentationTextMode: undefined };
         }
       } catch {
         /* fall through to core rendering */
