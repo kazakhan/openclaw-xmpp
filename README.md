@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.16.2)
+## Status: ✅ WORKING (v2.16.3)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -51,6 +51,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   `runtime.gateway.request` hung with no request context). Answers are parsed
   per message (`q1. 1`, `1: 1`, `<questionId>: 1`) and accumulated until all
   questions are answered.
+- **v2.16.3** — fixed the periodic ~30–35 min disconnect/reconnect: the plugin
+  now reports transport activity (inbound stanzas, sends, keepalive) so
+  OpenClaw's channel health monitor no longer restarts idle-but-healthy
+  connections with `stale-socket`.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -608,7 +612,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.16.2) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.16.3) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -650,6 +654,17 @@ The plugin's `package.json` `overrides` pin `sasl-scram-sha-1` to `1.3.0`, so a
 fresh `npm install` (or `openclaw xmpp update`, which runs it) resolves the
 compatible version. If a machine was installed before the pin, run
 `npm install` in the plugin directory once.
+
+### The bot goes offline/online every ~30-35 minutes
+OpenClaw's channel **health monitor** restarts an account whose
+`lastTransportActivityAt` is older than 30 minutes (reason `stale-socket`). The
+plugin reports transport activity (inbound stanzas, successful sends, keepalive
+writes), so update to **v2.16.3+**. You can confirm the cause in the gateway log:
+```
+[xmpp:default] health-monitor: restarting (reason: stale-socket)
+```
+OpenClaw also supports `channels.xmpp.healthMonitor.enabled=false` as an escape
+hatch, but that disables genuine stale-socket recovery too.
 
 ## File Layout
 

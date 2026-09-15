@@ -21,6 +21,7 @@ import { createVCardServer } from "./vcard-server.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { runVCardOp } from "./lib/vcard-ops.js";
 import { installSaslResponseFix } from "./lib/sasl-response.js";
+import { createThrottledReporter } from "./lib/activity.js";
 import { PresenceManager, readPresenceConfig } from "./presence.js";
 
 // Reconnection constants
@@ -58,7 +59,7 @@ process.on('unhandledRejection', (reason: any, promise: any) => {
   log.error(`[UNHANDLED REJECTION] Stack: ${stack}`);
 });
 
-export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string, description?: string) => void) {
+export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (from: string, body: string, options?: { type?: string, room?: string, nick?: string, botNick?: string, roomSubject?: string, mediaUrls?: string[], mediaPaths?: string[], whiteboardPrompt?: string, whiteboardRequest?: boolean, whiteboardImage?: boolean, whiteboardData?: any, isSystemMessage?: boolean, wasMentioned?: boolean }) => void, onOnline?: (xmppClient: any) => void, onFileReceived?: (filePath: string, filename: string, from: string, description?: string) => void, onTransportActivity?: () => void) {
     // SECURITY (2.0.18, L1): per-invocation import of @xmpp/client.
     // Node caches the module so the second call is a no-op.  See
     // the comment on the (now-removed) module-level binding.
@@ -138,6 +139,24 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     // which broke SCRAM-SHA-1 auth).  Install before the first stream so the
     // very first SASL exchange is sanitized.
     installSaslResponseFix(xmpp);
+
+    // SECURITY (2.16.3): report transport activity to OpenClaw's channel health
+    // monitor.  The monitor restarts an account whose `lastTransportActivityAt`
+    // is older than 30 min (`stale-socket`); the plugin only updated it on
+    // connect + outbound agent replies, so an idle bot was restarted every
+    // ~35 min.  Real transport activity (inbound stanzas, successful sends,
+    // keepalive writes) keeps it fresh.  Throttled to once per minute.
+    const reportTransportActivity = createThrottledReporter(onTransportActivity);
+
+    // Count successful outbound sends as transport activity.
+    {
+      const origSend = xmpp.send.bind(xmpp);
+      xmpp.send = async (element: any, ...rest: any[]) => {
+        const result = await origSend(element, ...rest);
+        reportTransportActivity();
+        return result;
+      };
+    }
 
     // Increase connection timeout from 2s default to 30s to handle slower startups
     xmpp.timeout = 30000;
@@ -498,7 +517,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         try {
           // A single space is valid inter-stanza XML whitespace and is
           // ignored by the parser; it keeps the connection alive.
-          xmpp.write(" ").catch(() => {});
+          // SECURITY (2.16.3): a successful keepalive write is transport
+          // activity (real bytes on the wire); a failed write is not, so a
+          // dead socket still goes stale and gets restarted.
+          xmpp.write(" ").then(() => reportTransportActivity()).catch(() => {});
         } catch {
           // socket may already be gone; @xmpp/reconnect will recover
         }
@@ -703,6 +725,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
       });
     }
     xmpp.on("stanza", async (stanza: any) => {
+     // SECURITY (2.16.3): any inbound stanza proves the socket is alive.
+     reportTransportActivity();
      // debugLog("XMPP stanza received: " + stanza.toString().substring(0, 200));
      if (stanza.is("presence")) {
        const from = stanza.attrs.from;

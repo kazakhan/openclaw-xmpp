@@ -5,6 +5,63 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.3] - 2026-09-16
+
+**Fix: the bot dropped and reconnected every ~30–35 minutes
+(`health-monitor: restarting (reason: stale-socket)`).**
+
+### Root cause
+
+OpenClaw's channel health monitor polls every 5 min and restarts an account
+that is `connected` but whose `lastTransportActivityAt` is older than 30 min
+(`channel-health-policy`: `staleEventThresholdMs = 1,800,000`) — reason
+`stale-socket`. The plugin only set `lastTransportActivityAt` on **connect**
+(`gateway.ts`) and on **outbound agent replies**, so an idle bot looked stale
+after 30 min and was torn down/restarted (≈35 min cycle). The real transport
+activity the plugin already generates — inbound stanzas (Prosody pings every
+5 min) and the 25s whitespace keepalive — was never reported.
+
+### Fixed
+
+- **`src/lib/activity.ts`** (new) — `createThrottledReporter()` (≤1 report/60s).
+- **`src/startXMPP.ts`** — new `onTransportActivity` callback, reported on:
+  - every **inbound stanza**,
+  - every **successful outbound send** (the `xmpp.send` wrapper),
+  - every **successful whitespace-keepalive write** (a failed write is not
+    activity, so a genuinely dead socket still goes stale and is restarted).
+- **`src/gateway.ts`** — passes
+  `() => ctx.setStatus({ lastTransportActivityAt: Date.now() })` into
+  `startXmpp`.
+
+### Tests
+
+- `tests/v2.16.3-transport-activity.test.ts` (new) — throttle behaviour and
+  source-level wiring (stanza/send/keepalive + `lastTransportActivityAt`).
+
+### Files changed
+
+- `src/lib/activity.ts` (new), `src/startXMPP.ts`, `src/gateway.ts`,
+  `tests/v2.16.3-transport-activity.test.ts` (new), `README.md`, `package.json`
+  — 2.16.3
+
+### Backups
+
+- `_backups/2.16.3_20260916_063738/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.3_20260916_063738"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/gateway.ts" src/gateway.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/activity.ts tests/v2.16.3-transport-activity.test.ts
+npx tsc
+```
+
 ## [2.16.2] - 2026-09-15
 
 **Fix: ask_user answers never resolved (no reply). The gateway call hung.**

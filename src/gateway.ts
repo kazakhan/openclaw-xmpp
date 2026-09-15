@@ -46,7 +46,7 @@ interface LifecycleDeps {
 }
 
 interface LifecycleServices {
-  startXmpp: (config: any, contacts: any, logger: any, onMessage: any, onOnline?: any, onFileReceived?: any) => Promise<XmppClient>;
+  startXmpp: (config: any, contacts: any, logger: any, onMessage: any, onOnline?: any, onFileReceived?: any, onTransportActivity?: () => void) => Promise<XmppClient>;
   Contacts: new (dataDir: string) => any;
   MessageStore: new (dataDir: string) => any;
 }
@@ -741,7 +741,10 @@ export class GatewayLifecycle {
           }
         }
       },
-      handleIncomingFile
+      handleIncomingFile,
+      // SECURITY (2.16.3): report transport activity so the channel health
+      // monitor doesn't restart an idle-but-healthy connection (stale-socket).
+      () => ctx.setStatus({ lastTransportActivityAt: Date.now() })
     );
     let xmpp: Awaited<ReturnType<typeof this.services.startXmpp>>;
     try {
