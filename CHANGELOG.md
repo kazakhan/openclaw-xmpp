@@ -5,6 +5,84 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.5] - 2026-09-15
+
+**Fix: SCRAM-SHA-1 auth sent an empty `<response/>` and failed with
+`malformed-request` on machines that had installed a newer transitive
+dependency.**
+
+### Root cause
+
+`sasl-scram-sha-1@1.4.0` changed `RESP.challenge` to an **`async function`**
+(it now `await`s the bitops), so `mech.response()` returns a **Promise**.
+`@xmpp/sasl@0.13.6` calls it synchronously and only encodes the result when it
+is a string:
+
+```js
+const resp = mech.response(creds);
+... typeof resp === "string" ? encode(resp) : ""   // Promise -> "" -> empty <response/>
+```
+
+The empty `<response/>` is rejected by Prosody with the SASL condition
+`malformed-request`, before the password is ever evaluated.
+
+The wrapper `@xmpp/sasl-scram-sha-1@0.13.2` declares `sasl-scram-sha-1: ^1.3.0`,
+which allows 1.4.0. This repo's `package-lock.json` pinned 1.3.0 (synchronous),
+so existing installs worked; a fresh `npm install` (or a machine that
+regenerated its lock) resolved **1.4.0** and broke — which is why only some
+machines were affected. Verified: authenticating `uranus@kazakhan.com` over
+SCRAM-SHA-1 from a box with `sasl-scram-sha-1@1.3.0` succeeds.
+
+### Fixed
+
+- **`package.json`** — `@xmpp/client` pinned to the exact `0.13.6`, and
+  `overrides` added: `sasl-scram-sha-1: 1.3.0`, `@xmpp/sasl: 0.13.6`,
+  `@xmpp/sasl-scram-sha-1: 0.13.2`. A fresh install can no longer pull the
+  incompatible 1.4.0. (`openclaw xmpp update` already runs `npm install` after
+  installing, so it reconciles deps.)
+- **`src/lib/sasl-dep.ts`** (new) — `inspectSaslScram()` reads the installed
+  version and drives the mechanism to the challenge stage to confirm
+  `response()` returns a **string** (catching the async 1.4.0 API).
+- **`src/commands.ts`** — `openclaw xmpp doctor` now reports the installed
+  `sasl-scram-sha-1` version and compatibility; `doctor --fix` runs
+  `npm install` to reconcile it (in addition to rebuilding `dist/`).
+
+### Tests
+
+- **`tests/v2.15.5-sasl-dep.test.ts`** (new) — asserts the `package.json`
+  overrides and lock pin `sasl-scram-sha-1@1.3.0`, that the installed version is
+  1.3.0 with a synchronous string `response()` at the challenge stage, and that
+  `doctor` inspects + can run `npm install`.
+
+### Note
+
+The v2.15.4 `<response>` sanitizer is retained (RFC 6120 §6.4.2 correctness) but
+was **not** the cause: Prosody tolerates the extra `mechanism` attribute.
+
+### Files changed
+
+- `package.json`, `src/lib/sasl-dep.ts` (new), `src/commands.ts`,
+  `tests/v2.15.5-sasl-dep.test.ts` (new), `README.md` — 2.15.5
+
+### Backups
+
+- `_backups/2.15.5_20260915_102233/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.15.5_20260915_102233"
+cp "$BK/package.json" package.json
+cp "$BK/package-lock.json" package-lock.json
+cp "$BK/commands.ts" src/commands.ts
+cp "$BK/README.md" README.md
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/sasl-dep.ts tests/v2.15.5-sasl-dep.test.ts
+npm install
+npx tsc
+```
+
 ## [2.15.4] - 2026-09-15
 
 **Fix: SCRAM-SHA-1 authentication failed on strict servers (Prosody) with

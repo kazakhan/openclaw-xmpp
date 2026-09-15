@@ -1097,24 +1097,49 @@ Note: Commands run through the running gateway's XMPP connection.`);
     .option("--fix", "Rebuild the missing dist/ output automatically")
     .action(async (options: any) => {
       const { diagnosePluginState, ensureDistBuilt } = await import('./onboarding.js');
+      const { inspectSaslScram, REQUIRED_SASL_SCRAM_VERSION } = await import('./lib/sasl-dep.js');
       const report = diagnosePluginState(undefined, options?.config);
+      const sasl = inspectSaslScram(report.pluginDir);
       console.log('XMPP plugin diagnostics');
       console.log(`  Plugin directory:  ${report.pluginDir}`);
       console.log(`  dist/ present:     ${report.distExists ? "yes" : "NO"}`);
       console.log(`  tsx available:     ${report.tsxAvailable ? "yes" : "NO"}`);
       console.log(`  entry OpenClaw uses: ${report.entryKind === "dist" ? "dist/index.js (compiled JS)" : "index.ts (needs tsx)"}`);
+      console.log(`  sasl-scram-sha-1:  ${sasl.installed ? (sasl.version || "unknown") : "NOT INSTALLED"}${sasl.compatible ? "" : "  <-- INCOMPATIBLE (SCRAM auth will fail)"}`);
       for (const p of report.problems) console.log(`  - ${p}`);
       for (const f of report.fixes) console.log(`      ${f}`);
+      if (!sasl.compatible) {
+        console.log(`  - ${sasl.reason}`);
+        console.log(`      Fix: run \`npm install\` in ${report.pluginDir} (pins sasl-scram-sha-1@${REQUIRED_SASL_SCRAM_VERSION})`);
+      }
 
-      if (options?.fix && !report.distExists) {
-        console.log("\nRunning: npx tsc ...");
-        try {
-          const { built } = await ensureDistBuilt();
-          console.log(built ? "  dist/ rebuilt." : "  nothing to do.");
+      if (options?.fix) {
+        if (!report.distExists) {
+          console.log("\nRunning: npx tsc ...");
+          try {
+            const { built } = await ensureDistBuilt();
+            console.log(built ? "  dist/ rebuilt." : "  nothing to do.");
+            console.log("  Restart the gateway to load the plugin.");
+          } catch (err: any) {
+            console.error('  Failed to rebuild dist/:', err?.message || String(err));
+            process.exit(1);
+          }
+        }
+        if (!sasl.compatible) {
+          console.log(`\nRunning: npm install (reconcile sasl-scram-sha-1@${REQUIRED_SASL_SCRAM_VERSION}) ...`);
+          const { spawnSync } = await import('node:child_process');
+          const res = spawnSync("npm", ["install", "--no-audit", "--no-fund"], {
+            cwd: report.pluginDir,
+            stdio: "inherit",
+            shell: process.platform === "win32",
+          });
+          if (res.status !== 0) {
+            console.error("  npm install failed.");
+            process.exit(1);
+          }
+          const after = inspectSaslScram(report.pluginDir);
+          console.log(after.compatible ? `  sasl-scram-sha-1 is now ${after.version}.` : "  sasl-scram-sha-1 is still incompatible.");
           console.log("  Restart the gateway to load the plugin.");
-        } catch (err: any) {
-          console.error('  Failed to rebuild dist/:', err?.message || String(err));
-          process.exit(1);
         }
       }
     });

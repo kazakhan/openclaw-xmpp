@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.15.4)
+## Status: ✅ WORKING (v2.15.5)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -29,10 +29,14 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
 - **v2.15.3** — fixed `openclaw xmpp update` (the rollback snapshot copied the
   plugin into a subdirectory of itself, which `fs.cp` rejects with
   `ERR_FS_CP_EINVAL`).
-- **v2.15.4** — fixed SCRAM-SHA-1 authentication on strict servers (e.g.
-  Prosody). `@xmpp/sasl` 0.13.6 put an illegal `mechanism` attribute on the
-  SASL `<response/>` stanza (RFC 6120 §6.4.2), which Prosody rejects with
-  `malformed-request`; the plugin now strips it.
+- **v2.15.4** — strips the illegal `mechanism` attribute `@xmpp/sasl` 0.13.6
+  puts on the SASL `<response/>` (RFC 6120 §6.4.2). RFC-correctness; most
+  servers tolerate the attribute.
+- **v2.15.5** — pinned `sasl-scram-sha-1` to **1.3.0**. 1.4.0 made `response()`
+  async, which `@xmpp/sasl` 0.13.x calls synchronously, so SCRAM sent an
+  **empty `<response/>`** and Prosody rejected it with `malformed-request`.
+  `doctor` now detects the bad version and `--fix` runs `npm install` to
+  reconcile it.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -553,7 +557,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.15.4) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.15.5) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -580,11 +584,21 @@ This was fixed by checking `xmpp.status` before calling `stop()` in the reconnec
 Your XMPP server's SSL certificate has expired. Renew it on the server, or use a trusted CA.
 
 ### SASL auth fails with `malformed-request` (Prosody), but the password is correct
-`@xmpp/sasl` 0.13.6 puts an illegal `mechanism` attribute on the SASL
-`<response/>` stanza, so a strict server rejects the exchange with
-`malformed-request` before checking the password. This only affects multi-step
-mechanisms (SCRAM-SHA-1); PLAIN is client-first and unaffected. Update to
-**v2.15.4+**, which strips the attribute on the way out.
+This is the **`sasl-scram-sha-1` 1.4.0** regression: it made `response()` async
+(returns a Promise), but `@xmpp/sasl` 0.13.x calls it synchronously and only
+encodes string results — so the SCRAM `<response/>` is sent **empty** and the
+server rejects it with `malformed-request`. It only affects SCRAM (multi-step);
+PLAIN is client-first and unaffected.
+
+Check and fix:
+```bash
+openclaw xmpp doctor          # reports the installed sasl-scram-sha-1 version
+openclaw xmpp doctor --fix    # runs `npm install` to pin sasl-scram-sha-1@1.3.0
+```
+The plugin's `package.json` `overrides` pin `sasl-scram-sha-1` to `1.3.0`, so a
+fresh `npm install` (or `openclaw xmpp update`, which runs it) resolves the
+compatible version. If a machine was installed before the pin, run
+`npm install` in the plugin directory once.
 
 ## File Layout
 
