@@ -213,8 +213,20 @@ function promptChoice(
 
 // --- prerequisite "if needed" install steps --------------------------------
 
+// SECURITY (2.16.5): Node >=18.20.2 (CVE-2024-27980) refuses to spawn
+// `.cmd`/`.bat` shims without a shell, so `npm`/`npx` fail on Windows.  Wrap
+// with `cmd.exe /d /s /c` explicitly (avoids the `shell: true` DEP0190 warning).
 function run(cmd: string, args: string[], cwd: string, label: string): string | null {
   try {
+    if (process.platform === "win32") {
+      const comspec = process.env.ComSpec || "cmd.exe";
+      return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
+        cwd,
+        stdio: "pipe",
+        encoding: "utf8",
+        windowsHide: true,
+      });
+    }
     return execFileSync(cmd, args, { cwd, stdio: "pipe", encoding: "utf8", windowsHide: true });
   } catch (err: any) {
     const msg = err?.stderr || err?.stdout || err?.message || String(err);
@@ -276,7 +288,7 @@ export async function ensurePluginInstalled(
 
 function findGlobalOpenclaw(): string | null {
   try {
-    const out = execFileSync("npm", ["root", "-g"], { encoding: "utf8", windowsHide: true }).trim();
+    const out = run("npm", ["root", "-g"], process.cwd(), "npm root -g")?.trim() || "";
     const candidate = path.join(out, "openclaw");
     return fs.existsSync(candidate) ? candidate : null;
   } catch {
@@ -377,7 +389,16 @@ export async function ensureDistBuilt(pluginDir: string = resolvePluginDir()): P
   if (fs.existsSync(path.join(pluginDir, "dist"))) {
     return { built: false };
   }
-  run("npx", ["tsc"], pluginDir, "tsc build");
+  try {
+    run("npx", ["tsc"], pluginDir, "tsc build");
+  } catch (tscErr) {
+    // SECURITY (2.16.5): tsc exits non-zero on type-only errors but still emits
+    // (noEmitOnError:false).  Only fail when no build output was produced.
+    if (!fs.existsSync(path.join(pluginDir, "dist", "index.js"))) throw tscErr;
+    console.warn(
+      `[onboarding] tsc reported type errors but emitted dist/; continuing. ${tscErr instanceof Error ? tscErr.message : String(tscErr)}`,
+    );
+  }
   return { built: true };
 }
 

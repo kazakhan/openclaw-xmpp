@@ -5,6 +5,75 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.5] - 2026-09-16
+
+**Fix: `openclaw xmpp update` (and `doctor --fix`) fail on Windows with Node
+≥18.20.2 — `spawnSync npm.cmd EINVAL`, then a fatal `tsc` exit.**
+
+### Root causes
+
+1. **`.cmd` shim spawned without a shell.** `run()` used
+   `execFileSync("npm.cmd"|"npx.cmd"|…, …)`. Since Node 18.20.2/20.12.2/21.7.3
+   (CVE-2024-27980 hardening), spawning `.cmd`/`.bat` without `shell` throws
+   `EINVAL`, so `npm install`, `npx tsc`, and `git` shims could never run.
+   Same for `findGlobalOpenclaw()` (`npm root -g`) and `restartGateway()`
+   (`spawn("openclaw.cmd", …)`).
+2. **`tsc`'s non-zero exit treated as fatal.** `tsconfig` has
+   `noEmitOnError:false`, so `tsc` exits 2 on type-only errors **while still
+   emitting a usable `dist/`**; `run()` threw on any non-zero exit, so the
+   update reported "Build failed; restored previous version".
+   (`onboarding.ensureDistBuilt()` — used by `doctor --fix` — had the same bug.)
+3. The snapshot `ERR_FS_CP_EINVAL` was already fixed in 2.15.3.
+
+### Fixed
+
+- **`src/updater.ts`** — `run()` now executes via `cmd.exe /d /s /c <cmd> <args>`
+  on win32 (explicit, avoids the `shell:true` DEP0190 warning);
+  `findGlobalOpenclaw()` uses it; `restartGateway()` spawns
+  `cmd.exe /d /s /c openclaw gateway restart` on win32. The `npx tsc` step now
+  continues (with a warning) when it exits non-zero **but** `dist/index.js`
+  exists, and only rethrows when no build output was produced. New
+  `isSafeUpdateTag()` validates the release tag (`/^[0-9A-Za-z._-]+$/`) before it
+  is used in `git checkout v${tag}` / the tarball URL.
+- **`src/onboarding.ts`** — `run()` and `findGlobalOpenclaw()` use the same
+  Windows-safe wrapper; `ensureDistBuilt()` tolerates a non-zero `tsc` exit when
+  `dist/index.js` exists.
+
+### Tests
+
+- `tests/v2.16.5-windows-exec.test.ts` (new) — `isSafeUpdateTag` (valid vs shell
+  metacharacters), and source-level checks for the `cmd.exe /d /s /c` wrapper,
+  the `openclaw.cmd` spawn fix, the tsc-with-dist tolerance, and tag validation.
+
+### Notes
+
+- Supersedes the local Windows patch (`173c9e9`) — it can be dropped once this
+  is installed. Background write-up:
+  `~/.openclaw/workspace/docs/xmpp-updater-windows-node20-fix.md`.
+
+### Files changed
+
+- `src/updater.ts`, `src/onboarding.ts`,
+  `tests/v2.16.5-windows-exec.test.ts` (new), `README.md`, `package.json` — 2.16.5
+
+### Backups
+
+- `_backups/2.16.5_20260916_072332/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.5_20260916_072332"
+cp "$BK/updater.ts" src/updater.ts
+cp "$BK/onboarding.ts" src/onboarding.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f tests/v2.16.5-windows-exec.test.ts
+npx tsc
+```
+
 ## [2.16.4] - 2026-09-16
 
 **Fix: gateway crash-loop (`Cannot create property 'parent' on string '<jid>'`)

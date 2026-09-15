@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.16.4)
+## Status: ✅ WORKING (v2.16.5)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -59,6 +59,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   string to the raw `@xmpp/client` `send()`, which threw
   `Cannot create property 'parent' on string '<jid>'` as an unhandled promise
   rejection ~60s after connect. Notices now build a `<message>` element.
+- **v2.16.5** — fixed `openclaw xmpp update` on Windows / Node ≥18.20.2:
+  `.cmd` shims (`npm.cmd`/`npx.cmd`/`openclaw.cmd`) are now spawned via
+  `cmd.exe /d /s /c`, tsc's non-zero exit is tolerated when `dist/` was emitted,
+  and the release tag is validated.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -616,7 +620,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.16.4) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.16.5) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -684,6 +688,22 @@ openclaw gateway call channels.start --params '{"channel":"xmpp","accountId":"de
 # and, until updated, stop the 60s check from crashing:
 openclaw config set channels.xmpp.accounts.default.autoUpdate.enabled false
 ```
+
+### `openclaw xmpp update` fails on Windows (`spawnSync npm.cmd EINVAL`)
+```
+Build failed; restored previous version. npm install failed: spawnSync npm.cmd EINVAL
+[updater] tsc build failed: index.ts(4,8): error TS2307 ...   (fatal)
+```
+Two Windows/Node ≥18.20.2 issues, fixed in **v2.16.5+**:
+1. Node (CVE-2024-27980) refuses to spawn `.cmd`/`.bat` shims without a shell,
+   so `npm.cmd`/`npx.cmd`/`openclaw.cmd` threw `EINVAL`. They're now run via
+   `cmd.exe /d /s /c`.
+2. `tsc` exits non-zero on type-only errors while still emitting `dist/`
+   (`noEmitOnError:false`); that is no longer treated as fatal.
+
+A local workaround patch for older versions is documented at
+`~/.openclaw/workspace/docs/xmpp-updater-windows-node20-fix.md`; it is no longer
+needed once you are on v2.16.5+.
 
 ## File Layout
 

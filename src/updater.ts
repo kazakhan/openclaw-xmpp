@@ -130,13 +130,31 @@ function exe(name: string): string {
   return process.platform === "win32" ? `${name}.cmd` : name;
 }
 
+// SECURITY (2.16.5): Node >=18.20.2/20.12.2/21.7.3 (CVE-2024-27980) refuses to
+// spawn `.cmd`/`.bat` shims without a shell, so `execFileSync("npm.cmd", …)`
+// throws EINVAL on Windows.  Wrap with `cmd.exe /d /s /c` explicitly (rather
+// than `shell: true`, which emits Node's DEP0190 deprecation warning).
 function run(cmd: string, args: string[], cwd: string, label: string): string {
   try {
+    if (process.platform === "win32") {
+      const comspec = process.env.ComSpec || "cmd.exe";
+      return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
+        cwd,
+        stdio: "pipe",
+        encoding: "utf8",
+        windowsHide: true,
+      });
+    }
     return execFileSync(cmd, args, { cwd, stdio: "pipe", encoding: "utf8", windowsHide: true });
   } catch (err: any) {
     const msg = err?.stderr || err?.stdout || err?.message || String(err);
     throw new Error(`${label} failed: ${String(msg).trim()}`);
   }
+}
+
+/** Validate a release tag before it is used in a shell command line. */
+export function isSafeUpdateTag(tag: string): boolean {
+  return /^[0-9A-Za-z._-]+$/.test(tag || "");
 }
 
 function isGitRepo(dir: string): boolean {
@@ -154,7 +172,7 @@ function isGitDirty(dir: string): boolean {
 
 function findGlobalOpenclaw(): string | null {
   try {
-    const out = execFileSync(exe("npm"), ["root", "-g"], { encoding: "utf8", windowsHide: true }).trim();
+    const out = run(exe("npm"), ["root", "-g"], process.cwd(), "npm root -g").trim();
     const cand = path.join(out, "openclaw");
     return fs.existsSync(cand) ? cand : null;
   } catch {
@@ -262,6 +280,11 @@ export async function performUpdate(
     return { ok: false, fromVersion: current, message: err instanceof Error ? err.message : String(err) };
   }
 
+  // SECURITY (2.16.5): the tag goes into a git checkout / shell command line.
+  if (!isSafeUpdateTag(latest)) {
+    return { ok: false, fromVersion: current, message: `Refusing to update: unsafe release tag "${latest}".` };
+  }
+
   if (!isNewer(current, latest)) {
     return { ok: true, fromVersion: current, message: `Already up to date (v${current}).` };
   }
@@ -311,7 +334,17 @@ export async function performUpdate(
     run(exe("npm"), ["install"], dir, "npm install");
     ensureSdkLink(dir);
     fs.rmSync(path.join(dir, "dist"), { recursive: true, force: true });
-    run(exe("npx"), ["tsc"], dir, "tsc build");
+    try {
+      run(exe("npx"), ["tsc"], dir, "tsc build");
+    } catch (tscErr) {
+      // SECURITY (2.16.5): tsconfig has `noEmitOnError: false`, so tsc exits
+      // non-zero on type-only errors WHILE still emitting a usable dist/.
+      // Treat that as a warning; only fail when no build output was produced.
+      if (!fs.existsSync(path.join(dir, "dist", "index.js"))) throw tscErr;
+      console.warn(
+        `[updater] tsc reported type errors but emitted dist/; continuing. ${tscErr instanceof Error ? tscErr.message : String(tscErr)}`,
+      );
+    }
   } catch (err) {
     await restoreSnapshot(dir, snapDest).catch(() => {});
     return {
@@ -364,8 +397,19 @@ export function formatAskMessage(info: UpdateInfo): string {
  */
 export function restartGateway(): void {
   try {
-    const cmd = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
-    const child = spawn(cmd, ["gateway", "restart"], {
+    if (process.platform === "win32") {
+      // SECURITY (2.16.5): spawning `openclaw.cmd` without a shell throws
+      // EINVAL on Node >=18.20.2 (CVE-2024-27980); go through cmd.exe.
+      const comspec = process.env.ComSpec || "cmd.exe";
+      const child = spawn(comspec, ["/d", "/s", "/c", "openclaw", "gateway", "restart"], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      child.unref();
+      return;
+    }
+    const child = spawn("openclaw", ["gateway", "restart"], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
