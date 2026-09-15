@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.16.3)
+## Status: ✅ WORKING (v2.16.4)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -55,6 +55,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   now reports transport activity (inbound stanzas, sends, keepalive) so
   OpenClaw's channel health monitor no longer restarts idle-but-healthy
   connections with `stale-socket`.
+- **v2.16.4** — fixed a gateway crash-loop: the auto-update notice passed a JID
+  string to the raw `@xmpp/client` `send()`, which threw
+  `Cannot create property 'parent' on string '<jid>'` as an unhandled promise
+  rejection ~60s after connect. Notices now build a `<message>` element.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -612,7 +616,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.16.3) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.16.4) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -665,6 +669,21 @@ writes), so update to **v2.16.3+**. You can confirm the cause in the gateway log
 ```
 OpenClaw also supports `channels.xmpp.healthMonitor.enabled=false` as an escape
 hatch, but that disables genuine stale-socket recovery too.
+
+### The gateway crash-loops and XMPP won't start (`crash-loop breaker`)
+```
+Unhandled promise rejection: TypeError: Cannot create property 'parent' on string '<jid>'
+gateway restart-loop breaker tripped: 3 unclean boot(s) within 300000ms; suppressing channel/provider account auto-start
+```
+The auto-update notice passed a JID to the raw `@xmpp/client` `send()` (which
+expects an XML element), and the rejected promise crashed the gateway ~60s after
+connect; after 3 unclean boots the restart-loop breaker suppresses channel
+autostart. Update to **v2.16.4+**. To unblock immediately:
+```bash
+openclaw gateway call channels.start --params '{"channel":"xmpp","accountId":"default"}'
+# and, until updated, stop the 60s check from crashing:
+openclaw config set channels.xmpp.accounts.default.autoUpdate.enabled false
+```
 
 ## File Layout
 

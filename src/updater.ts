@@ -95,7 +95,17 @@ export async function checkForUpdate(pluginDir?: string): Promise<UpdateInfo> {
   }
 }
 
-export function notifyUpdateAvailable(xmpp: any, adminJids: string[], info: UpdateInfo): void {
+/**
+ * SECURITY (2.16.4): takes a `send(jid, text)` callback rather than the raw
+ * @xmpp/client.  The raw client's `send(element)` expects an XML element;
+ * passing a JID string threw `Cannot create property 'parent' on string '<jid>'`
+ * as an (uncaught) rejected promise and crashed the gateway.
+ */
+export function notifyUpdateAvailable(
+  send: (jid: string, text: string) => void,
+  adminJids: string[],
+  info: UpdateInfo,
+): void {
   if (!info.updateAvailable) return;
   const lines = [
     `[XMPP Update] New version v${info.latest} is available (you are on v${info.current}).`,
@@ -107,8 +117,7 @@ export function notifyUpdateAvailable(xmpp: any, adminJids: string[], info: Upda
   const text = lines.join("\n");
   for (const jid of adminJids) {
     try {
-      const p = xmpp.send(jid, text);
-      if (p && typeof p.then === "function") p.then(() => {}, () => {});
+      send(jid, text);
     } catch {
       /* best-effort */
     }

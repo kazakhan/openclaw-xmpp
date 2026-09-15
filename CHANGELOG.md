@@ -5,6 +5,80 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.4] - 2026-09-16
+
+**Fix: gateway crash-loop (`Cannot create property 'parent' on string '<jid>'`)
+— the auto-update notice passed a JID to the raw XMPP client's `send()`.**
+
+### Root cause
+
+The auto-update check runs 60s after connect (`setTimeout(runUpdateCheck, 60000)`)
+and notified admins with the **raw `@xmpp/client`**:
+
+```js
+for (const jid of admins) { try { xmpp.send(jid, "[XMPP Update] …"); } catch {} }
+```
+
+`xmpp.send(element)` expects an XML element; passing the JID string made
+`Connection.send` do `element.parent = this.root` →
+`TypeError: Cannot create property 'parent' on string 'jamie@kazakhan.com'`.
+Because `Connection.send` is `async`, that throw is a **rejected promise**, so
+the surrounding `try/catch` never caught it → **unhandled promise rejection** →
+the gateway exits → unclean boot. After 3 unclean boots in 5 min the gateway
+**restart-loop breaker** trips and suppresses channel autostart, so XMPP stays
+offline.
+
+It only surfaced once a newer release existed (`checkForUpdate()` →
+`updateAvailable: true`), so the admin notice actually ran. The same raw-client
+pattern was at 7 sites (update notices + admin yes/no replies) plus the
+(currently unused) `updater.notifyUpdateAvailable`.
+
+### Fixed
+
+- **`src/startXMPP.ts`** — new `sendChatNotice(to, text)` helper that builds a
+  `<message>` element and sends via `safeSend` (awaited + caught). All 7
+  `xmpp.send(<jid>, …)` sites now use it. Sends that already passed elements
+  (`iq`/`message`/`iqStanza`) are unchanged.
+- **`src/updater.ts`** — `notifyUpdateAvailable` now takes a
+  `send(jid, text)` callback instead of the raw client (removes the footgun).
+
+### Tests
+
+- `tests/v2.16.4-raw-send.test.ts` (new) — asserts no `xmpp.send(<jid>)` calls
+  remain in `startXMPP.ts`, that `sendChatNotice` builds a `<message>` and is
+  used by the notices, and that `notifyUpdateAvailable` takes a `send` callback.
+
+### uranus remediation
+
+```bash
+openclaw gateway call channels.start --params '{"channel":"xmpp","accountId":"default"}'
+openclaw config set channels.xmpp.accounts.default.autoUpdate.enabled false   # until updated
+# then install v2.16.4; the gateway boots cleanly and autostart resumes
+```
+
+### Files changed
+
+- `src/startXMPP.ts`, `src/updater.ts`,
+  `tests/v2.16.4-raw-send.test.ts` (new), `README.md`, `package.json` — 2.16.4
+
+### Backups
+
+- `_backups/2.16.4_20260916_065042/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.4_20260916_065042"
+cp "$BK/startXMPP.ts" src/startXMPP.ts
+cp "$BK/updater.ts" src/updater.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f tests/v2.16.4-raw-send.test.ts
+npx tsc
+```
+
 ## [2.16.3] - 2026-09-16
 
 **Fix: the bot dropped and reconnected every ~30–35 minutes

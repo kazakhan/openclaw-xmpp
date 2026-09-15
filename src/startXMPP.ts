@@ -291,6 +291,20 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
   // to send stanzas; the 42+ call sites use it.
   const safeXmppSend = safeSend;
 
+  // SECURITY (2.16.4): send a plain chat notice to a JID.  `xmpp` is the raw
+  // @xmpp/client, whose `send(element)` expects an XML element — passing a JID
+  // string made `Connection.send` do `element.parent = ...` and throw
+  // (`Cannot create property 'parent' on string '<jid>'`).  Because that throw
+  // is a rejected promise, a surrounding `try/catch` did not catch it and the
+  // unhandled rejection crashed the gateway.  Always build the <message>.
+  const sendChatNotice = async (to: string, text: string): Promise<void> => {
+    try {
+      await safeXmppSend(xmpp, xml("message", { type: "chat", to }, xml("body", {}, text)));
+    } catch (err) {
+      xmppLog.debug("notice send failed", err);
+    }
+  };
+
   // SECURITY (2.15.0): presence/status manager.  It sends status stanzas on
   // the EXISTING connection (never opens one), persists a manual override so
   // a custom status survives reconnect, and owns the
@@ -593,10 +607,10 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
 
                 if (autoMode) {
                   xmppLog.info(`auto-update: installing v${info.latest} (mode=auto)`);
-                  for (const jid of admins) { try { xmpp.send(jid, `[XMPP Update] Installing v${info.latest}...`); } catch { /* ignore */ } }
+                  for (const jid of admins) { await sendChatNotice(jid, `[XMPP Update] Installing v${info.latest}...`); }
                   const result = await performUpdate();
                   xmppLog.info(`auto-update: install result: ${result.message}`);
-                  for (const jid of admins) { try { xmpp.send(jid, `[XMPP Update] ${result.message}`); } catch { /* ignore */ } }
+                  for (const jid of admins) { await sendChatNotice(jid, `[XMPP Update] ${result.message}`); }
                   if (result.ok && result.toVersion && autoUpdate.autoRestart !== false) {
                     restartGateway();
                   }
@@ -611,7 +625,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   expiresAt: Date.now() + UPDATE_PROMPT_TTL_MS,
                 };
                 const ask = formatAskMessage(info);
-                for (const jid of admins) { try { xmpp.send(jid, ask); } catch { /* ignore */ } }
+                for (const jid of admins) { await sendChatNotice(jid, ask); }
                 xmppLog.info(`auto-update: asked admins to install v${info.latest} (current v${info.current})`);
               } catch (err) {
                 xmppLog.debug(`auto-update check failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1760,12 +1774,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   const pending = pendingUpdate;
                   pendingUpdate = null;
                   debugLog(`auto-update: admin ${senderBare} accepted v${pending.latest}`);
-                  try { xmpp.send(from, `[XMPP Update] Installing v${pending.latest}...`); } catch { /* ignore */ }
+                  await sendChatNotice(from, `[XMPP Update] Installing v${pending.latest}...`);
                   const result = await performUpdate();
                   xmppLog.info(`auto-update: install result: ${result.message}`);
-                  try { xmpp.send(from, `[XMPP Update] ${result.message}`); } catch { /* ignore */ }
+                  await sendChatNotice(from, `[XMPP Update] ${result.message}`);
                   if (result.ok && result.toVersion && cfg?.autoUpdate?.autoRestart !== false) {
-                    try { xmpp.send(from, "[XMPP Update] Restarting the gateway to apply the update..."); } catch { /* ignore */ }
+                    await sendChatNotice(from, "[XMPP Update] Restarting the gateway to apply the update...");
                     setTimeout(() => { try { restartGateway(); } catch { /* ignore */ } }, 3000);
                   }
                   return;
@@ -1773,7 +1787,7 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                 if (isNegative(text)) {
                   pendingUpdate = null;
                   debugLog(`auto-update: admin ${senderBare} declined`);
-                  try { xmpp.send(from, "[XMPP Update] Okay, skipping this update."); } catch { /* ignore */ }
+                  await sendChatNotice(from, "[XMPP Update] Okay, skipping this update.");
                   return;
                 }
               }
