@@ -5,6 +5,89 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-09-15
+
+**Feature: `ask_user` questions are now delivered and answerable in XMPP.
+Previously the agent's multiple-choice prompts were invisible over XMPP and the
+run blocked forever waiting on `question.resolve`.**
+
+### Root cause
+
+OpenClaw's `ask_user` tool blocks the run until `question.resolve` is called.
+The prompt is delivered to the originating channel as a `ReplyPayload` whose
+content lives in `presentation` (text + a `buttons` block carrying
+`action.type:"question"`, `action.questionId`, `action.optionValue`) and
+`channelData.askUser.questionId` (with `presentationTextMode:"fallback"`). The
+XMPP plugin only ever sent `payload.text` and never read the presentation or
+`channelData`, so the prompt was dropped/blank and a typed reply was dispatched
+to the agent as a normal message instead of answering the question.
+
+### Added
+
+- **`src/lib/questions.ts`** (new) — dependency-free pending-question store and
+  pure logic:
+  - `formatPrompt()` renders the question(s) with numbered options plus a
+    **"Type your own answer"** line (always offered) and reply guidance.
+  - `parseAnswer()` maps a reply to the answer: number → option; option text
+    (case-insensitive) → option; **anything else → custom answer**; multi-select
+    comma lists; multi-question forms (`1: 2, 2: 1`); secret answers masked in
+    the echo.
+  - `registerPending`/`getPending`/`clearPending` (TTL), `buildResolveParams`.
+- **`src/lib/ask-user.ts`** (new) — gateway side:
+  - `captureAskUser()` detects `channelData.askUser`, fetches the structured
+    record via `question.get` (falling back to the presentation buttons), and
+    registers the pending question.
+  - `tryAnswerPending()` resolves the pending question via `question.resolve`
+    and clears it.
+
+### Changed
+
+- **`src/gateway.ts`** — captures/renders ask_user prompts in both delivery
+  paths (file notification + main reply), and intercepts inbound messages: if a
+  question is pending for the conversation, the message is treated as the answer
+  (number / option text / typed custom answer), resolved, confirmed with
+  "Answered: …", and **not** dispatched to the agent.
+- **`src/channel-plugin.ts`** — the outbound adapter now has
+  `beforeDeliverPayload` (capture) and `renderPresentation` (render the prompt
+  as text), so the gateway outbound path also shows and registers questions.
+
+### Notes
+
+- Only the conversation that received the question can answer it (keyed by
+  account + conversation JID).
+- Questions expire after ~15 minutes; the gateway's own timeout still applies.
+
+### Tests
+
+- **`tests/v2.16.0-ask-user.test.ts`** (new) — prompt rendering (single/multi),
+  answer parsing (number, option text, custom, multi-select, compound
+  multi-question, secret masking), the pending store/TTL, resolve params, and
+  source-level wiring.
+
+### Files changed
+
+- `src/lib/questions.ts` (new), `src/lib/ask-user.ts` (new), `src/gateway.ts`,
+  `src/channel-plugin.ts`, `tests/v2.16.0-ask-user.test.ts` (new), `README.md`,
+  `package.json` — 2.16.0
+
+### Backups
+
+- `_backups/2.16.0_20260915_163109/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.16.0_20260915_163109"
+cp "$BK/gateway.ts" src/gateway.ts
+cp "$BK/channel-plugin.ts" src/channel-plugin.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+rm -f src/lib/questions.ts src/lib/ask-user.ts tests/v2.16.0-ask-user.test.ts
+npx tsc
+```
+
 ## [2.15.5] - 2026-09-15
 
 **Fix: SCRAM-SHA-1 auth sent an empty `<response/>` and failed with

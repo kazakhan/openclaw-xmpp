@@ -1,4 +1,5 @@
 import { sendText, sendMedia } from "./outbound.js";
+import { captureAskUser } from "./lib/ask-user.js";
 import { xmppSecurityAdapter } from "./security/adapter.js";
 import { GatewayLifecycle } from "./gateway.js";
 import { MessageStore } from "./messageStore.js";
@@ -130,6 +131,32 @@ export const xmppChannelPlugin = {
     deliveryMode: "gateway",
     sendText,
     sendMedia,
+    // SECURITY (2.16.0): capture + render ask_user prompts (text-only channel)
+    // so the question is visible and the user can answer it from XMPP.
+    beforeDeliverPayload: async ({ target, payload }: any) => {
+      try {
+        await captureAskUser(payload, {
+          accountId: target?.accountId || "default",
+          conversation: String(target?.to || "").replace(/^xmpp:/, "").split("/")[0],
+        });
+      } catch {
+        /* best-effort */
+      }
+    },
+    renderPresentation: async ({ payload, ctx }: any) => {
+      try {
+        const ask = await captureAskUser(payload, {
+          accountId: ctx?.accountId || "default",
+          conversation: String(ctx?.to || "").replace(/^xmpp:/, "").split("/")[0],
+        });
+        if (ask.handled && ask.text) {
+          return { ...payload, text: ask.text, presentation: undefined, presentationTextMode: undefined };
+        }
+      } catch {
+        /* fall through to core rendering */
+      }
+      return null;
+    },
   },
   gateway: (() => {
     const lifecycle = new GatewayLifecycle(

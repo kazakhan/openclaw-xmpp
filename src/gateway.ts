@@ -6,6 +6,7 @@ import { debugLog } from "./shared/index.js";
 import { MessageStore } from "./messageStore.js";
 import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
 import { safeSend } from "./lib/xmpp-utils.js";
+import { captureAskUser, tryAnswerPending } from "./lib/ask-user.js";
 import { xml } from "@xmpp/client";
 
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
@@ -280,7 +281,16 @@ export class GatewayLifecycle {
               log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
             },
             deliver: async (payload: any) => {
-              const text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+              let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+              try {
+                const ask = await captureAskUser(payload, {
+                  accountId: account.accountId,
+                  conversation: fromJidStr.split("/")[0],
+                });
+                if (ask.handled && ask.text) text = ask.text;
+              } catch (askErr) {
+                log.debug("ask_user capture failed", askErr);
+              }
               if (text && xmpp) {
                 if (await handleAgentSendFile(text, fromJidStr, xmpp, false, "chat")) return;
                 try {
@@ -356,6 +366,38 @@ export class GatewayLifecycle {
 
         const senderBareJid = from.split('/')[0];
         const senderNick = from.split('/')[1];
+
+        // SECURITY (2.16.0): if the agent is blocked on an ask_user question
+        // for this conversation, treat this message as the answer (number,
+        // option text, or a typed custom answer) and resolve it instead of
+        // dispatching to the agent.
+        if (!options?.isSystemMessage) {
+          try {
+            const answerConversation = (options?.room || from).split('/')[0];
+            const answer = await tryAnswerPending({
+              accountId: account.accountId,
+              conversation: answerConversation,
+              sender: senderBareJid,
+              body,
+            });
+            if (answer.handled) {
+              const replyText = answer.error
+                ? `Could not submit answer: ${answer.error}`
+                : answer.reply || "Answered.";
+              const client =
+                this.deps.xmppClients.get(account.accountId) || this.deps.xmppClients.values().next().value;
+              try {
+                await client?.send(options?.room || from, replyText);
+              } catch (sendErr) {
+                log.error("ask_user answer reply failed", sendErr);
+              }
+              this.queue.markAsProcessed(messageId);
+              return;
+            }
+          } catch (err) {
+            log.debug("ask_user answer handling failed", err);
+          }
+        }
 
         // Check for groupchat command: @<botNick> /<command>
         if (options?.type === "groupchat" && options?.room && options?.botNick && body) {
@@ -513,8 +555,19 @@ export class GatewayLifecycle {
                 log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
               },
               deliver: async (payload: any) => {
-                const text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+                let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
                 let jid = roomJid || from;
+                // SECURITY (2.16.0): register/render ask_user prompts so the
+                // user can answer them from XMPP.
+                try {
+                  const ask = await captureAskUser(payload, {
+                    accountId: account.accountId,
+                    conversation: jid.split("/")[0],
+                  });
+                  if (ask.handled && ask.text) text = ask.text;
+                } catch (askErr) {
+                  log.debug("ask_user capture failed", askErr);
+                }
                 if (await handleAgentSendFile(text, jid, xmpp, isGroupChat, options?.type || "chat")) return;
                 let cleanText = text;
                 const thinkingRegex = /^(Thinking[. ]+.*?[\n\r]+)+/i;

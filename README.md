@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.15.5)
+## Status: ✅ WORKING (v2.16.0)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -37,6 +37,11 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   **empty `<response/>`** and Prosody rejected it with `malformed-request`.
   `doctor` now detects the bad version and `--fix` runs `npm install` to
   reconcile it.
+- **v2.16.0** — **`ask_user` questions are delivered and answerable in XMPP**
+  (the agent's multiple-choice prompts were previously invisible and the run
+  blocked). Questions and numbered options are rendered as a message; reply with
+  a number, the option text, or type your own answer (multiple questions use
+  `1: 2, 2: 1`).
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -442,6 +447,33 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 - Admin commands require your JID to be in the `adminJid` config
 - Most admin commands only work in direct chat (not groupchat)
 - The `/help` command forwards to the AI agent in direct chat
+
+## Answering agent questions (ask_user)
+
+When the agent uses OpenClaw's **ask_user** tool it blocks until the question is
+answered. The plugin renders the question(s) as a normal XMPP message with
+numbered options, and your reply is turned into the answer:
+
+```
+Agent needs input:
+
+Deploy
+Proceed with the deploy?
+  1. Yes
+  2. No — abort
+  3. Type your own answer
+
+Reply with a number, the option text, or type your own answer.
+```
+
+- Reply with a **number** (`2`), the **option text** (`No`), or **any other
+  text** — anything that isn't an option is submitted as a **custom answer**.
+- **Multiple questions** are numbered; reply like `1: 2, 2: 1`
+  (`<question>: <option>`).
+- **Multi-select** questions accept comma-separated numbers/labels.
+- Only the conversation that received the question can answer it. The question
+  expires after ~15 minutes (the gateway's own timeout also applies).
+
 ## File Management
 
 Files are transferred over XMPP via SI (XEP-0096) with SOCKS5 bytestreams (XEP-0065) or IBB (XEP-0047) preferred, falling back to HTTP File Upload (XEP-0363) for a URL link. PSI+ clients receive a native file transfer dialog; other clients receive an HTTP download link.
@@ -475,6 +507,7 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 - Session memory continuity (experimental)
 - Contact & roster management
 - **Presence/status** (built-in + custom) with automatic **busy while thinking/tooling** and persistence across reconnect (v2.15.0)
+- **Agent questions (`ask_user`)** rendered in chat and answerable by number, option text, or a typed custom answer (v2.16.0)
 - vCard support (all fields get/set) and **vCard4 over PEP** (XEP-0292)
 - File transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) with HTTP Upload (XEP-0363) fallback
 - In-chat `/sendfile` command (agent response and CLI)
@@ -557,7 +590,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.15.5) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.16.0) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -654,6 +687,8 @@ xmpp/
 │   │   ├── vcard4-protocol.ts # vCard4 (XEP-0292) helpers
 │   │   ├── vcard-ops.ts      # vCard actions on the live connection
 │   │   ├── json-extract.ts   # Robust JSON extraction from CLI output
+│   │   ├── questions.ts      # ask_user pending-question store + answer parsing
+│   │   ├── ask-user.ts       # ask_user capture/render/resolve (gateway)
 │   │   ├── persistent-queue.ts # Persistent message queue
 │   │   ├── contact-factory.ts # Contact factory
 │   │   ├── config-loader.ts  # Config loader
