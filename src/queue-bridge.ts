@@ -39,11 +39,12 @@ export function clearOldMessages(
   return getQueue(dataDir).clearOld(maxAgeMs);
 }
 
-export function getMessageQueue(): PersistentQueue | null {
-  // Returns the queue for the default dataDir (process.cwd()) if
-  // one has been created.  Preserved for backward compatibility with
-  // any caller that took a `PersistentQueue | null` return type.
-  return queueByDir.get(process.cwd()) ?? null;
+export function getMessageQueue(dataDir?: string): PersistentQueue {
+  // SECURITY (2.17.0): create-or-return the queue for `dataDir` (default
+  // process.cwd()).  Previously this returned `null` when no queue existed,
+  // which made `openclaw xmpp queue`/`clear` throw
+  // "Cannot read properties of null (reading 'length')".
+  return getQueue(dataDir);
 }
 
 export async function flushQueue(dataDir?: string): Promise<void> {

@@ -55,9 +55,9 @@ openclaw config set plugins.entries.xmpp.enabled true || true
 echo "Enabling groupchat reply delivery..."
 openclaw config set messages.groupChat.visibleReplies automatic || true
 
-echo "Enforcing groupchat mention gating (reply only when @mentioned)..."
-openclaw config set "channels.xmpp.groups.*.requireMention" true || true
-openclaw config set messages.groupChat.unmentionedInbound room_event || true
+# SECURITY (2.17.0): no mention-only toggles.  The plugin delivers ALL room
+# messages (unmentioned = passive room_event) and replies only when @mentioned,
+# by setting InboundEventKind itself.
 
 echo ""
 echo "============================================"

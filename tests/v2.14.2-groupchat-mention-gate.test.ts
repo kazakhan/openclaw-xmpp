@@ -1,9 +1,11 @@
-// SECURITY (2.14.2, groupchat mention gate): regression suite.
+// SECURITY (2.14.2, revised 2.17.0): groupchat delivery.
 //
-// Group messages are dispatched to the agent ONLY when this bot is @mentioned
-// (its own nick) — unmentioned/`@othernick` chatter is persisted but never sent
-// to the agent (no model call, no reply, no bot-to-bot loop).  A message may
-// mention several nicks; only a mention of one of the bot's own names counts.
+// 2.14.2 introduced a mention-only gate that DROPPED unmentioned room messages.
+// 2.17.0 reverses that: every room message is delivered to the agent.  The
+// plugin sets `InboundEventKind` explicitly — unmentioned => "room_event"
+// (passive context, no reply), @mentioned/control => "user_request" (reply).
+// Because each bot computes its own mention, a message that @mentions one bot
+// is user_request only for that bot, so only the intended recipient replies.
 //
 // File-based (read source + assert regex) so it runs under plain `node --test`.
 
@@ -35,26 +37,23 @@ describe('Fix 2.14.2: mention detection (src/mention.ts)', () => {
   });
 });
 
-describe('Fix 2.14.2: gateway skips the agent when not mentioned (src/gateway.ts)', () => {
-  it('has a mention-only gate that returns before dispatch', async () => {
+describe('Fix 2.17.0: gateway delivers all room messages (src/gateway.ts)', () => {
+  it('sets InboundEventKind (room_event vs user_request)', async () => {
     const src = await readSource('src/gateway.ts');
-    assert.match(src, /const mentioned = options\?\.wasMentioned === true/);
-    assert.match(src, /if \(!mentioned && !hasControlCommand && policy !== "user_request"\)/);
-    assert.match(src, /this\.queue\.markAsProcessed\(messageId\);\s*\n\s*return;/);
+    assert.match(src, /const inboundEventKind:\s*"user_request"\s*\|\s*"room_event"/);
+    assert.match(src, /isGroup && !mentioned && !hasControlCommand \? "room_event" : "user_request"/);
+    assert.match(src, /InboundEventKind:\s*inboundEventKind/);
   });
 
-  it('builds the gate before finalizeInboundContext/dispatch', async () => {
+  it('no longer skips unmentioned room messages', async () => {
     const src = await readSource('src/gateway.ts');
-    const gateIdx = src.indexOf('skipping AI dispatch');
-    const dispatchIdx = src.indexOf('dispatchInboundReplyWithBase', gateIdx);
-    assert.ok(gateIdx > -1 && dispatchIdx > -1 && gateIdx < dispatchIdx, 'gate must precede dispatch');
+    assert.equal(/skipping AI dispatch for .*not @mentioned/.test(src), false);
+    assert.equal(/resolveXmppUnmentionedPolicy/.test(src), false);
   });
 
-  it('no longer injects BotUsername/GroupMembers/GroupSubject/GroupSystemPrompt/InboundEventKind', async () => {
+  it('room dispatch stays groupchat (ChatType channel)', async () => {
     const src = await readSource('src/gateway.ts');
-    for (const f of ['BotUsername:', 'GroupMembers:', 'GroupSubject:', 'GroupSystemPrompt:', 'InboundEventKind:']) {
-      assert.equal(src.includes(f), false, `gateway.ts must not inject ${f}`);
-    }
+    assert.match(src, /ChatType:\s*\(roomJid \|\| isGroupChat\) \? "channel" : "direct"/);
   });
 });
 
@@ -73,13 +72,15 @@ describe('Fix 2.14.2: startXMPP passes the mention signal (src/startXMPP.ts)', (
   });
 });
 
-describe('Fix 2.14.2: installers default to mention-only', () => {
-  it('install.sh sets channels.xmpp.groups.*.requireMention', async () => {
+describe('Fix 2.17.0: installers no longer set mention-only toggles', () => {
+  it('install.sh has no requireMention/unmentionedInbound', async () => {
     const src = await readSource('install.sh');
-    assert.match(src, /channels\.xmpp\.groups\.\*\.requireMention/);
+    assert.equal(/requireMention/.test(src), false);
+    assert.equal(/unmentionedInbound/.test(src), false);
   });
-  it('install.ps1 sets channels.xmpp.groups.*.requireMention', async () => {
+  it('install.ps1 has no requireMention/unmentionedInbound', async () => {
     const src = await readSource('install.ps1');
-    assert.match(src, /channels\.xmpp\.groups\.\*\.requireMention/);
+    assert.equal(/requireMention/.test(src), false);
+    assert.equal(/unmentionedInbound/.test(src), false);
   });
 });

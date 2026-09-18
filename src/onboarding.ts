@@ -497,26 +497,11 @@ export async function runXmppOnboarding(options: OnboardingOptions = {}): Promis
   // 5. Merge into config (preserve other keys/accounts)
   const { config: merged } = mergeAccountConfig(config, account, accountConfig);
 
-  // SECURITY (2.13.0): enforce groupchat mention-gating by default so the bot
-  // only replies in MUC rooms when @mentioned (per-room overrides remain
-  // possible under channels.xmpp.groups.*).
-  if (merged.channels?.xmpp) {
-    merged.channels.xmpp.groups = merged.channels.xmpp.groups || {};
-    merged.channels.xmpp.groups["*"] = {
-      ...(merged.channels.xmpp.groups["*"] || {}),
-      requireMention: true,
-    };
-  }
-  // SECURITY (2.14.1): mark unmentioned group chatter as passive room events
-  // (so the agent doesn't answer every message). Preserve an explicit operator
-  // choice if already set.
-  if (merged.messages == null || typeof merged.messages !== "object") merged.messages = {};
-  if (merged.messages.groupChat == null || typeof merged.messages.groupChat !== "object") {
-    merged.messages.groupChat = {};
-  }
-  if (merged.messages.groupChat.unmentionedInbound == null) {
-    merged.messages.groupChat.unmentionedInbound = "room_event";
-  }
+  // SECURITY (2.17.0): the plugin sets `InboundEventKind` directly (all room
+  // messages are delivered; unmentioned ones are passive `room_event`, mentions
+  // are `user_request`), so onboarding no longer writes the old mention-only
+  // toggles (`channels.xmpp.groups.*.requireMention`,
+  // `messages.groupChat.unmentionedInbound`).
 
   try {
     await writeOpenclawConfig(configPath, merged);

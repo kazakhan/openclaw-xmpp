@@ -1,7 +1,6 @@
 import { registerXmppCli } from "./commands.js";
 import { xmppClients, contactsStore } from "./state.js";
 import {
-  getMessageQueue,
   getUnprocessedMessages,
   clearOldMessages,
 } from "./queue-bridge.js";
@@ -20,7 +19,6 @@ export function registerXmppCliMetadata(api: OpenClawPluginApi): void {
         logger: logger ?? api.logger,
         getUnprocessedMessages,
         clearOldMessages,
-        messageQueue: getMessageQueue(),
         getContacts: () =>
           contactsStore.get("default") || contactsStore.values().next().value || null,
       });

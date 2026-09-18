@@ -86,15 +86,9 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: failed to set messages.groupChat.visibleReplies (exit $LASTEXITCODE)" -ForegroundColor Yellow
 }
 
-Write-Host "Enforcing groupchat mention gating (reply only when @mentioned)..."
-& openclaw config set "channels.xmpp.groups.*.requireMention" true
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARNING: failed to set channels.xmpp.groups.*.requireMention (exit $LASTEXITCODE)" -ForegroundColor Yellow
-}
-& openclaw config set messages.groupChat.unmentionedInbound room_event
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARNING: failed to set messages.groupChat.unmentionedInbound (exit $LASTEXITCODE)" -ForegroundColor Yellow
-}
+# SECURITY (2.17.0): no mention-only toggles.  The plugin delivers ALL room
+# messages (unmentioned = passive room_event) and replies only when @mentioned,
+# by setting InboundEventKind itself.
 
 Write-Host ""
 Write-Host "============================================"

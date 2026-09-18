@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.16.5)
+## Status: ✅ WORKING (v2.17.0)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -13,10 +13,9 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   stops the ~15-minute NAT/firewall dropouts, MUC re-join after reconnect,
   interactive onboarding (`openclaw xmpp setup`) and `openclaw xmpp doctor`.
 - **v2.12–2.13** — auto-update (`openclaw xmpp update-check` / `update`), and
-  groupchat **mention-only gating** for the agent.
+  groupchat gating for the agent.
 - **v2.14.0–2.14.2** — secure **SFTP** (pinned host key, `xmpp_sftp` tool +
-  `openclaw xmpp sftp`); groupchat dispatch skipped for unmentioned messages
-  (`messages.groupChat.unmentionedInbound`).
+  `openclaw xmpp sftp`); groupchat mention gating (superseded by v2.17.0).
 - **v2.14.4–2.14.6** — full vCard field support (all fields settable and
   persisted, avatar), and **vCard4 (XEP-0292)** published over PEP
   (`urn:xmpp:vcard4`) alongside vcard-temp.
@@ -63,6 +62,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   `.cmd` shims (`npm.cmd`/`npx.cmd`/`openclaw.cmd`) are now spawned via
   `cmd.exe /d /s /c`, tsc's non-zero exit is tolerated when `dist/` was emitted,
   and the release tag is validated.
+- **v2.17.0** — **all room messages are delivered** again (v2.14.2 had dropped
+  unmentioned ones): unmentioned → passive `room_event` (agent sees it, no
+  reply); `@mention` → `user_request` (only the mentioned bot replies). Also
+  fixed `openclaw xmpp queue`/`clear` crashing on a null queue.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -255,32 +258,27 @@ SFTP is configured per account under `channels.xmpp.accounts.<id>.sftp`. It
 }
 ```
 
-### Groupchat mention gating (v2.14.2)
+### Groupchat delivery (v2.17.0)
 
-In MUC rooms the agent is invoked **only when this bot is @mentioned** — its own
-room nick (or its vCard nickname/full name or JID local part). Unmentioned
-chatter is still written to the message log, but it is **never sent to the
-agent** (no model call, no cost). A message that mentions other nicks does not
-wake the bot unless one of the mentions is the bot's own name.
+**All** MUC room messages are delivered to the agent. Whether it **replies** is
+decided by OpenClaw's `InboundEventKind`, which the plugin sets explicitly:
 
-To let the bot answer **all** group messages, opt out:
-```bash
-openclaw config set messages.groupChat.unmentionedInbound user_request
-```
+- `@<this bot>` (its room nick, vCard nickname/full name, or JID local part) or
+  a control command → **`user_request`** → the agent replies.
+- any other room message → **`room_event`** → the agent sees it as room context
+  but does **not** reply (no model call, no cost).
 
-Installers / `openclaw xmpp setup` also set the mention requirement:
-```bash
-openclaw config set "channels.xmpp.groups.*.requireMention" true
-```
+Because each bot computes its own mention, a message that @mentions a specific
+bot is `user_request` only for that bot and `room_event` for the others — so
+**only the intended recipient replies** in a multi-bot room.
 
-- A mention is `@` immediately followed by the bot's own **room nick**, **vCard
-  nickname/full name**, or **JID local part** (case-insensitive, word boundary).
-  A message may mention several nicks; only a mention of the bot's own name
-  counts. Bare names without `@` do not count, and `@othernick` never wakes it.
-- Per-room override (e.g. always reply in one room):
-  ```bash
-  openclaw config set 'channels.xmpp.groups."room@conference.example".requireMention' false
-  ```
+A mention is `@` immediately followed by the bot's own name (case-insensitive,
+word boundary); `@othernick` never counts for this bot. There is no mention-only
+mode and no per-room `requireMention` toggle — the plugin always delivers every
+message and relies on the mention for replies.
+
+> v2.14.2–v2.16.x dropped unmentioned messages entirely; v2.17.0 restores
+> delivery (as passive `room_event`).
 
 ### Password Encryption
 ```bash
@@ -532,7 +530,7 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 ## Features
 
 - Full XMPP protocol with TLS
-- Multi-User Chat (MUC), with **mention-only gating** for the agent (v2.14.2)
+- Multi-User Chat (MUC): **all room messages delivered**; the agent replies only when @mentioned (v2.17.0)
 - Shared sessions between direct chat and groupchat
 - Session memory continuity (experimental)
 - Contact & roster management
@@ -620,7 +618,7 @@ missing `dist/`.)
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.16.5) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.17.0) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -704,6 +702,16 @@ Two Windows/Node ≥18.20.2 issues, fixed in **v2.16.5+**:
 A local workaround patch for older versions is documented at
 `~/.openclaw/workspace/docs/xmpp-updater-windows-node20-fix.md`; it is no longer
 needed once you are on v2.16.5+.
+
+### Room messages aren't reaching the agent
+- v2.14.2–v2.16.x **dropped unmentioned room messages**. Fixed in **v2.17.0+**:
+  every room message is delivered (unmentioned = passive `room_event`; the agent
+  replies only when @mentioned). Update the plugin.
+- The plugin's local message log lives in the account **`dataDir`**
+  (`channels.xmpp.accounts.<id>.dataDir`) under `messages/{direct,group}/`.
+  Installs/updates never delete it (the updater's snapshot/tarball exclude
+  `data`). If the directory looks empty, check the configured `dataDir` — docs
+  like TOOLS.md may point at a stale path.
 
 ## File Layout
 

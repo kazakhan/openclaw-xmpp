@@ -13,31 +13,18 @@ import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } 
 
 export { type GatewayContext } from "./types.js";
 
-// SECURITY (2.14.1): groupchat unmentioned-message policy.
+// SECURITY (2.17.0): groupchat delivery model.
 //
-// OpenClaw's generic channel dispatch reads `InboundEventKind` from the inbound
-// context and defaults it to "user_request" — meaning EVERY group message wakes
-// the agent and is answered like a direct request.  The channel plugin must set
-// it.  For XMPP the default is "room_event" (passive; the bot stays silent
-// unless @mentioned), matching long-standing behaviour.  Operators can opt back
-// into "user_request" via messages.groupChat.unmentionedInbound (or a per-agent
-// agents.entries.<id>.groupChat.unmentionedInbound override).
-function resolveXmppUnmentionedPolicy(
-  cfg: any,
-  agentId?: string,
-): "user_request" | "room_event" {
-  try {
-    const agentVal = agentId
-      ? cfg?.agents?.entries?.[agentId]?.groupChat?.unmentionedInbound
-      : undefined;
-    const globalVal = cfg?.messages?.groupChat?.unmentionedInbound;
-    const v = agentVal ?? globalVal;
-    if (v === "user_request" || v === "room_event") return v;
-  } catch {
-    /* ignore malformed config */
-  }
-  return "room_event";
-}
+// ALL room messages are delivered to the agent.  OpenClaw's channel dispatch
+// reads `InboundEventKind` from the inbound context (defaulting to
+// "user_request", which would make the agent answer every message).  We set it
+// explicitly:
+//   - "@<this bot>" / control command  -> "user_request" (agent replies)
+//   - any other room message           -> "room_event"  (agent sees it as room
+//     context but does NOT reply)
+// Because each bot computes its own mention, a message that @mentions a
+// specific bot is "user_request" only for that bot and "room_event" for the
+// others — so only the intended recipient replies.
 
 interface LifecycleDeps {
   xmppClients: Map<string, XmppClient>;
@@ -490,25 +477,16 @@ export class GatewayLifecycle {
             );
             log.debug(`Store path: ${storePath}`);
 
-            // SECURITY (2.14.2): groupchat mention-only gate.  The agent is
-            // invoked ONLY when the bot is @mentioned in the room (its own
-            // nick) or a control command is addressed to it.  Unmentioned
-            // group chatter is persisted (above) but NEVER dispatched to the
-            // agent — no model call, no cost, and no replies.  Operators can
-            // opt out with messages.groupChat.unmentionedInbound="user_request".
+            // SECURITY (2.17.0): deliver ALL room messages.  The agent is only
+            // asked to REPLY when it was @mentioned (or a control command was
+            // addressed to it); every other room message is dispatched as a
+            // passive "room_event" so the agent sees it as context without
+            // replying.  (Previously unmentioned messages were dropped.)
             const isGroup = !!(roomJid || isGroupChat);
-            if (isGroup) {
-              const mentioned = options?.wasMentioned === true;
-              const hasControlCommand = /(^|\n)\s*\/\S/.test(body || "");
-              const policy = resolveXmppUnmentionedPolicy(ctx.cfg, route.agentId);
-              if (!mentioned && !hasControlCommand && policy !== "user_request") {
-                log.debug(
-                  `groupchat: not @mentioned for nick="${options?.botNick || "?"}" — skipping AI dispatch`,
-                );
-                this.queue.markAsProcessed(messageId);
-                return;
-              }
-            }
+            const mentioned = options?.wasMentioned === true;
+            const hasControlCommand = /(^|\n)\s*\/\S/.test(body || "");
+            const inboundEventKind: "user_request" | "room_event" =
+              isGroup && !mentioned && !hasControlCommand ? "room_event" : "user_request";
 
             const ctxPayload = channelRuntime.reply.finalizeInboundContext({
               Body: body,
@@ -519,6 +497,7 @@ export class GatewayLifecycle {
               SessionKey: route.sessionKey,
               AccountId: route.accountId,
               ChatType: (roomJid || isGroupChat) ? "channel" : "direct",
+              InboundEventKind: inboundEventKind,
               ConversationLabel: options?.room
                 ? `XMPP Groupchat: ${options.room}`
                 : `XMPP: ${senderBareJid}`,
@@ -526,9 +505,7 @@ export class GatewayLifecycle {
               SenderId: senderBareJid,
               Provider: "xmpp",
               Surface: "xmpp",
-              // SECURITY (2.14.2): only reached when the bot was @mentioned in
-              // a group (or a DM).  No group context is injected.
-              WasMentioned: options?.wasMentioned === true,
+              WasMentioned: mentioned,
               CommandAuthorized: true,
               CommandSource: "text",
               OriginatingChannel: "xmpp",

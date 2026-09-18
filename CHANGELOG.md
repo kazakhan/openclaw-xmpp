@@ -5,6 +5,91 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-09-19
+
+**Change: all MUC room messages are delivered to the agent again. The agent
+replies only when @mentioned; the mentioned bot is the only one that replies.
+Also fixes `openclaw xmpp queue` / `clear` crashing on a null queue.**
+
+### Why
+
+Since v2.14.2 the plugin had its own mention gate that **dropped** unmentioned
+room messages (`markAsProcessed(); return;`), so the agent never saw them, and
+it never set `InboundEventKind` — so anything it did dispatch defaulted to
+`user_request` (reply). OpenClaw's channel dispatch reads
+`InboundEventKind` from the inbound context (`?? "user_request"`), which is the
+correct lever.
+
+### Changed
+
+- **`src/gateway.ts`** — removed the mention-gate early return and the
+  `resolveXmppUnmentionedPolicy()` helper. Every room message is now dispatched
+  with an explicit `InboundEventKind`:
+  - `@<this bot>` / control command → `"user_request"` (agent replies),
+  - any other room message → `"room_event"` (agent sees it as room context, no
+    reply, no model call).
+  Each bot computes its own mention, so a message that @mentions a specific bot
+  is `user_request` only for that bot — only the intended recipient replies.
+  `ChatType` stays `"channel"` (groupchat) and `WasMentioned` is still passed.
+- **`src/onboarding.ts`**, **`install.sh`**, **`install.ps1`** — removed the
+  now-dead mention-only toggles (`channels.xmpp.groups.*.requireMention`,
+  `messages.groupChat.unmentionedInbound`); the plugin controls delivery via
+  `InboundEventKind`.
+
+### Fixed
+
+- **`openclaw xmpp queue` / `clear`** crashed with
+  `Cannot read properties of null (reading 'length')`:
+  `cli-metadata.ts` passed `messageQueue: getMessageQueue()` and
+  `queue-bridge.getMessageQueue()` returned `null` when no queue existed for
+  `process.cwd()`. `getMessageQueue(dataDir?)` now creates-or-returns the queue,
+  and `commands.ts` resolves the account `dataDir` (via `loadXmppConfig()`) and
+  reads `queue.all`.
+
+### Tests
+
+- `tests/v2.17.0-groupchat-delivery.test.ts` (new) — `InboundEventKind` set
+  (room_event/user_request), no early-return skip, `ChatType:"channel"`, no
+  mention-only writes in onboarding/installers, and the queue null fix.
+- `tests/v2.14.2-groupchat-mention-gate.test.ts` updated for the new model.
+
+### Notes
+
+- The plugin's local message log (`dataDir/messages/…`) is **not** touched by
+  installs/updates (the updater excludes `data`); if a bot's history looks
+  missing, check its configured `dataDir`.
+
+### Files changed
+
+- `src/gateway.ts`, `src/onboarding.ts`, `src/commands.ts`,
+  `src/cli-metadata.ts`, `src/queue-bridge.ts`, `install.sh`, `install.ps1`,
+  `tests/v2.17.0-groupchat-delivery.test.ts` (new),
+  `tests/v2.14.2-groupchat-mention-gate.test.ts`, `README.md`, `package.json`
+  — 2.17.0
+
+### Backups
+
+- `_backups/2.17.0_20260919_084839/`
+
+### Rollback
+
+```bash
+cd ~/.openclaw/extensions/xmpp
+BK="_backups/2.17.0_20260919_084839"
+cp "$BK/gateway.ts" src/gateway.ts
+cp "$BK/onboarding.ts" src/onboarding.ts
+cp "$BK/commands.ts" src/commands.ts
+cp "$BK/cli-metadata.ts" src/cli-metadata.ts
+cp "$BK/queue-bridge.ts" src/queue-bridge.ts
+cp "$BK/README.md" README.md
+cp "$BK/package.json" package.json
+cp "$BK/CHANGELOG.md" CHANGELOG.md
+cp "$BK/install.sh" install.sh
+cp "$BK/install.ps1" install.ps1
+rm -f tests/v2.17.0-groupchat-delivery.test.ts
+npx tsc
+```
+
 ## [2.16.5] - 2026-09-16
 
 **Fix: `openclaw xmpp update` (and `doctor --fix`) fail on Windows with Node

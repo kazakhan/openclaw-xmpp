@@ -3,6 +3,20 @@ import { spawn } from "child_process";
 import { joinRoom, leaveRoom, getJoinedRooms, inviteToRoom, removeContact } from "./gateway-client.js";
 import { getContactsInstance } from "./lib/contact-factory.js";
 import { RosterStore } from "./roster-store.js";
+import { getMessageQueue } from "./queue-bridge.js";
+import { loadXmppConfig } from "./lib/config-loader.js";
+
+// SECURITY (2.17.0): resolve the account dataDir for the message queue.  The
+// CLI previously used `getMessageQueue()` with no dir, which returned null and
+// crashed `queue`/`clear`.
+function resolveCliDataDir(): string {
+  try {
+    const cfg = loadXmppConfig();
+    return cfg?.dataDir || process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
 
 // Type for the spawn function so tests can inject a mock.  In production
 // this defaults to the real `child_process.spawn`.
@@ -119,7 +133,6 @@ export function registerXmppCli({
   logger,
   getUnprocessedMessages,
   clearOldMessages,
-  messageQueue,
   getContacts
 }: any) {
   const xmpp = program
@@ -358,9 +371,11 @@ export function registerXmppCli({
     .command("clear")
     .description("Clear old messages from queue")
     .action(() => {
-      const oldCount = messageQueue.length;
-      clearOldMessages();
-      console.log(`Cleared ${oldCount - messageQueue.length} old messages`);
+      const dataDir = resolveCliDataDir();
+      const queue = getMessageQueue(dataDir);
+      const oldCount = queue.all.length;
+      clearOldMessages(undefined, dataDir);
+      console.log(`Cleared ${oldCount - queue.all.length} old messages`);
     });
 
   // Subcommand: add <jid> [name]
@@ -513,8 +528,12 @@ export function registerXmppCli({
     .command("queue")
     .description("Show message queue status")
     .action(() => {
-      console.log(`Message queue: ${messageQueue.length} total, ${getUnprocessedMessages().length} unprocessed`);
-      messageQueue.slice(0, 5).forEach((msg, i) => {
+      const dataDir = resolveCliDataDir();
+      const queue = getMessageQueue(dataDir);
+      const all = queue.all;
+      const unprocessed = getUnprocessedMessages(undefined, dataDir);
+      console.log(`Message queue: ${all.length} total, ${unprocessed.length} unprocessed`);
+      all.slice(0, 5).forEach((msg: any, i: number) => {
         console.log(`${i+1}. ${msg.processed ? '✓' : '✗'} [${msg.accountId}] ${msg.from}: ${msg.body.substring(0, 50)}${msg.body.length > 50 ? '...' : ''}`);
       });
     });
