@@ -11,20 +11,28 @@ OpenClaw XMPP channel plugin. Source in `src/` and `index.ts`; compiled output i
 ## Build & test
 
 ```bash
-npx tsc                        # compile to dist/ (some pre-existing TS errors; still emits)
+npx tsc                        # compile to dist/ (clean; 0 errors)
 node --test tests/*.test.ts    # test suite
 npm run typecheck              # tsc --noEmit
 ```
 
-- **Build:** `npx tsc`. It emits despite errors (`noEmitOnError: false`).
+- **Build:** `npx tsc`. TypeScript must resolve `openclaw/plugin-sdk/*`, which
+  needs `moduleResolution: "bundler"` (set in `tsconfig.json`) **and** the
+  `node_modules/openclaw` symlink to the global OpenClaw install. The
+  `postinstall` script (`scripts/link-openclaw-sdk.mjs`) creates it best-effort;
+  the updater/onboarding also call `ensureSdkLink()`. Without the symlink the SDK
+  types can't be found (TS2307). `noEmitOnError: false` still lets it emit.
 - **Test:** `node --test tests/*.test.ts` (Node's built-in runner, TS type-stripping).
 - **Known pre-existing failures** (do NOT "fix" unless asked): the whole-file
   import suites `tests/encryption.test.ts`, `rate-limit.test.ts`,
   `store.test.ts`, `unit.test.ts` (they import `../src/...js` which does not
   resolve under `node --test`), the stale `liveness`/diagnostics tests
   (L2/L3/L10/M1), and the hard-coded `v2.1.5` version tests.
-- **Known pre-existing `tsc` errors:** `openclaw/plugin-sdk/*` TS2307 and one
-  `src/gateway.ts` TS2367.
+- **`tsc` is clean (0 errors)** as of 2.17.1: `module: ESNext` +
+  `moduleResolution: bundler` fix the `openclaw/plugin-sdk/*` TS2307, the tool
+  `execute` params are typed, and the by-construction `src/gateway.ts` TS2367 is
+  suppressed with a scoped `@ts-expect-error` (the pass-through expression is
+  pinned by `tests/high-severity.test.ts` H9).
 - Tests that load real modules are only reliable for dependency-free files
   (e.g. `src/presence.ts`, `src/lib/json-extract.ts`). Most suites are
   source-level (read the file and assert patterns).
@@ -47,7 +55,7 @@ npm run typecheck              # tsc --noEmit
    command lists (CLI + slash), config examples, and File Layout must match the
    code. `tests/readme.test.ts` enforces this and will fail if stale.
 4. **Verify `XMPPAUDIT.md`** if XEP support changed.
-5. `npx tsc` (expect only the pre-existing errors above).
+5. `npx tsc` (expect a clean build, 0 errors).
 6. `node --test tests/*.test.ts` (expect only the pre-existing failures above).
 7. Commit with a `type(version): summary` message (see `git log`).
 8. Push and create a GitHub release using the token in `~/.bashrc`:

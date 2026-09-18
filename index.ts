@@ -28,6 +28,23 @@ export {
   clearOldMessages,
 } from "./src/queue-bridge.js";
 
+// SECURITY (2.17.1): explicit tool param types.  The SDK types `execute`'s
+// params as `unknown` (erased), so annotating them keeps `npx tsc` clean.
+interface PresenceToolParams {
+  show?: string;
+  status?: string;
+  priority?: number;
+  ttlSeconds?: number;
+  clear?: boolean;
+}
+
+interface SftpToolParams {
+  action: "upload" | "download" | "list" | "delete";
+  localPath?: string;
+  remoteName?: string;
+  remoteDir?: string;
+}
+
 export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
   // SECURITY (2.15.0): auto-activity presence (busy while thinking/tooling),
   // driven by the OpenClaw agent-lifecycle hooks.
@@ -287,7 +304,7 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
       ttlSeconds: Type.Optional(Type.Integer({ description: "Auto-revert this status after N seconds (0 = until cleared)", minimum: 0 })),
       clear: Type.Optional(Type.Boolean({ description: "Clear the manual status and return to the default/auto presence" })),
     }),
-    execute: async (toolCallId, params, _signal) => {
+    execute: async (toolCallId, params: PresenceToolParams, _signal) => {
       const client = xmppClients.get("default") || xmppClients.values().next().value;
       if (!client) {
         throw new Error("XMPP client not connected");
@@ -311,7 +328,9 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
         details: undefined,
       };
     },
-  });
+    // `as any`: the SDK's AnyAgentTool type omits `promptSnippet` (it lives on
+    // AgentToolWithMeta and IS honored at runtime).
+  } as any);
 
   // SECURITY (2.14.0): agent SFTP tool (pinned host key; config-driven).
   api.registerTool({
@@ -338,7 +357,7 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
       remoteName: Type.Optional(Type.String({ description: "Remote path/name (upload/download/delete)" })),
       remoteDir: Type.Optional(Type.String({ description: "Remote directory (list); default '.'" })),
     }),
-    execute: async (_toolCallId, params, _signal) => {
+    execute: async (_toolCallId, params: SftpToolParams, _signal) => {
       const { loadSftpConfigFromDisk, sftpUpload, sftpDownload, sftpList, sftpRemove } = await import(
         "./src/sftp.js"
       );
@@ -371,7 +390,7 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
       }
       return { content: [{ type: "text" as const, text }], details: undefined };
     },
-  });
+  } as any);
 }
 
 export default defineBundledChannelEntry({

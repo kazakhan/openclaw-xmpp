@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.17.0)
+## Status: ✅ WORKING (v2.17.1)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -66,6 +66,12 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   unmentioned ones): unmentioned → passive `room_event` (agent sees it, no
   reply); `@mention` → `user_request` (only the mentioned bot replies). Also
   fixed `openclaw xmpp queue`/`clear` crashing on a null queue.
+- **v2.17.1** — **clean TypeScript build** (`npx tsc`, 0 errors). The plugin now
+  uses `module: ESNext` + `moduleResolution: bundler` so `openclaw/plugin-sdk/*`
+  resolves through the package `exports` map, the agent-tool `execute` params are
+  typed, and a `postinstall` script links the global OpenClaw into
+  `node_modules/openclaw` best-effort. Previously the build reported errors (it
+  still emitted) and the official updater relied on that fallback.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -616,9 +622,20 @@ OpenClaw only needs `tsx` when it runs the plugin from the TypeScript source
 plugin directory, then restart. (Or `openclaw xmpp doctor --fix` to rebuild a
 missing `dist/`.)
 
+### `npx tsc` can't find `openclaw/plugin-sdk/*` (TS2307)
+The plugin resolves those subpaths through the package `exports` map, which needs
+`moduleResolution: "bundler"` (set in `tsconfig.json`) **and** a
+`node_modules/openclaw` symlink to the global OpenClaw install. The `postinstall`
+script (`scripts/link-openclaw-sdk.mjs`) creates it best-effort; if it is missing
+(e.g. OpenClaw lives elsewhere), create it manually:
+```bash
+ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
+```
+`openclaw xmpp update` and `openclaw xmpp doctor --fix` also create it.
+
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.17.0) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.17.1) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.

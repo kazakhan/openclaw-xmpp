@@ -516,11 +516,12 @@ export class GatewayLifecycle {
               MediaPaths: options?.mediaPaths || [],
               MediaUrl: options?.mediaUrls?.[0] || null,
               MediaPath: options?.mediaPaths?.[0] || null,
-              // SECURITY (2.0.16): pass the isSystemMessage flag
-              // through to downstream consumers.  Note the current
-              // dispatch is short-circuited above when this is true,
-              // so this only matters for consumers that wire up
-              // their own dispatch path.
+              // SECURITY (2.0.16): pass the isSystemMessage flag through to
+              // downstream consumers.  The dispatch is short-circuited above
+              // (line ~441) when it is true, so by construction this is always
+              // false here — but consumers that wire up their own dispatch
+              // path rely on the flag, so the expression is kept verbatim.
+              // @ts-expect-error TS2367: always false here by construction (see above).
               IsSystemMessage: options?.isSystemMessage === true,
             });
             log.debug("Context finalized");

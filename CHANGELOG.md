@@ -5,6 +5,44 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.1] - 2026-09-19
+
+**Fix: clean TypeScript build (`npx tsc`, 0 errors). The SDK subpaths now resolve
+via `moduleResolution: "bundler"`, the agent-tool params are typed, and the
+build no longer relies on `noEmitOnError`.**
+
+### Why
+
+`openclaw/plugin-sdk/*` resolves through the package `exports` map. With
+`moduleResolution: "node"` TypeScript could not read it, so `npx tsc` reported
+five `TS2307` "cannot find module" errors on `index.ts`. Once the SDK types
+resolved, 32 further type-only errors surfaced (the SDK types the tool
+`execute` params as `unknown`, and `promptSnippet` is not on the SDK's
+`AnyAgentTool`). The build still emitted (`noEmitOnError: false`) and the 2.16.5
+updater tolerated the non-zero exit — but the official updater's build was not
+actually clean.
+
+### Changed
+
+- **`tsconfig.json`** — `module: "ESNext"` + `moduleResolution: "bundler"`
+  (required pair) so `openclaw/plugin-sdk/*` resolves. `noEmitOnError: false`
+  is retained as a safety net.
+- **`index.ts`** — added `PresenceToolParams` / `SftpToolParams` interfaces and
+  annotated both `execute` handlers' `params` (clears 29× `TS2339`); the tool
+  objects are passed `as any` to `registerTool` because the SDK's `AnyAgentTool`
+  omits `promptSnippet` (it is honoured at runtime) (clears 2× `TS2353`).
+- **`src/gateway.ts`** — the by-construction `IsSystemMessage: options?.isSystemMessage
+  === true` `TS2367` (the system path returns earlier) is suppressed with a
+  scoped `@ts-expect-error`; the pass-through expression is kept verbatim because
+  downstream consumers rely on it (pinned by `tests/high-severity.test.ts` H9).
+- **`scripts/link-openclaw-sdk.mjs`** (new) — best-effort `postinstall` that
+  symlinks the global OpenClaw into `node_modules/openclaw` so `npx tsc` can
+  resolve the SDK on a fresh clone; never fails the install.
+- **`AGENTS.md` / `README.md`** — documented the clean build and the SDK-symlink
+  requirement (`TS2307` troubleshooting entry).
+- **`tests/v2.17.1-tsconfig.test.ts`** (new) — guards the tsconfig pair, the
+  postinstall link, the typed tool params, and the gateway suppression.
+
 ## [2.17.0] - 2026-09-19
 
 **Change: all MUC room messages are delivered to the agent again. The agent
