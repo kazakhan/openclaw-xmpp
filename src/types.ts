@@ -311,6 +311,16 @@ export interface PluginRuntime {
   channel: {
     session: Record<string, unknown>;
     reply: Record<string, unknown>;
+    // SECURITY (2.18.0): OpenClaw's channel inbound dispatch surface.  The
+    // plugin dispatches inbound events through `inbound.run` (the shared
+    // ingest -> classify -> resolve -> record -> dispatch -> finalize runner)
+    // instead of the deprecated `dispatchInboundReplyWithBase` shim.
+    inbound?: {
+      run?: (params: Record<string, unknown>) => Promise<unknown>;
+      dispatch?: (params: Record<string, unknown>) => Promise<unknown>;
+      dispatchReply?: (params: Record<string, unknown>) => Promise<unknown>;
+      buildContext?: (params: Record<string, unknown>) => unknown;
+    };
     text?: (session: string, params: Record<string, unknown>) => Promise<unknown>;
     message?: (session: string, params: Record<string, unknown>) => Promise<unknown>;
     activity: { record: (data: unknown) => void };

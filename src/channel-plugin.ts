@@ -1,4 +1,5 @@
 import { sendText, sendMedia } from "./outbound.js";
+import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 import { registerAskUser } from "./lib/ask-user.js";
 import { xmppSecurityAdapter } from "./security/adapter.js";
 import { GatewayLifecycle } from "./gateway.js";
@@ -159,6 +160,15 @@ export const xmppChannelPlugin = {
       return null;
     },
   },
+  // SECURITY (2.18.0): proper channel `message` adapter derived from the
+  // outbound send functions.  It carries real `MessageReceipt` identities, so
+  // message-tool sends settle instead of throwing "No delivery result".
+  message: createChannelMessageAdapterFromOutbound({
+    id: "xmpp",
+    // `as any`: the legacy send functions also return `{ ok: false, error }`
+    // on failure; the bridge type only models the success-shaped receipt.
+    outbound: { sendText: sendText as any, sendMedia: sendMedia as any },
+  }),
   gateway: (() => {
     const lifecycle = new GatewayLifecycle(
       { xmppClients, contactsStore, getPluginRuntime },

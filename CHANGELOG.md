@@ -5,6 +5,63 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-09-19
+
+**Fix: groupchat replies work again. The plugin now dispatches inbound events
+through OpenClaw's shared channel inbound runner and lets the agent decide
+whether to answer — the plugin-side mention gate (`room_event`) is gone. Also
+fixes message-tool sends throwing "No delivery result".**
+
+### Why
+
+v2.17.0 made the plugin set `InboundEventKind` itself, hardcoding
+`room_event` for unmentioned room messages. That is a plugin-side mention gate:
+OpenClaw's own group dispatch classifies the turn from the configured
+unmentioned-group policy (`messages.groupChat.unmentionedInbound`, default
+`user_request`) and the **agent** decides whether to reply. Because the plugin
+overrode that, unmentioned room messages were forced into the strict
+`message_tool_only` path, so the agent's normal reply was suppressed (the log
+showed `visible channel turn dispatched with no queued reply payloads` on every
+room event).
+
+Separately, the channel `outbound.sendText` / `sendMedia` returned only
+`{ ok: true, channel: "xmpp" }`. OpenClaw's `OutboundDeliveryResult` requires a
+real `messageId` identity, so every send that went through the generic outbound
+/ message-tool path settled as `adapter_returned_no_identity` and the gateway
+threw `No delivery result`. Direct CLI sends worked because they use the
+plugin's own `xmpp.sendMessage` RPC, not that path.
+
+### Changed
+
+- **`src/gateway.ts`** — inbound events are dispatched with OpenClaw's channel
+  inbound runner (`runtime.channel.inbound.run`, i.e. `runChannelInboundEvent`):
+  ingest → classify → preflight → resolve → record → dispatch → finalize. The
+  deprecated `dispatchInboundReplyWithBase` shim is gone. `InboundEventKind` is
+  now produced by OpenClaw's `classifyChannelInboundEvent` +
+  `resolveUnmentionedGroupInboundPolicy`, so unmentioned room messages are
+  normal requests unless the operator opts into ambient room events. The
+  plugin's mention detection is passed only as the `wasMentioned` fact.
+- **`src/outbound.ts`** — `sendText` / `sendMedia` return a proper delivery
+  result (`messageId` + `MessageReceipt`), so message-tool sends no longer
+  throw `No delivery result`.
+- **`src/channel-plugin.ts`** — declares a proper channel `message` adapter via
+  `createChannelMessageAdapterFromOutbound`, derived from the outbound sends.
+- **`src/types.ts`** — typed `PluginRuntime.channel.inbound`
+  (`run`/`dispatch`/`dispatchReply`/`buildContext`).
+- **`tests/v2.18.0-outbound-result.test.ts`** (new) — guards the delivery
+  identity + message adapter. Updated the 2.17.0 / 2.14.2 groupchat suites to
+  assert OpenClaw dispatch and the absence of the mention gate.
+- **`README.md` / `AGENTS.md`** — updated the groupchat delivery description.
+
+### Upgrade note
+
+Room replies no longer require an `@mention`. If your config still has
+`messages.groupChat.unmentionedInbound: "room_event"` from an earlier install
+and you want the agent's replies posted automatically, set it to
+`"user_request"` (the OpenClaw default) or remove the key. `"room_event"` keeps
+the room ambient: the agent listens and only posts when it calls the message
+tool.
+
 ## [2.17.1] - 2026-09-19
 
 **Fix: clean TypeScript build (`npx tsc`, 0 errors). The SDK subpaths now resolve

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { xml } from "@xmpp/client";
 import { xmppClients } from "../index.js";
 import { log } from "./lib/logger.js";
@@ -8,6 +9,27 @@ import { safeSend } from "./lib/xmpp-utils.js";
 
 const MAX_CONCURRENT_TRANSFERS = 10;
 const activeDownloads = new Map<string, { size: number; startTime: number }>();
+
+// SECURITY (2.18.0): OpenClaw's `OutboundDeliveryResult` requires a real
+// `messageId` identity (see `resolveReceiptSourceId`).  Returning only
+// `{ ok: true, channel: "xmpp" }` made every message-tool send settle as
+// `adapter_returned_no_identity`, and the gateway then threw
+// "No delivery result".  Every successful send now returns a stable
+// client-generated id plus a matching receipt.
+function buildDeliveryResult() {
+  const messageId = crypto.randomUUID();
+  return {
+    ok: true as const,
+    channel: "xmpp",
+    messageId,
+    receipt: {
+      primaryPlatformMessageId: messageId,
+      platformMessageIds: [messageId],
+      parts: [{ platformMessageId: messageId, kind: "text" as const, index: 0 }],
+      sentAt: Date.now(),
+    },
+  };
+}
 
 export async function sendText({ to, text, accountId }: { to: string; text: string; accountId?: string }) {
   let xmpp = xmppClients.get(accountId || "default");
@@ -131,7 +153,7 @@ export async function sendText({ to, text, accountId }: { to: string; text: stri
       }
     }
 
-    return { ok: true, channel: "xmpp" };
+    return buildDeliveryResult();
   } catch (err) {
     log.error("sendText failed", err);
     return { ok: false, error: String(err) };
@@ -182,7 +204,7 @@ export async function sendMedia(params: Record<string, unknown>): Promise<{ ok: 
       const isFileGroupChat = isGroupChat && !isGroupchatPrivateMessage;
       await (xmpp as any).sendFile(to, localFilePath, text, isFileGroupChat);
       
-      return { ok: true, channel: "xmpp" };
+      return buildDeliveryResult();
     } else {
       const message = text ? `${text}\n${mediaUrl}` : (mediaUrl || '');
       

@@ -37,18 +37,25 @@ describe('Fix 2.14.2: mention detection (src/mention.ts)', () => {
   });
 });
 
-describe('Fix 2.17.0: gateway delivers all room messages (src/gateway.ts)', () => {
-  it('sets InboundEventKind (room_event vs user_request)', async () => {
+describe('Fix 2.18.0: gateway uses OpenClaw dispatch, no mention gate (src/gateway.ts)', () => {
+  it('classifies with OpenClaw (classifyChannelInboundEvent + policy)', async () => {
     const src = await readSource('src/gateway.ts');
-    assert.match(src, /const inboundEventKind:\s*"user_request"\s*\|\s*"room_event"/);
-    assert.match(src, /isGroup && !mentioned && !hasControlCommand \? "room_event" : "user_request"/);
+    assert.match(src, /classifyChannelInboundEvent\(\{/);
+    assert.match(src, /resolveUnmentionedGroupInboundPolicy\(\{/);
     assert.match(src, /InboundEventKind:\s*inboundEventKind/);
+  });
+
+  it('dispatches through runtime.channel.inbound.run', async () => {
+    const src = await readSource('src/gateway.ts');
+    assert.match(src, /channelRuntime\.inbound\.run\(\{/);
+    assert.equal(/dispatchInboundReplyWithBase/.test(src), false);
   });
 
   it('no longer skips unmentioned room messages', async () => {
     const src = await readSource('src/gateway.ts');
     assert.equal(/skipping AI dispatch for .*not @mentioned/.test(src), false);
     assert.equal(/resolveXmppUnmentionedPolicy/.test(src), false);
+    assert.equal(/isGroup && !mentioned && !hasControlCommand \? "room_event"/.test(src), false);
   });
 
   it('room dispatch stays groupchat (ChatType channel)', async () => {

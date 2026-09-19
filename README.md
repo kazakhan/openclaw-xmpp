@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.17.1)
+## Status: ✅ WORKING (v2.18.0)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -62,16 +62,20 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   `.cmd` shims (`npm.cmd`/`npx.cmd`/`openclaw.cmd`) are now spawned via
   `cmd.exe /d /s /c`, tsc's non-zero exit is tolerated when `dist/` was emitted,
   and the release tag is validated.
-- **v2.17.0** — **all room messages are delivered** again (v2.14.2 had dropped
-  unmentioned ones): unmentioned → passive `room_event` (agent sees it, no
-  reply); `@mention` → `user_request` (only the mentioned bot replies). Also
-  fixed `openclaw xmpp queue`/`clear` crashing on a null queue.
+- **v2.17.0** — all room messages delivered (mention gate superseded by
+  v2.18.0). Also fixed `openclaw xmpp queue`/`clear` crashing on a null queue.
 - **v2.17.1** — **clean TypeScript build** (`npx tsc`, 0 errors). The plugin now
   uses `module: ESNext` + `moduleResolution: bundler` so `openclaw/plugin-sdk/*`
   resolves through the package `exports` map, the agent-tool `execute` params are
   typed, and a `postinstall` script links the global OpenClaw into
   `node_modules/openclaw` best-effort. Previously the build reported errors (it
   still emitted) and the official updater relied on that fallback.
+- **v2.18.0** — **groupchat replies work again**: inbound events dispatch
+  through OpenClaw's channel inbound runner (`runtime.channel.inbound.run`) and
+  the **agent decides** whether to reply — the plugin-side mention gate
+  (`room_event`) is removed. Also fixes message-tool sends throwing
+  `No delivery result`: the outbound adapter now returns a real `messageId` +
+  receipt and the channel declares a proper `message` adapter.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -264,27 +268,29 @@ SFTP is configured per account under `channels.xmpp.accounts.<id>.sftp`. It
 }
 ```
 
-### Groupchat delivery (v2.17.0)
+### Groupchat delivery (v2.18.0)
 
-**All** MUC room messages are delivered to the agent. Whether it **replies** is
-decided by OpenClaw's `InboundEventKind`, which the plugin sets explicitly:
+**All** MUC room messages are dispatched to the agent through OpenClaw's shared
+channel inbound runner (`runtime.channel.inbound.run`), and **the agent decides
+whether to reply** — the plugin does not gate on mentions.
 
-- `@<this bot>` (its room nick, vCard nickname/full name, or JID local part) or
-  a control command → **`user_request`** → the agent replies.
-- any other room message → **`room_event`** → the agent sees it as room context
-  but does **not** reply (no model call, no cost).
+`InboundEventKind` is produced by OpenClaw's own classifier
+(`classifyChannelInboundEvent` + `resolveUnmentionedGroupInboundPolicy`), so the
+behavior follows OpenClaw's group policy:
 
-Because each bot computes its own mention, a message that @mentions a specific
-bot is `user_request` only for that bot and `room_event` for the others — so
-**only the intended recipient replies** in a multi-bot room.
+- `messages.groupChat.unmentionedInbound: "user_request"` (**default**) — every
+  room message is a normal request; the agent's final reply posts automatically
+  (it can stay silent with `NO_REPLY`).
+- `messages.groupChat.unmentionedInbound: "room_event"` — ambient room: the
+  agent listens to unmentioned chatter and only posts when it calls the
+  `message` tool. Mentioned messages, control commands, and DMs stay requests.
 
-A mention is `@` immediately followed by the bot's own name (case-insensitive,
-word boundary); `@othernick` never counts for this bot. There is no mention-only
-mode and no per-room `requireMention` toggle — the plugin always delivers every
-message and relies on the mention for replies.
+The bot's own mention is still detected (`src/mention.ts`) and passed as the
+`wasMentioned` fact, but it no longer decides whether the agent runs.
 
-> v2.14.2–v2.16.x dropped unmentioned messages entirely; v2.17.0 restores
-> delivery (as passive `room_event`).
+> v2.14.2–v2.16.x dropped unmentioned messages entirely; v2.17.0 delivered them
+> as passive `room_event` (plugin-side mention gate); v2.18.0 removes the gate
+> and uses OpenClaw's dispatch so the agent decides.
 
 ### Password Encryption
 ```bash
@@ -536,7 +542,7 @@ openclaw xmpp msg user@domain/resource "/sendfile /path/to/file description"
 ## Features
 
 - Full XMPP protocol with TLS
-- Multi-User Chat (MUC): **all room messages delivered**; the agent replies only when @mentioned (v2.17.0)
+- Multi-User Chat (MUC): **all room messages dispatched via OpenClaw's inbound runner; the agent decides whether to reply** (v2.18.0)
 - Shared sessions between direct chat and groupchat
 - Session memory continuity (experimental)
 - Contact & roster management
@@ -635,7 +641,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.17.1) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.0) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -722,8 +728,16 @@ needed once you are on v2.16.5+.
 
 ### Room messages aren't reaching the agent
 - v2.14.2–v2.16.x **dropped unmentioned room messages**. Fixed in **v2.17.0+**:
-  every room message is delivered (unmentioned = passive `room_event`; the agent
-  replies only when @mentioned). Update the plugin.
+  every room message is delivered. v2.17.0 dispatched unmentioned ones as
+  passive `room_event` (a plugin-side mention gate); **v2.18.0** removes that
+  gate and uses OpenClaw's channel inbound runner, so the agent decides.
+- If the agent listens but never posts in a room, check
+  `messages.groupChat.unmentionedInbound`: `"room_event"` keeps the room ambient
+  (the agent must call the `message` tool to post) and requires the agent to
+  have the `message` tool. Set it to `"user_request"` (default) for automatic
+  replies.
+- `No delivery result` on message-tool sends was the missing outbound
+  `messageId` identity; fixed in **v2.18.0**.
 - The plugin's local message log lives in the account **`dataDir`**
   (`channels.xmpp.accounts.<id>.dataDir`) under `messages/{direct,group}/`.
   Installs/updates never delete it (the updater's snapshot/tarball exclude

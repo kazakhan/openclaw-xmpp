@@ -74,3 +74,13 @@ npm run typecheck              # tsc --noEmit
 - CLI commands (`openclaw xmpp …`) route through the running gateway's existing
   connection (in-process client or `openclaw/plugin-sdk/gateway-runtime`); do
   not open a second XMPP connection with the same JID+resource.
+- Inbound dispatch uses OpenClaw's channel inbound runner
+  (`runtime.channel.inbound.run`, i.e. `runChannelInboundEvent`) in
+  `src/gateway.ts`. Do NOT reintroduce the deprecated
+  `dispatchInboundReplyWithBase` shim, and do NOT add a plugin-side mention
+  gate: `InboundEventKind` must come from `classifyChannelInboundEvent` +
+  `resolveUnmentionedGroupInboundPolicy` (default `user_request`), so the
+  **agent** decides whether to reply.
+- Channel sends must return a real `messageId`/`MessageReceipt`
+  (`src/outbound.ts`); an identityless result makes OpenClaw throw
+  `No delivery result`.

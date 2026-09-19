@@ -8,23 +8,30 @@ import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml, getAvailableRid
 import { safeSend } from "./lib/xmpp-utils.js";
 import { registerAskUser, tryAnswerPending } from "./lib/ask-user.js";
 import { xml } from "@xmpp/client";
+import {
+  classifyChannelInboundEvent,
+  resolveUnmentionedGroupInboundPolicy,
+} from "openclaw/plugin-sdk/channel-inbound";
 
 import type { GatewayContext as GatewayContextType, XmppClient, PluginRuntime } from "./types.js";
 
 export { type GatewayContext } from "./types.js";
 
-// SECURITY (2.17.0): groupchat delivery model.
+// SECURITY (2.18.0): groupchat delivery model.
 //
-// ALL room messages are delivered to the agent.  OpenClaw's channel dispatch
-// reads `InboundEventKind` from the inbound context (defaulting to
-// "user_request", which would make the agent answer every message).  We set it
-// explicitly:
-//   - "@<this bot>" / control command  -> "user_request" (agent replies)
-//   - any other room message           -> "room_event"  (agent sees it as room
-//     context but does NOT reply)
-// Because each bot computes its own mention, a message that @mentions a
-// specific bot is "user_request" only for that bot and "room_event" for the
-// others — so only the intended recipient replies.
+// Inbound events are dispatched through OpenClaw's shared channel inbound
+// runner (`runtime.channel.inbound.run`), not the deprecated assembled-reply
+// dispatch shim.  The runner performs
+// ingest -> classify -> preflight -> resolve -> record -> dispatch -> finalize,
+// and the AGENT decides whether to answer — the plugin no longer gates on
+// mentions.
+//
+// `InboundEventKind` is produced by OpenClaw's own classifier
+// (`classifyChannelInboundEvent`) with the configured unmentioned-group policy
+// (`resolveUnmentionedGroupInboundPolicy`, default "user_request").  So an
+// unmentioned room message is a normal request unless the operator explicitly
+// sets `messages.groupChat.unmentionedInbound: "room_event"` for ambient rooms.
+// The plugin's mention detection is only passed in as the `wasMentioned` fact.
 
 interface LifecycleDeps {
   xmppClients: Map<string, XmppClient>;
@@ -126,6 +133,54 @@ export class GatewayLifecycle {
     const runtime = this.deps.getPluginRuntime();
     debugLog("Using pluginRuntime in startAccount");
 
+    // SECURITY (2.18.0): dispatch one inbound turn through OpenClaw's shared
+    // channel inbound runner.  The runner owns classification, session record,
+    // and dispatch; `resolveTurn` supplies the pre-built ctxPayload and the
+    // delivery adapter.  Mirrors core's `dispatchInboundDirectDm`
+    // (channels/direct-dm.ts) and replaces the deprecated assembled-reply
+    // dispatch shim.
+    const runInboundTurn = async (
+      route: any,
+      ctxPayload: any,
+      deliver: (payload: any) => Promise<unknown>,
+    ): Promise<void> => {
+      const channelRuntime = runtime?.channel as any;
+      if (!channelRuntime?.inbound || typeof channelRuntime.inbound.run !== "function") {
+        throw new Error("OpenClaw runtime.channel.inbound.run is not available");
+      }
+      const plan = {
+        cfg: ctx.cfg,
+        channel: "xmpp",
+        accountId: account.accountId,
+        route: { agentId: route.agentId, sessionKey: route.sessionKey },
+        ctxPayload,
+        record: {
+          onRecordError: (err: any) => log.error("Session record error:", err?.message ?? err),
+        },
+        delivery: {
+          deliver,
+          onError: (err: any, info: any) =>
+            log.error(`Dispatch error (kind=${info?.kind ?? "?"}):`, err?.message ?? err),
+        },
+      };
+      await channelRuntime.inbound.run({
+        channel: "xmpp",
+        accountId: account.accountId,
+        raw: ctxPayload,
+        adapter: {
+          ingest: () => ({
+            id: ctxPayload?.MessageSid,
+            timestamp: ctxPayload?.Timestamp ?? Date.now(),
+            rawText: ctxPayload?.RawBody,
+            textForAgent: ctxPayload?.BodyForAgent,
+            textForCommands: ctxPayload?.BodyForCommands,
+            raw: ctxPayload,
+          }),
+          resolveTurn: () => plan,
+        },
+      });
+    };
+
     // Handle agent /sendfile command in response text
     const handleAgentSendFile = async (text: string, to: string, sendXmpp: any, isGroupChat: boolean, messageType: string): Promise<boolean> => {
       if (!text || !text.trim().startsWith('/sendfile')) return false;
@@ -222,10 +277,6 @@ export class GatewayLifecycle {
             accountId: account.accountId,
             peer: { kind: "direct", id: senderBareJid },
           });
-          const storePath = channelRuntime.session.resolveStorePath(
-            ctx.cfg.session?.store,
-            { agentId: route.agentId }
-          );
           const ctxPayload = channelRuntime.reply.finalizeInboundContext({
             Body: fileMessage,
             RawBody: fileMessage,
@@ -252,41 +303,25 @@ export class GatewayLifecycle {
             MediaUrl: null,
             MediaPath: filePath,
           });
-          const mod = await import("openclaw/plugin-sdk/inbound-reply-dispatch");
-          await mod.dispatchInboundReplyWithBase({
-            cfg: ctx.cfg,
-            channel: "xmpp",
-            accountId: account.accountId,
-            route,
-            storePath,
-            ctxPayload,
-            core: { channel: channelRuntime },
-            onRecordError: (err: any) => {
-              log.error("Session record error:", err?.message ?? err);
-            },
-            onDispatchError: (err: any, info: { kind: string }) => {
-              log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
-            },
-            deliver: async (payload: any) => {
-              let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+          await runInboundTurn(route, ctxPayload, async (payload: any) => {
+            let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
+            try {
+              const ask = registerAskUser(payload, {
+                accountId: account.accountId,
+                conversation: fromJidStr.split("/")[0],
+              });
+              if (ask.handled && ask.text) text = ask.text;
+            } catch (askErr) {
+              log.debug("ask_user capture failed", askErr);
+            }
+            if (text && xmpp) {
+              if (await handleAgentSendFile(text, fromJidStr, xmpp, false, "chat")) return;
               try {
-                const ask = registerAskUser(payload, {
-                  accountId: account.accountId,
-                  conversation: fromJidStr.split("/")[0],
-                });
-                if (ask.handled && ask.text) text = ask.text;
-              } catch (askErr) {
-                log.debug("ask_user capture failed", askErr);
+                await xmpp.send(fromJidStr, text);
+              } catch (err) {
+                log.error("Failed to send file transfer response:", err);
               }
-              if (text && xmpp) {
-                if (await handleAgentSendFile(text, fromJidStr, xmpp, false, "chat")) return;
-                try {
-                  await xmpp.send(fromJidStr, text);
-                } catch (err) {
-                  log.error("Failed to send file transfer response:", err);
-                }
-              }
-            },
+            }
           });
           this.queue.markAsProcessed(messageId);
           log.debug("file notification dispatched to agent");
@@ -471,22 +506,25 @@ export class GatewayLifecycle {
             });
             log.debug(`Route resolved: agentId=${route.agentId} sessionKey=${route.sessionKey}`);
 
-            const storePath = channelRuntime.session.resolveStorePath(
-              ctx.cfg.session?.store,
-              { agentId: route.agentId }
-            );
-            log.debug(`Store path: ${storePath}`);
-
-            // SECURITY (2.17.0): deliver ALL room messages.  The agent is only
-            // asked to REPLY when it was @mentioned (or a control command was
-            // addressed to it); every other room message is dispatched as a
-            // passive "room_event" so the agent sees it as context without
-            // replying.  (Previously unmentioned messages were dropped.)
+            // SECURITY (2.18.0): classify the turn with OpenClaw's own channel
+            // classifier + the configured unmentioned-group policy.  The plugin
+            // no longer gates on mentions: an unmentioned room message is a
+            // normal `user_request` (agent decides) unless the operator opts
+            // into ambient room events with
+            // `messages.groupChat.unmentionedInbound: "room_event"`.
             const isGroup = !!(roomJid || isGroupChat);
             const mentioned = options?.wasMentioned === true;
             const hasControlCommand = /(^|\n)\s*\/\S/.test(body || "");
-            const inboundEventKind: "user_request" | "room_event" =
-              isGroup && !mentioned && !hasControlCommand ? "room_event" : "user_request";
+            const inboundEventKind = classifyChannelInboundEvent({
+              conversation: { kind: isGroup ? "channel" : "direct" },
+              unmentionedGroupPolicy: resolveUnmentionedGroupInboundPolicy({
+                cfg: ctx.cfg as any,
+                agentId: route.agentId,
+              }),
+              wasMentioned: mentioned,
+              hasControlCommand,
+              commandSource: "text",
+            });
 
             const ctxPayload = channelRuntime.reply.finalizeInboundContext({
               Body: body,
@@ -526,25 +564,8 @@ export class GatewayLifecycle {
             });
             log.debug("Context finalized");
 
-            log.debug("Importing inbound-reply-dispatch...");
-            const mod = await import("openclaw/plugin-sdk/inbound-reply-dispatch");
-            log.debug("inbound-reply-dispatch loaded");
-
-            await mod.dispatchInboundReplyWithBase({
-              cfg: ctx.cfg,
-              channel: "xmpp",
-              accountId: account.accountId,
-              route,
-              storePath,
-              ctxPayload,
-              core: { channel: channelRuntime },
-              onRecordError: (err: any) => {
-                log.error("Session record error:", err?.message ?? err);
-              },
-              onDispatchError: (err: any, info: { kind: string }) => {
-                log.error(`Dispatch error (kind=${info.kind}):`, err?.message ?? err);
-              },
-              deliver: async (payload: any) => {
+            log.debug("Dispatching via runtime.channel.inbound.run...");
+            await runInboundTurn(route, ctxPayload, async (payload: any) => {
                 let text = payload?.text || payload?.message || payload?.body || JSON.stringify(payload);
                 let jid = roomJid || from;
                 // SECURITY (2.16.0): register/render ask_user prompts so the
@@ -688,7 +709,6 @@ export class GatewayLifecycle {
                 } catch (err) {
                   log.error('[MessageStore] Failed to save outbound:', err);
                 }
-              },
             });
 
             dispatchSuccess = true;
