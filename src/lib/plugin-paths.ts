@@ -40,14 +40,25 @@ export function findStaleInTreeBackupDirs(pluginDir: string, maxDepth = 3): stri
   return found;
 }
 
+// `\\?\` disables Win32 path parsing, so a reserved device entry (`nul`) can
+// be deleted; plain `fs.rm` can fail on the device name.
+function longPath(p: string): string {
+  if (process.platform !== "win32") return p;
+  if (p.startsWith("\\\\?\\")) return p;
+  return "\\\\?\\" + path.resolve(p);
+}
+
 export async function removeStaleInTreeBackups(pluginDir: string): Promise<string[]> {
   const removed: string[] = [];
   for (const dir of findStaleInTreeBackupDirs(pluginDir)) {
-    try {
-      await fs.promises.rm(dir, { recursive: true, force: true });
-      removed.push(dir);
-    } catch {
-      /* best-effort */
+    for (const candidate of [longPath(dir), dir]) {
+      try {
+        await fs.promises.rm(candidate, { recursive: true, force: true });
+        removed.push(dir);
+        break;
+      } catch {
+        /* try the next form */
+      }
     }
   }
   return removed;

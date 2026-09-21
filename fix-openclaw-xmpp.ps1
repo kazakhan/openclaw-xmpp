@@ -34,6 +34,18 @@ foreach ($item in @(
 Write-Host "OpenClaw home: $openclawHome"
 Write-Host "xmpp plugin:   $xmppDir"
 
+# SECURITY (2.18.2): remove in-tree backup/trash dirs.  OpenClaw captures plugin
+# source by walking the extension dir; a Windows reserved device entry (e.g.
+# `nul`) in an old `_backups/` snapshot fails the whole plugin load.  The \\?\
+# prefix lets device names be deleted.
+foreach ($backupName in @("_backups", "_trash")) {
+    $backupPath = Join-Path $xmppDir $backupName
+    if (Test-Path -LiteralPath $backupPath) {
+        Write-Host "Removing in-tree $backupName (can break plugin loading)..."
+        cmd /c rd /s /q "\\?\$backupPath" 2>$null
+    }
+}
+
 # ---- Backup ----
 $backup = "$stateDb.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 Copy-Item -LiteralPath $stateDb -Destination $backup

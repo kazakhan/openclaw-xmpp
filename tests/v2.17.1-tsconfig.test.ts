@@ -28,7 +28,7 @@ describe('2.17.1: tsconfig resolves the OpenClaw SDK', () => {
 
   it('has a best-effort postinstall that links the SDK', async () => {
     const pkg = JSON.parse(await readSource('package.json'));
-    assert.equal(pkg.scripts.postinstall, 'node scripts/link-openclaw-sdk.mjs');
+    assert.match(pkg.scripts.postinstall, /scripts\/link-openclaw-sdk\.mjs/);
     const script = await readSource('scripts/link-openclaw-sdk.mjs');
     assert.match(script, /node_modules.*openclaw|"openclaw"/);
     assert.match(script, /symlinkSync/);

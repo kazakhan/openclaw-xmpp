@@ -16,6 +16,17 @@ fi
 
 cd "$PLUGIN_DIR"
 
+# SECURITY (2.18.2): remove in-tree backup/trash dirs BEFORE install.  OpenClaw
+# captures plugin source by walking the extension dir; a stale `_backups/`
+# snapshot can fail the plugin load.  Runs outside the plugin load, so it
+# repairs a plugin that currently fails to load.
+for backup_name in _backups _trash; do
+    if [ -e "$PLUGIN_DIR/$backup_name" ]; then
+        echo "Removing in-tree $backup_name (can break plugin loading)..."
+        rm -rf "$PLUGIN_DIR/$backup_name"
+    fi
+done
+
 echo "Installing npm dependencies..."
 npm install
 
@@ -55,9 +66,14 @@ openclaw config set plugins.entries.xmpp.enabled true || true
 echo "Enabling groupchat reply delivery..."
 openclaw config set messages.groupChat.visibleReplies automatic || true
 
-# SECURITY (2.17.0): no mention-only toggles.  The plugin delivers ALL room
-# messages (unmentioned = passive room_event) and replies only when @mentioned,
-# by setting InboundEventKind itself.
+# SECURITY (2.18.1): the plugin needs the conversation hooks
+# (before_agent_run/agent_end) for presence auto-activity.
+echo "Enabling conversation hooks..."
+openclaw config set plugins.entries.xmpp.hooks.allowConversationAccess true || true
+
+# SECURITY (2.18.0): no mention-only toggles.  The plugin dispatches every room
+# message through OpenClaw's channel inbound runner; the agent decides whether
+# to reply.
 
 echo ""
 echo "============================================"

@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.1)
+## Status: ✅ WORKING (v2.18.2)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -82,6 +82,10 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   failed plugin loading), `doctor --fix` removes stale in-tree backups and sets
   `plugins.entries.xmpp.hooks.allowConversationAccess=true`, and the updater has
   a shell fallback for locked-down Windows environments.
+- **v2.18.2** — **pre-load repair**: the postinstall script and the installers
+  remove in-tree `_backups`/`_trash` and Windows reserved-name entries *without
+  loading the plugin*, so a Windows install that fails with `Cannot capture
+  plugin source ...\nul` recovers by re-running the installer.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -647,7 +651,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.1) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.2) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -758,10 +762,17 @@ the Windows scheduled task is `C:\Windows\System32`. It now uses the account
 ### Windows: plugin fails to load with `Cannot capture plugin source ...\nul`
 OpenClaw captures plugin source by walking the extension directory; a rollback
 snapshot left inside it (`_backups/`) can contain a Windows reserved device entry
-(`nul`) and fail the load. Fixed in **v2.18.1** (snapshots now go to
-`~/.openclaw/_backups/xmpp/`). Because the plugin cannot self-heal while it fails
-to load, delete the in-tree `_backups/` directory once, then run
-`openclaw xmpp doctor --fix`.
+(`nul`) and fail the load. **v2.18.1** stopped creating in-tree snapshots (they
+go to `~/.openclaw/_backups/xmpp/`). **v2.18.2** adds a pre-load repair: the
+plugin fails *before* any plugin code runs, so the plugin cannot self-heal —
+re-run the installer (`install.ps1`), which purges in-tree backups before
+install, or delete the dir once with the `\\?\` prefix (bypasses device-name
+parsing):
+```powershell
+cmd /c rd /s /q "\\?\%USERPROFILE%\.openclaw\extensions\xmpp\_backups"
+openclaw gateway restart
+```
+Then `openclaw xmpp doctor --fix` removes any remaining in-tree backup dirs.
 
 ### `typed hook "before_agent_run" blocked ... allowConversationAccess=true`
 OpenClaw drops the conversation hooks (`before_agent_run`/`agent_end`) for
@@ -784,6 +795,9 @@ xmpp/
 ├── tsconfig.json               # TypeScript compiler configuration
 ├── install.sh                  # Linux install script
 ├── install.ps1                 # Windows install script
+├── scripts/
+│   ├── purge-in-tree-backups.mjs # postinstall: remove in-tree backups (pre-load repair)
+│   └── link-openclaw-sdk.mjs   # postinstall: link the global OpenClaw SDK for tsc
 ├── src/
 │   ├── gateway.ts            # Gateway lifecycle (start/stop account, message dispatch)
 │   ├── startXMPP.ts          # XMPP client setup, stanza handler, reconnection, presence

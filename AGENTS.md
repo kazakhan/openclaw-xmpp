@@ -45,7 +45,10 @@ npm run typecheck              # tsc --noEmit
   inside the extension directory: OpenClaw captures plugin source by walking it,
   and an in-tree `_backups/` dir can contain a Windows reserved device entry
   (`nul`) that fails the whole plugin load.  `openclaw xmpp doctor --fix` removes
-  any stale in-tree backups.
+  any stale in-tree backups.  Because the plugin cannot self-heal (it fails
+  before loading), the pre-load repair lives outside it: the `postinstall`
+  script `scripts/purge-in-tree-backups.mjs` and the `install.*` scripts purge
+  in-tree `_backups`/`_trash` + reserved-name entries.
 - **CHANGELOG.md**: add a new entry **at the top** and bump `package.json`;
   never edit previous entries.
 - Do not commit `dist/` (git-ignored). Rebuild it locally.
@@ -54,7 +57,8 @@ npm run typecheck              # tsc --noEmit
 
 ## Release checklist (run for EVERY release)
 
-1. Back up all files to be edited to `_backups/<version>_<timestamp>/`.
+1. Back up all files to be edited to
+   `~/.openclaw/_backups/xmpp/<version>_<timestamp>/` (never in-tree).
 2. Update `CHANGELOG.md` (new top entry); bump `package.json` version.
 3. **Verify `README.md` is current** — Status/version, feature highlights, the
    command lists (CLI + slash), config examples, and File Layout must match the

@@ -5,6 +5,49 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.2] - 2026-09-21
+
+**Fix: pre-load repair for a bricked Windows install. The plugin can fail to
+load (`Cannot capture plugin source ...\\_backups\\...\\nul`) before any plugin
+code runs, so it cannot self-heal; the postinstall script and the installers now
+remove in-tree backup/trash and Windows reserved-name entries WITHOUT loading
+the plugin.**
+
+### Why
+
+v2.18.1 stopped *creating* in-tree snapshots and added `openclaw xmpp doctor
+--fix`, but a machine that already has an in-tree `_backups/.../nul` still
+fails to load, so the CLI (and the plugin's own cleanup) never runs.  The
+repair has to happen outside the plugin load.
+
+### Changed
+
+- **`scripts/purge-in-tree-backups.mjs`** (new) — removes in-tree
+  `_backups`/`_trash` dirs and Windows reserved-name entries, using
+  `\\?\`-prefixed paths on win32 so device names (`nul`) can be deleted.
+  Chained into `postinstall` (runs on `npm install`, outside the plugin load).
+- **`install.ps1` / `install.sh`** — purge in-tree `_backups`/`_trash` before
+  install; also set `plugins.entries.xmpp.hooks.allowConversationAccess=true`.
+- **`src/updater.ts`** — `purgeInTreeBackups()` runs at the start of
+  `performUpdate`.
+- **`src/lib/plugin-paths.ts`** — `removeStaleInTreeBackups()` uses the `\\?\`
+  prefix on win32 so `doctor --fix` can remove a `nul`-containing dir.
+- **`fix-openclaw-xmpp.ps1` / `.mjs`** — purge in-tree backups.
+- **`tests/v2.18.2-preload-repair.test.ts`** (new) — includes an end-to-end run
+  of the purge script against a `_backups/.../nul` tree.
+- **`README.md` / `AGENTS.md`** — documented the pre-load repair.
+
+### Upgrade note
+
+If a Windows install fails to load with
+`Cannot capture plugin source ...\\_backups\\...\\nul`, either re-run the
+installer (`install.ps1`) — it purges the dir before install — or delete it
+once with the `\\?\` prefix, then `openclaw gateway restart`:
+
+```powershell
+cmd /c rd /s /q "\\?\%USERPROFILE%\.openclaw\extensions\xmpp\_backups"
+```
+
 ## [2.18.1] - 2026-09-21
 
 **Fix: Windows hardening. The message queue no longer writes to

@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/xmpp",
-  "version": "2.18.1",
+  "version": "2.18.2",
   "description": "XMPP channel plugin for OpenClaw with file transfer and whiteboard support",
   "private": false,
   "type": "module",
@@ -32,7 +32,7 @@
     "lint": "echo \"Linting not configured\"",
     "typecheck": "npx tsc --noEmit",
     "build": "npx tsc",
-    "postinstall": "node scripts/link-openclaw-sdk.mjs"
+    "postinstall": "node scripts/purge-in-tree-backups.mjs && node scripts/link-openclaw-sdk.mjs"
   },
   "keywords": [
     "openclaw",

@@ -15,6 +15,19 @@ if (-not (Test-Path $PluginDir)) {
 
 Set-Location $PluginDir
 
+# SECURITY (2.18.2): remove in-tree backup/trash dirs BEFORE install.  OpenClaw
+# captures plugin source by walking the extension dir; a Windows reserved device
+# entry (e.g. `nul`) in an old `_backups/` snapshot fails the whole plugin load.
+# Use the \\?\ prefix so device names can be deleted.  This runs outside the
+# plugin load, so it repairs a plugin that currently fails to load.
+foreach ($backupName in @("_backups", "_trash")) {
+    $backupPath = Join-Path $PluginDir $backupName
+    if (Test-Path -LiteralPath $backupPath) {
+        Write-Host "Removing in-tree $backupName (can break plugin loading)..."
+        cmd /c rd /s /q "\\?\$backupPath" 2>$null
+    }
+}
+
 if (-not (Test-Path "$PluginDir\package.json")) {
     Write-Host "Cloning repository..."
     git clone https://github.com/kazakhan/openclaw-xmpp.git "$PluginDir"
@@ -86,9 +99,17 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: failed to set messages.groupChat.visibleReplies (exit $LASTEXITCODE)" -ForegroundColor Yellow
 }
 
-# SECURITY (2.17.0): no mention-only toggles.  The plugin delivers ALL room
-# messages (unmentioned = passive room_event) and replies only when @mentioned,
-# by setting InboundEventKind itself.
+# SECURITY (2.18.1): the plugin needs the conversation hooks
+# (before_agent_run/agent_end) for presence auto-activity.
+Write-Host "Enabling conversation hooks..."
+& openclaw config set plugins.entries.xmpp.hooks.allowConversationAccess true
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: failed to set plugins.entries.xmpp.hooks.allowConversationAccess (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
+# SECURITY (2.18.0): no mention-only toggles.  The plugin dispatches every room
+# message through OpenClaw's channel inbound runner; the agent decides whether
+# to reply.
 
 Write-Host ""
 Write-Host "============================================"

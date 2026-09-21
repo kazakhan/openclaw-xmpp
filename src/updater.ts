@@ -53,6 +53,30 @@ export function isWindowsReservedName(name: string): boolean {
   return WINDOWS_RESERVED_NAME.test(name);
 }
 
+// SECURITY (2.18.2): remove any in-tree backup/trash dirs before snapshotting.
+// A leftover in-tree `_backups/` dir can break plugin source capture on Windows
+// (a `nul` entry), so updates clean it as well as writing new snapshots
+// out-of-tree.  Uses `\\?\` on win32 so a reserved device entry can be deleted.
+export function purgeInTreeBackups(pluginDir: string): string[] {
+  const removed: string[] = [];
+  for (const name of ["_backups", "_trash"]) {
+    const target = path.join(pluginDir, name);
+    if (!fs.existsSync(target)) continue;
+    const candidates =
+      process.platform === "win32" ? ["\\\\?\\" + path.resolve(target), target] : [target];
+    for (const candidate of candidates) {
+      try {
+        fs.rmSync(candidate, { recursive: true, force: true });
+        removed.push(target);
+        break;
+      } catch {
+        /* try the next form */
+      }
+    }
+  }
+  return removed;
+}
+
 // --- version helpers -------------------------------------------------------
 
 function parseSemver(v: string): number[] {
@@ -303,6 +327,9 @@ export async function performUpdate(
   opts: { pluginDir?: string; dryRun?: boolean } = {},
 ): Promise<UpdateResult> {
   const dir = opts.pluginDir || pluginDirFallback();
+  // SECURITY (2.18.2): clear any in-tree backup/trash dirs (a `nul` entry there
+  // can break plugin loading on Windows) before doing anything else.
+  purgeInTreeBackups(dir);
   const current = getCurrentVersion(dir);
 
   let latest: string;

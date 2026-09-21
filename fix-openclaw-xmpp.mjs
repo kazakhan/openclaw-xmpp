@@ -1,6 +1,31 @@
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const [xmppDir, stateDb, pluginId, pkgName, pkgVer, manifestHash, manifestPath] = process.argv.slice(2);
+
+// SECURITY (2.18.2): remove in-tree backup/trash dirs.  OpenClaw captures plugin
+// source by walking the extension dir; a Windows reserved device entry (e.g.
+// `nul`) in an old `_backups/` snapshot fails the whole plugin load.  The \\?\
+// prefix lets device names be deleted.
+function purgeInTreeBackups(dir) {
+  for (const name of ['_backups', '_trash']) {
+    const target = path.join(dir, name);
+    if (!fs.existsSync(target)) continue;
+    const candidates =
+      process.platform === 'win32' ? ['\\\\?\\' + path.resolve(target), target] : [target];
+    for (const candidate of candidates) {
+      try {
+        fs.rmSync(candidate, { recursive: true, force: true });
+        console.log(`Removed in-tree ${name}: ${target}`);
+        break;
+      } catch {
+        /* try the next form */
+      }
+    }
+  }
+}
+purgeInTreeBackups(xmppDir);
 
 const toPath = (p) => p.replaceAll('\\', '/');
 
