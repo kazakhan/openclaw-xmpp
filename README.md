@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.0)
+## Status: ✅ WORKING (v2.18.1)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -76,6 +76,12 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   (`room_event`) is removed. Also fixes message-tool sends throwing
   `No delivery result`: the outbound adapter now returns a real `messageId` +
   receipt and the channel declares a proper `message` adapter.
+- **v2.18.1** — **Windows hardening**: the message queue no longer writes to
+  `C:\Windows\System32` (it uses the account `dataDir`), rollback snapshots move
+  out of the extension dir (an in-tree `_backups/` snapshot with a `nul` entry
+  failed plugin loading), `doctor --fix` removes stale in-tree backups and sets
+  `plugins.entries.xmpp.hooks.allowConversationAccess=true`, and the updater has
+  a shell fallback for locked-down Windows environments.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -641,7 +647,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.0) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.1) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -744,6 +750,29 @@ needed once you are on v2.16.5+.
   `data`). If the directory looks empty, check the configured `dataDir` — docs
   like TOOLS.md may point at a stale path.
 
+### Windows: `failed to write C:\Windows\System32\message-queue.json: EPERM`
+Fixed in **v2.18.1**. The queue used to fall back to `process.cwd()`, which for
+the Windows scheduled task is `C:\Windows\System32`. It now uses the account
+`dataDir` and a writable per-user fallback.
+
+### Windows: plugin fails to load with `Cannot capture plugin source ...\nul`
+OpenClaw captures plugin source by walking the extension directory; a rollback
+snapshot left inside it (`_backups/`) can contain a Windows reserved device entry
+(`nul`) and fail the load. Fixed in **v2.18.1** (snapshots now go to
+`~/.openclaw/_backups/xmpp/`). Because the plugin cannot self-heal while it fails
+to load, delete the in-tree `_backups/` directory once, then run
+`openclaw xmpp doctor --fix`.
+
+### `typed hook "before_agent_run" blocked ... allowConversationAccess=true`
+OpenClaw drops the conversation hooks (`before_agent_run`/`agent_end`) for
+non-bundled plugins unless `plugins.entries.xmpp.hooks.allowConversationAccess`
+is `true`; without it the presence auto-activity is disabled. **v2.18.1** sets it
+in `openclaw xmpp setup`; to fix an existing install run
+`openclaw xmpp doctor --fix`, or:
+```bash
+openclaw config set plugins.entries.xmpp.hooks.allowConversationAccess true
+```
+
 ## File Layout
 
 ```
@@ -784,7 +813,7 @@ xmpp/
 │   ├── channel-plugin.ts     # Channel plugin descriptor
 │   ├── cli-metadata.ts       # CLI metadata builder
 │   ├── cli-encrypt.ts        # Password encryption CLI
-│   ├── queue-bridge.ts       # Message queue bridge
+│   ├── queue-bridge.ts       # Message queue bridge (per-account dataDir; never cwd)
 │   ├── gateway-client.ts     # Gateway RPC client (in-process SDK + spawn fallback)
 │   ├── security/
 │   │   ├── adapter.ts        # Security adapter for OpenClaw SDK
@@ -793,6 +822,7 @@ xmpp/
 │   │   └── fileTransfer.ts   # Secure file transfer (MIME, quarantine)
 │   ├── lib/
 │   │   ├── logger.ts         # Logging utilities
+│   │   ├── plugin-paths.ts   # In-tree backup cleanup + conversation-hook flag
 │   │   ├── upload-protocol.ts # HTTP File Upload (XEP-0363)
 │   │   ├── vcard-protocol.ts # vCard (XEP-0054) helpers
 │   │   ├── vcard4-protocol.ts # vCard4 (XEP-0292) helpers

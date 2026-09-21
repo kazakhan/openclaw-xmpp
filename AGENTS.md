@@ -39,8 +39,13 @@ npm run typecheck              # tsc --noEmit
 
 ## Conventions
 
-- **Back up every file you edit** to `_backups/<version>_<timestamp>/` before
-  editing (e.g. `_backups/2.15.2_20260915_000353/`).
+- **Back up every file you edit** to
+  `~/.openclaw/_backups/xmpp/<version>_<timestamp>/` before editing (e.g.
+  `~/.openclaw/_backups/xmpp/2.18.1_20260921_100807/`).  **Never** put backups
+  inside the extension directory: OpenClaw captures plugin source by walking it,
+  and an in-tree `_backups/` dir can contain a Windows reserved device entry
+  (`nul`) that fails the whole plugin load.  `openclaw xmpp doctor --fix` removes
+  any stale in-tree backups.
 - **CHANGELOG.md**: add a new entry **at the top** and bump `package.json`;
   never edit previous entries.
 - Do not commit `dist/` (git-ignored). Rebuild it locally.
@@ -84,3 +89,10 @@ npm run typecheck              # tsc --noEmit
 - Channel sends must return a real `messageId`/`MessageReceipt`
   (`src/outbound.ts`); an identityless result makes OpenClaw throw
   `No delivery result`.
+- Never default a data path to `process.cwd()`: the Windows gateway runs as a
+  scheduled task with cwd `C:\Windows\System32`.  The queue uses the account
+  `dataDir` with `defaultQueueDir()` as a writable fallback (`src/queue-bridge.ts`).
+- Non-bundled plugins need
+  `plugins.entries.xmpp.hooks.allowConversationAccess=true` for the
+  `before_agent_run`/`agent_end` conversation hooks (presence auto-activity);
+  `openclaw xmpp setup` and `doctor --fix` set it.

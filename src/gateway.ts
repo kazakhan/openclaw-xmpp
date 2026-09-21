@@ -7,6 +7,7 @@ import { MessageStore } from "./messageStore.js";
 import { parseSvgPathCommands, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
 import { safeSend } from "./lib/xmpp-utils.js";
 import { registerAskUser, tryAnswerPending } from "./lib/ask-user.js";
+import { defaultQueueDir } from "./queue-bridge.js";
 import { xml } from "@xmpp/client";
 import {
   classifyChannelInboundEvent,
@@ -124,7 +125,9 @@ export class GatewayLifecycle {
     //    previous conflict cycle.
 
     // Initialize message store for persistence
-    const dataDir = config.dataDir || path.join(process.cwd(), 'data');
+    // SECURITY (2.18.1): never fall back to process.cwd() (the Windows
+    // scheduled task's cwd is C:\Windows\System32).
+    const dataDir = config.dataDir || defaultQueueDir();
     const messageStore = new MessageStore(dataDir);
 
     let isRunning = true;
@@ -265,7 +268,7 @@ export class GatewayLifecycle {
         from: fromJidStr,
         body: fileMessage,
         accountId: account.accountId,
-      });
+      }, dataDir);
 
       // Dispatch through the runtime pipeline
       if (runtime?.channel) {
@@ -323,7 +326,7 @@ export class GatewayLifecycle {
               }
             }
           });
-          this.queue.markAsProcessed(messageId);
+          this.queue.markAsProcessed(messageId, dataDir);
           log.debug("file notification dispatched to agent");
         } catch (err) {
           log.error("[FILE] Error dispatching file notification:", err);
@@ -382,7 +385,7 @@ export class GatewayLifecycle {
           from: from,
           body: body,
           accountId: account.accountId,
-        });
+        }, dataDir);
 
         log.debug("message queued", { id: messageId });
 
@@ -413,7 +416,7 @@ export class GatewayLifecycle {
               } catch (sendErr) {
                 log.error("ask_user answer reply failed", sendErr);
               }
-              this.queue.markAsProcessed(messageId);
+              this.queue.markAsProcessed(messageId, dataDir);
               return;
             }
             if (answer.closed) {
@@ -475,7 +478,7 @@ export class GatewayLifecycle {
         // dispatch but keep the persisted record (above).
         if (options?.isSystemMessage === true) {
           log.debug("skipping AI dispatch for system message", { from: senderBareJid });
-          this.queue.markAsProcessed(messageId);
+          this.queue.markAsProcessed(messageId, dataDir);
           return;
         }
 
@@ -712,7 +715,7 @@ export class GatewayLifecycle {
             });
 
             dispatchSuccess = true;
-            this.queue.markAsProcessed(messageId);
+            this.queue.markAsProcessed(messageId, dataDir);
             log.info(`Dispatch SUCCESS for ${senderBareJid}`);
           } catch (err) {
             log.error("DISPATCH BLOCK FAILED:");

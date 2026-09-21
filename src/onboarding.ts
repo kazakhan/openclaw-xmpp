@@ -4,6 +4,15 @@ import os from "os";
 import { execFileSync } from "child_process";
 import { createInterface } from "node:readline";
 import { encryptPasswordInConfig } from "./security/encryption.js";
+import {
+  IN_TREE_BACKUP_DIRS,
+  findStaleInTreeBackupDirs as findStaleInTreeBackupDirsIn,
+  removeStaleInTreeBackups as removeStaleInTreeBackupsIn,
+  isConversationAccessEnabled,
+  enableConversationAccess,
+} from "./lib/plugin-paths.js";
+
+export { IN_TREE_BACKUP_DIRS, isConversationAccessEnabled, enableConversationAccess };
 
 export interface OnboardingOptions {
   configPath?: string;
@@ -29,12 +38,29 @@ function homedir(): string {
   return os.homedir();
 }
 
-function resolveConfigPath(configPath?: string): string {
+export function resolveConfigPath(configPath?: string): string {
   return configPath || path.join(homedir(), ".openclaw", "openclaw.json");
 }
 
-function resolvePluginDir(pluginDir?: string): string {
+export function resolvePluginDir(pluginDir?: string): string {
   return pluginDir || path.join(homedir(), ".openclaw", "extensions", "xmpp");
+}
+
+// SECURITY (2.18.1): in-tree backup/trash cleanup + conversation-hook flag.
+// The implementations live in `./lib/plugin-paths.js` (dependency-free) so
+// they can be unit-tested under `node --test`; these wrappers default the
+// plugin dir to this install.
+export function findStaleInTreeBackupDirs(
+  pluginDir: string = resolvePluginDir(),
+  maxDepth = 3,
+): string[] {
+  return findStaleInTreeBackupDirsIn(pluginDir, maxDepth);
+}
+
+export async function removeStaleInTreeBackups(
+  pluginDir: string = resolvePluginDir(),
+): Promise<string[]> {
+  return removeStaleInTreeBackupsIn(pluginDir);
 }
 
 function isTty(stream: NodeJS.ReadableStream | undefined): boolean {
@@ -315,6 +341,8 @@ export interface PluginDiagnostics {
   distExists: boolean;
   tsxAvailable: boolean;
   entryKind: "dist" | "ts";
+  staleBackupDirs: string[];
+  conversationAccessAllowed: boolean;
   problems: string[];
   fixes: string[];
   ready: boolean;
@@ -340,8 +368,39 @@ export function diagnosePluginState(
   const distExists = fs.existsSync(path.join(pluginDir, "dist"));
   const tsxAvailable = tsxResolvable(pluginDir);
   const entryKind: "dist" | "ts" = distExists ? "dist" : "ts";
+  const staleBackupDirs = findStaleInTreeBackupDirs(pluginDir);
+  let config: any = {};
+  try {
+    // readOpenclawConfig is async; use a sync best-effort read for diagnostics.
+    config = JSON.parse(fs.readFileSync(resolveConfigPath(configPath), "utf8"));
+  } catch {
+    config = {};
+  }
+  const conversationAccessAllowed = isConversationAccessEnabled(config);
   const problems: string[] = [];
   const fixes: string[] = [];
+
+  if (staleBackupDirs.length > 0) {
+    problems.push(
+      `In-tree backup/trash dirs found (${staleBackupDirs.join(", ")}). OpenClaw walks the ` +
+        "extension directory when capturing plugin source; a rollback snapshot there can contain " +
+        "a Windows reserved device entry (e.g. `nul`) and fail the whole plugin load.",
+    );
+    fixes.push(
+      "Run:  openclaw xmpp doctor --fix   (removes these dirs; new snapshots go to ~/.openclaw/_backups/xmpp/).",
+    );
+  }
+
+  if (!conversationAccessAllowed) {
+    problems.push(
+      "plugins.entries.xmpp.hooks.allowConversationAccess is not true: OpenClaw drops the " +
+        "`before_agent_run`/`agent_end` conversation hooks (presence auto-activity).",
+    );
+    fixes.push(
+      "Run:  openclaw xmpp doctor --fix   (sets plugins.entries.xmpp.hooks.allowConversationAccess=true), " +
+        "or `openclaw xmpp setup`.",
+    );
+  }
 
   if (!distExists) {
     problems.push(
@@ -364,7 +423,7 @@ export function diagnosePluginState(
     fixes.push("You can also run:  openclaw xmpp setup   (it rebuilds dist/ automatically).");
   }
 
-  if (distExists && entryKind === "dist") {
+  if (problems.length === 0 && distExists && entryKind === "dist") {
     problems.push("No issues found: the compiled dist/ is present, so OpenClaw loads the plugin as plain JS.");
   }
 
@@ -373,6 +432,8 @@ export function diagnosePluginState(
     distExists,
     tsxAvailable,
     entryKind,
+    staleBackupDirs,
+    conversationAccessAllowed,
     problems,
     fixes,
     ready: distExists,
@@ -502,6 +563,12 @@ export async function runXmppOnboarding(options: OnboardingOptions = {}): Promis
   // are `user_request`), so onboarding no longer writes the old mention-only
   // toggles (`channels.xmpp.groups.*.requireMention`,
   // `messages.groupChat.unmentionedInbound`).
+  //
+  // SECURITY (2.18.1): OpenClaw drops the conversation hooks
+  // (`before_agent_run`/`agent_end`) for non-bundled plugins unless
+  // `plugins.entries.xmpp.hooks.allowConversationAccess=true`.  Enable it so
+  // the presence auto-activity hooks work out of the box.
+  enableConversationAccess(merged);
 
   try {
     await writeOpenclawConfig(configPath, merged);

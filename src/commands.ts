@@ -3,18 +3,20 @@ import { spawn } from "child_process";
 import { joinRoom, leaveRoom, getJoinedRooms, inviteToRoom, removeContact } from "./gateway-client.js";
 import { getContactsInstance } from "./lib/contact-factory.js";
 import { RosterStore } from "./roster-store.js";
-import { getMessageQueue } from "./queue-bridge.js";
+import { getMessageQueue, defaultQueueDir } from "./queue-bridge.js";
 import { loadXmppConfig } from "./lib/config-loader.js";
 
 // SECURITY (2.17.0): resolve the account dataDir for the message queue.  The
 // CLI previously used `getMessageQueue()` with no dir, which returned null and
 // crashed `queue`/`clear`.
+// SECURITY (2.18.1): never fall back to process.cwd() (the Windows scheduled
+// task's cwd is C:\Windows\System32).
 function resolveCliDataDir(): string {
   try {
     const cfg = loadXmppConfig();
-    return cfg?.dataDir || process.cwd();
+    return cfg?.dataDir || defaultQueueDir();
   } catch {
-    return process.cwd();
+    return defaultQueueDir();
   }
 }
 
@@ -355,7 +357,7 @@ export function registerXmppCli({
     .command("poll")
     .description("Poll queued messages")
     .action(() => {
-      const unprocessed = getUnprocessedMessages();
+      const unprocessed = getUnprocessedMessages(undefined, resolveCliDataDir());
       if (unprocessed.length === 0) {
         console.log("No unprocessed messages in queue");
       } else {
@@ -1113,9 +1115,18 @@ Note: Commands run through the running gateway's XMPP connection.`);
     .command("doctor")
     .description("Diagnose the XMPP plugin install (missing dist/ or tsx) and show how to fix it")
     .option("--config <path>", "Override the openclaw.json config path")
-    .option("--fix", "Rebuild the missing dist/ output automatically")
+    .option("--fix", "Rebuild dist/, remove stale in-tree backups, and enable conversation hooks")
     .action(async (options: any) => {
-      const { diagnosePluginState, ensureDistBuilt } = await import('./onboarding.js');
+      const {
+        diagnosePluginState,
+        ensureDistBuilt,
+        removeStaleInTreeBackups,
+        enableConversationAccess,
+        readOpenclawConfig,
+        writeOpenclawConfig,
+        resolveConfigPath,
+        isConversationAccessEnabled,
+      } = await import('./onboarding.js');
       const { inspectSaslScram, REQUIRED_SASL_SCRAM_VERSION } = await import('./lib/sasl-dep.js');
       const report = diagnosePluginState(undefined, options?.config);
       const sasl = inspectSaslScram(report.pluginDir);
@@ -1124,6 +1135,8 @@ Note: Commands run through the running gateway's XMPP connection.`);
       console.log(`  dist/ present:     ${report.distExists ? "yes" : "NO"}`);
       console.log(`  tsx available:     ${report.tsxAvailable ? "yes" : "NO"}`);
       console.log(`  entry OpenClaw uses: ${report.entryKind === "dist" ? "dist/index.js (compiled JS)" : "index.ts (needs tsx)"}`);
+      console.log(`  stale in-tree backups: ${report.staleBackupDirs.length > 0 ? report.staleBackupDirs.join(", ") : "none"}`);
+      console.log(`  conversation hooks: ${report.conversationAccessAllowed ? "allowed" : "BLOCKED (allowConversationAccess not set)"}`);
       console.log(`  sasl-scram-sha-1:  ${sasl.installed ? (sasl.version || "unknown") : "NOT INSTALLED"}${sasl.compatible ? "" : "  <-- INCOMPATIBLE (SCRAM auth will fail)"}`);
       for (const p of report.problems) console.log(`  - ${p}`);
       for (const f of report.fixes) console.log(`      ${f}`);
@@ -1133,6 +1146,25 @@ Note: Commands run through the running gateway's XMPP connection.`);
       }
 
       if (options?.fix) {
+        // SECURITY (2.18.1): remove in-tree backup/trash dirs that can break
+        // plugin source capture on Windows (a `nul` device entry in a snapshot).
+        if (report.staleBackupDirs.length > 0) {
+          console.log("\nRemoving stale in-tree backup dirs ...");
+          const removed = await removeStaleInTreeBackups(report.pluginDir);
+          console.log(removed.length > 0 ? `  removed: ${removed.join(", ")}` : "  nothing removed.");
+        }
+        // SECURITY (2.18.1): enable the conversation hooks the plugin needs.
+        try {
+          const cfgPath = resolveConfigPath(options?.config);
+          const cfg = await readOpenclawConfig(cfgPath);
+          if (!isConversationAccessEnabled(cfg)) {
+            enableConversationAccess(cfg);
+            await writeOpenclawConfig(cfgPath, cfg);
+            console.log("\nEnabled plugins.entries.xmpp.hooks.allowConversationAccess=true.");
+          }
+        } catch (err: any) {
+          console.error('  Failed to update config for conversation hooks:', err?.message || String(err));
+        }
         if (!report.distExists) {
           console.log("\nRunning: npx tsc ...");
           try {

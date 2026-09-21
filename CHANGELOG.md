@@ -5,6 +5,62 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.1] - 2026-09-21
+
+**Fix: Windows hardening. The message queue no longer writes to
+`C:\Windows\System32`; rollback snapshots no longer live inside the extension
+directory (an in-tree `_backups/` snapshot with a `nul` entry failed the whole
+plugin load); `openclaw xmpp doctor --fix` cleans that up and enables the
+conversation hooks; and the updater has a shell fallback for locked-down Windows
+environments.**
+
+### Why
+
+Three Windows reports:
+
+1. `[PersistentQueue] failed to write C:\Windows\System32\message-queue.json:
+   EPERM`. The queue defaulted to `process.cwd()`, which for the Windows
+   scheduled task is `C:\Windows\System32`.
+2. `xmpp failed during load ... Cannot capture plugin source
+   ...\\_backups\\2.16.4_...\\nul`. OpenClaw captures plugin source by walking
+   the extension directory; the updater's rollback snapshot lived inside it and
+   contained a Windows reserved device entry (`nul`), which failed the load.
+3. `typed hook "before_agent_run" blocked because non-bundled plugins must set
+   plugins.entries.xmpp.hooks.allowConversationAccess=true`.
+
+### Changed
+
+- **`src/queue-bridge.ts`** — `defaultQueueDir()` (`~/.openclaw/workspace/xmpp-data`)
+  replaces the `process.cwd()` fallback; exported for callers.
+- **`src/gateway.ts`** — passes the account `dataDir` to `addToQueue` /
+  `markAsProcessed`; the local dataDir fallback is no longer `process.cwd()`.
+- **`src/commands.ts` / `src/cli-metadata.ts`** — resolve the configured
+  account dataDir for the queue; never fall back to cwd.
+- **`src/updater.ts`** — rollback snapshots now go to
+  `~/.openclaw/_backups/xmpp/<ver>_<ts>` (`defaultBackupRoot()`); `copyTree`
+  skips Windows reserved device names (`isWindowsReservedName`); `run()` retries
+  through the shell on `EINVAL`/`ENOENT` (spawn never started, so no double
+  execution).
+- **`src/lib/plugin-paths.ts`** (new) — dependency-free
+  `findStaleInTreeBackupDirs` / `removeStaleInTreeBackups` /
+  `isConversationAccessEnabled` / `enableConversationAccess`.
+- **`src/onboarding.ts`** — `doctor` diagnostics report stale in-tree backups
+  and the conversation-hook flag; `openclaw xmpp setup` sets
+  `plugins.entries.xmpp.hooks.allowConversationAccess=true`.
+- **`src/commands.ts`** — `doctor` prints both new checks and `--fix` removes
+  stale in-tree backup dirs and sets the hook flag.
+- **`tests/v2.18.1-windows-paths.test.ts`** (new).
+- **`README.md` / `AGENTS.md`** — documented the queue path, the out-of-tree
+  backup convention, and the conversation-hook flag.
+
+### Upgrade note
+
+If a Windows machine fails to load the plugin with
+`Cannot capture plugin source ...\\_backups\\...\\nul`, delete the in-tree
+`_backups/` directory once (the plugin cannot self-heal because it fails before
+loading), then run `openclaw xmpp doctor --fix`. New snapshots are written
+outside the extension directory.
+
 ## [2.18.0] - 2026-09-19
 
 **Fix: groupchat replies work again. The plugin now dispatches inbound events

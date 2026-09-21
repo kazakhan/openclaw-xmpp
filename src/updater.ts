@@ -36,6 +36,23 @@ function pluginDirFallback(): string {
   return path.join(os.homedir(), ".openclaw", "extensions", "xmpp");
 }
 
+// SECURITY (2.18.1): rollback snapshots must live OUTSIDE the extension
+// directory.  OpenClaw captures plugin source by walking the extension dir;
+// an in-tree `_backups/` snapshot can contain a Windows reserved device entry
+// (e.g. `nul`) and fail the whole plugin load ("Cannot capture plugin source
+// ...\\_backups\\...\\nul").
+export function defaultBackupRoot(): string {
+  return path.join(os.homedir(), ".openclaw", "_backups", "xmpp");
+}
+
+// Windows reserves these device names at every path level; a file/dir with one
+// of these names cannot be read back and breaks recursive scans/copies.
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+export function isWindowsReservedName(name: string): boolean {
+  return WINDOWS_RESERVED_NAME.test(name);
+}
+
 // --- version helpers -------------------------------------------------------
 
 function parseSemver(v: string): number[] {
@@ -138,12 +155,28 @@ function run(cmd: string, args: string[], cwd: string, label: string): string {
   try {
     if (process.platform === "win32") {
       const comspec = process.env.ComSpec || "cmd.exe";
-      return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
-        cwd,
-        stdio: "pipe",
-        encoding: "utf8",
-        windowsHide: true,
-      });
+      try {
+        return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
+          cwd,
+          stdio: "pipe",
+          encoding: "utf8",
+          windowsHide: true,
+        });
+      } catch (spawnErr: any) {
+        // SECURITY (2.18.1): some locked-down Windows environments reject the
+        // cmd.exe wrapper.  EINVAL/ENOENT here means the process never started,
+        // so retrying through the shell is safe (no double execution).
+        if (spawnErr?.code === "EINVAL" || spawnErr?.code === "ENOENT") {
+          return execFileSync(cmd, args, {
+            cwd,
+            stdio: "pipe",
+            encoding: "utf8",
+            windowsHide: true,
+            shell: true,
+          });
+        }
+        throw spawnErr;
+      }
     }
     return execFileSync(cmd, args, { cwd, stdio: "pipe", encoding: "utf8", windowsHide: true });
   } catch (err: any) {
@@ -203,7 +236,9 @@ export async function copyTree(src: string, dest: string, exclude: Set<string>):
       const rel = path.relative(src, s);
       const parts = rel.split(path.sep).filter(Boolean);
       if (parts.length === 0) return true;
-      return !exclude.has(parts[0]);
+      if (exclude.has(parts[0])) return false;
+      // SECURITY (2.18.1): never copy Windows reserved device names.
+      return !parts.some((part) => isWindowsReservedName(part));
     },
   });
 }
@@ -298,9 +333,11 @@ export async function performUpdate(
     };
   }
 
-  // Snapshot for rollback (private, gitignored).
+  // Snapshot for rollback (private, outside the extension dir).
+  // SECURITY (2.18.1): an in-tree `_backups/` dir is walked by OpenClaw's
+  // plugin source capture and can break plugin loading on Windows.
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const snapDest = path.join(dir, "_backups", `${current}_${ts}`);
+  const snapDest = path.join(defaultBackupRoot(), `${current}_${ts}`);
   await snapshotPlugin(dir, snapDest);
 
   let installed = false;
