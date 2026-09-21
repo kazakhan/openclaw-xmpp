@@ -5,6 +5,41 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.3] - 2026-09-21
+
+**Fix: `openclaw xmpp update` no longer leaves the plugin repo in detached HEAD.
+`git checkout v<tag>` detached HEAD, so a later manual `git pull` failed with
+"You are not currently on a branch". The updater now checks the release out on
+`main`.**
+
+### Why
+
+The git install path did `git fetch --tags origin` then `git checkout v<tag>`.
+Checking out a tag leaves HEAD detached; `getCurrentVersion` still worked and
+the updater kept running, but any manual `git pull` (e.g. to fetch a repair like
+the 2.18.2 purge script) failed because there was no branch to merge into.  This
+blocked recovering a Windows install that could not load.
+
+### Changed
+
+- **`src/updater.ts`** — `git checkout -B main v${latest}` (create/reset `main`
+  at the release tag and check it out) with `git branch --set-upstream-to=origin/main
+  main` best-effort, so `git pull` works afterwards.  A plain `git checkout
+  v${latest}` remains as a fallback for unusual branch layouts.
+- **`tests/v2.18.3-updater-branch.test.ts`** (new).
+- **`README.md` / `AGENTS.md`** — documented the recovery path for a detached
+  checkout and a root-level `nul`.
+
+### Upgrade note
+
+If your plugin repo is already detached, reattach it once:
+
+```powershell
+cd <pluginDir>
+git fetch --tags origin
+git checkout -B main origin/main
+```
+
 ## [2.18.2] - 2026-09-21
 
 **Fix: pre-load repair for a bricked Windows install. The plugin can fail to

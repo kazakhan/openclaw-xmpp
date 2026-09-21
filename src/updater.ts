@@ -374,7 +374,22 @@ export async function performUpdate(
         throw new Error("Plugin directory has uncommitted changes; refusing to update. Commit or stash them first.");
       }
       run("git", ["fetch", "--tags", "origin"], dir, "git fetch");
-      run("git", ["checkout", `v${latest}`], dir, "git checkout");
+      // SECURITY (2.18.3): check out the release ON A BRANCH, not a detached
+      // HEAD.  `git checkout v<tag>` left the repo detached, so a later manual
+      // `git pull` failed with "You are not currently on a branch".  `-B main`
+      // resets/creates `main` at the tag and checks it out; the upstream is set
+      // best-effort so `git pull` works afterwards.
+      try {
+        run("git", ["checkout", "-B", "main", `v${latest}`], dir, "git checkout");
+        try {
+          run("git", ["branch", "--set-upstream-to=origin/main", "main"], dir, "git upstream");
+        } catch {
+          /* best-effort (no origin/main, or already tracking) */
+        }
+      } catch {
+        // Fallback for unusual branch layouts: keep the previous behaviour.
+        run("git", ["checkout", `v${latest}`], dir, "git checkout");
+      }
       installed = true;
     } else {
       await applyTarball(dir, latest);

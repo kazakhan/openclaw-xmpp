@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.2)
+## Status: ✅ WORKING (v2.18.3)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -86,6 +86,9 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   remove in-tree `_backups`/`_trash` and Windows reserved-name entries *without
   loading the plugin*, so a Windows install that fails with `Cannot capture
   plugin source ...\nul` recovers by re-running the installer.
+- **v2.18.3** — **updater keeps the repo on a branch**: `openclaw xmpp update`
+  now checks the release out with `git checkout -B main v<tag>` instead of
+  detaching HEAD, so a later manual `git pull` works.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -651,7 +654,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.2) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.3) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -773,6 +776,24 @@ cmd /c rd /s /q "\\?\%USERPROFILE%\.openclaw\extensions\xmpp\_backups"
 openclaw gateway restart
 ```
 Then `openclaw xmpp doctor --fix` removes any remaining in-tree backup dirs.
+
+A `nul` can also sit at the **plugin root** (`...\extensions\xmpp\nul`) — the
+original file the snapshot copied. Delete it with the `\\?\` prefix, or run the
+purge script directly (it removes every reserved entry, not just `_backups`):
+```powershell
+[System.IO.File]::Delete("\\?\%USERPROFILE%\.openclaw\extensions\xmpp\nul")
+node scripts\purge-in-tree-backups.mjs
+```
+
+### `git pull` fails: "You are not currently on a branch"
+`openclaw xmpp update` used to `git checkout v<tag>`, which detaches HEAD.
+Fixed in **v2.18.3** (`git checkout -B main v<tag>`). Reattach an existing
+detached checkout once:
+```bash
+cd <pluginDir>
+git fetch --tags origin
+git checkout -B main origin/main
+```
 
 ### `typed hook "before_agent_run" blocked ... allowConversationAccess=true`
 OpenClaw drops the conversation hooks (`before_agent_run`/`agent_end`) for

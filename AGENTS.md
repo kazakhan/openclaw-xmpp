@@ -100,3 +100,9 @@ npm run typecheck              # tsc --noEmit
   `plugins.entries.xmpp.hooks.allowConversationAccess=true` for the
   `before_agent_run`/`agent_end` conversation hooks (presence auto-activity);
   `openclaw xmpp setup` and `doctor --fix` set it.
+- The updater must **not** leave the git repo in detached HEAD: check the
+  release out with `git checkout -B main v<tag>` (`src/updater.ts`), or a later
+  manual `git pull` fails with "You are not currently on a branch".
+- A root-level `nul` (or any reserved-name entry) in the extension dir breaks
+  plugin source capture; `scripts/purge-in-tree-backups.mjs`, the installers,
+  and `doctor --fix` remove them (using `\\?\` paths on Windows).
