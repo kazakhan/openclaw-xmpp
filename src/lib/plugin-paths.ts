@@ -64,6 +64,36 @@ export async function removeStaleInTreeBackups(pluginDir: string): Promise<strin
   return removed;
 }
 
+// SECURITY (2.18.4): group replies must be OPTIONAL (the agent decides).
+//
+// OpenClaw requires an explicit silent-reply opt-in for accepted group/channel
+// requests: without `surfaces.xmpp.silentReply.group = "allow"` every room
+// message REQUIRES a reply, so the agent answers every message — including the
+// other bot's — and rooms loop.  Mentions and authorized commands still require
+// a response; only unaddressed requests may finish silently.
+export function isGroupSilentRepliesEnabled(config: any): boolean {
+  return config?.surfaces?.xmpp?.silentReply?.group === "allow";
+}
+
+export function enableGroupSilentReplies(config: any): any {
+  if (config == null || typeof config !== "object") config = {};
+  if (config.surfaces == null || typeof config.surfaces !== "object") config.surfaces = {};
+  if (config.surfaces.xmpp == null || typeof config.surfaces.xmpp !== "object") {
+    config.surfaces.xmpp = {};
+  }
+  if (
+    config.surfaces.xmpp.silentReply == null ||
+    typeof config.surfaces.xmpp.silentReply !== "object"
+  ) {
+    config.surfaces.xmpp.silentReply = {};
+  }
+  config.surfaces.xmpp.silentReply.group = "allow";
+  if (config.surfaces.xmpp.silentReply.internal === undefined) {
+    config.surfaces.xmpp.silentReply.internal = "allow";
+  }
+  return config;
+}
+
 // SECURITY (2.18.1): OpenClaw blocks the `before_agent_run`/`agent_end`
 // conversation hooks for non-bundled plugins unless
 // `plugins.entries.xmpp.hooks.allowConversationAccess=true` is set.  Without

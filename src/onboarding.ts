@@ -10,9 +10,17 @@ import {
   removeStaleInTreeBackups as removeStaleInTreeBackupsIn,
   isConversationAccessEnabled,
   enableConversationAccess,
+  isGroupSilentRepliesEnabled,
+  enableGroupSilentReplies,
 } from "./lib/plugin-paths.js";
 
-export { IN_TREE_BACKUP_DIRS, isConversationAccessEnabled, enableConversationAccess };
+export {
+  IN_TREE_BACKUP_DIRS,
+  isConversationAccessEnabled,
+  enableConversationAccess,
+  isGroupSilentRepliesEnabled,
+  enableGroupSilentReplies,
+};
 
 export interface OnboardingOptions {
   configPath?: string;
@@ -343,6 +351,7 @@ export interface PluginDiagnostics {
   entryKind: "dist" | "ts";
   staleBackupDirs: string[];
   conversationAccessAllowed: boolean;
+  groupSilentRepliesAllowed: boolean;
   problems: string[];
   fixes: string[];
   ready: boolean;
@@ -377,6 +386,7 @@ export function diagnosePluginState(
     config = {};
   }
   const conversationAccessAllowed = isConversationAccessEnabled(config);
+  const groupSilentRepliesAllowed = isGroupSilentRepliesEnabled(config);
   const problems: string[] = [];
   const fixes: string[] = [];
 
@@ -398,6 +408,18 @@ export function diagnosePluginState(
     );
     fixes.push(
       "Run:  openclaw xmpp doctor --fix   (sets plugins.entries.xmpp.hooks.allowConversationAccess=true), " +
+        "or `openclaw xmpp setup`.",
+    );
+  }
+
+  if (!groupSilentRepliesAllowed) {
+    problems.push(
+      "surfaces.xmpp.silentReply.group is not \"allow\": OpenClaw requires a reply to every " +
+        "accepted group/channel request, so the agent answers every room message (and bots " +
+        "loop). Group replies should be optional.",
+    );
+    fixes.push(
+      "Run:  openclaw xmpp doctor --fix   (sets surfaces.xmpp.silentReply.group=\"allow\"), " +
         "or `openclaw xmpp setup`.",
     );
   }
@@ -434,6 +456,7 @@ export function diagnosePluginState(
     entryKind,
     staleBackupDirs,
     conversationAccessAllowed,
+    groupSilentRepliesAllowed,
     problems,
     fixes,
     ready: distExists,
@@ -569,6 +592,12 @@ export async function runXmppOnboarding(options: OnboardingOptions = {}): Promis
   // `plugins.entries.xmpp.hooks.allowConversationAccess=true`.  Enable it so
   // the presence auto-activity hooks work out of the box.
   enableConversationAccess(merged);
+
+  // SECURITY (2.18.4): group replies must be optional (the agent decides).
+  // Without `surfaces.xmpp.silentReply.group="allow"` OpenClaw requires a reply
+  // to every accepted room message, so the agent answers everything and bots
+  // loop.
+  enableGroupSilentReplies(merged);
 
   try {
     await writeOpenclawConfig(configPath, merged);

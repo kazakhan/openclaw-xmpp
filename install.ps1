@@ -107,6 +107,17 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: failed to set plugins.entries.xmpp.hooks.allowConversationAccess (exit $LASTEXITCODE)" -ForegroundColor Yellow
 }
 
+# SECURITY (2.18.4): group replies must be OPTIONAL (the agent decides).
+Write-Host "Making group replies optional..."
+& openclaw config set surfaces.xmpp.silentReply.group allow
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: failed to set surfaces.xmpp.silentReply.group (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+& openclaw config set surfaces.xmpp.silentReply.internal allow
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: failed to set surfaces.xmpp.silentReply.internal (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
 # SECURITY (2.18.0): no mention-only toggles.  The plugin dispatches every room
 # message through OpenClaw's channel inbound runner; the agent decides whether
 # to reply.

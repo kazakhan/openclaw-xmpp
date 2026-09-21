@@ -106,3 +106,8 @@ npm run typecheck              # tsc --noEmit
 - A root-level `nul` (or any reserved-name entry) in the extension dir breaks
   plugin source capture; `scripts/purge-in-tree-backups.mjs`, the installers,
   and `doctor --fix` remove them (using `\\?\` paths on Windows).
+- Group replies must be **optional**: OpenClaw requires an explicit
+  `surfaces.xmpp.silentReply.group="allow"` opt-in, otherwise every accepted
+  room message requires a reply and bots loop.  Set on setup, `doctor --fix`,
+  the installers, and the config migration registered in `index.ts`.  Do not
+  reintroduce a plugin-side mention gate for this.

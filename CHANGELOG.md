@@ -5,6 +5,55 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.4] - 2026-09-21
+
+**Fix: groupchat replies are optional again. OpenClaw requires an explicit
+silent-reply opt-in for accepted group/channel requests; without
+`surfaces.xmpp.silentReply.group="allow"` every room message REQUIRES a reply,
+so the agent answers every message — including the other bot's — and rooms
+loop ("Holding — nothing running." back and forth). The plugin now sets the
+policy on setup, `doctor --fix`, the installers, and a config migration.**
+
+### Why
+
+OpenClaw's silent-reply policy (`resolveSilentReplyPolicyFromPolicies`,
+`session-entry-handle-CDLYNTzU.mjs`) resolves per conversation type from
+`agents.defaults.silentReply` / `surfaces.<surface>.silentReply`.  Current
+OpenClaw docs: "Accepted group/channel requests require a reply by default...
+To allow unaddressed requests to finish silently, explicitly set
+`silentReply.group: "allow"`".  The plugin's `xmpp` surface had no policy, so
+every accepted room request was a *required* reply.  With the message tool
+working again (2.18.0), both bots answered every message and looped.
+
+This is **not** mention gating and **not** `room_event`: mentions and authorized
+commands still require a response; only unaddressed requests may finish
+silently, and the agent decides.
+
+### Changed
+
+- **`src/lib/plugin-paths.ts`** — `isGroupSilentRepliesEnabled` /
+  `enableGroupSilentReplies` (sets `surfaces.xmpp.silentReply.group="allow"` and
+  `internal="allow"`).
+- **`src/onboarding.ts`** — `openclaw xmpp setup` sets the policy; `doctor`
+  diagnostics report it.
+- **`src/commands.ts`** — `doctor` prints the policy and `--fix` sets it.
+- **`index.ts`** — registers a plugin config migration so `openclaw doctor
+  --fix` / setup applies it to existing installs.
+- **`install.sh` / `install.ps1`** — set the policy.
+- **`tests/v2.18.4-group-silent-replies.test.ts`** (new).
+- **`README.md` / `AGENTS.md`** — documented.
+
+### Upgrade note
+
+Existing installs: either re-run `openclaw xmpp doctor --fix` (or
+`openclaw xmpp setup`), or set it directly:
+
+```bash
+openclaw config set surfaces.xmpp.silentReply.group allow
+openclaw config set surfaces.xmpp.silentReply.internal allow
+openclaw gateway restart
+```
+
 ## [2.18.3] - 2026-09-21
 
 **Fix: `openclaw xmpp update` no longer leaves the plugin repo in detached HEAD.

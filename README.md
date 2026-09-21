@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.3)
+## Status: ✅ WORKING (v2.18.4)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -89,6 +89,11 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
 - **v2.18.3** — **updater keeps the repo on a branch**: `openclaw xmpp update`
   now checks the release out with `git checkout -B main v<tag>` instead of
   detaching HEAD, so a later manual `git pull` works.
+- **v2.18.4** — **group replies are optional**: the plugin sets
+  `surfaces.xmpp.silentReply.group="allow"` (setup, `doctor --fix`, installers,
+  and a config migration), so the agent decides whether to answer room messages
+  instead of being required to reply to every one. This stops bots answering
+  each other in a loop.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -654,7 +659,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.3) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.4) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
@@ -740,22 +745,31 @@ A local workaround patch for older versions is documented at
 needed once you are on v2.16.5+.
 
 ### Room messages aren't reaching the agent
-- v2.14.2–v2.16.x **dropped unmentioned room messages**. Fixed in **v2.17.0+**:
-  every room message is delivered. v2.17.0 dispatched unmentioned ones as
-  passive `room_event` (a plugin-side mention gate); **v2.18.0** removes that
-  gate and uses OpenClaw's channel inbound runner, so the agent decides.
-- If the agent listens but never posts in a room, check
-  `messages.groupChat.unmentionedInbound`: `"room_event"` keeps the room ambient
-  (the agent must call the `message` tool to post) and requires the agent to
-  have the `message` tool. Set it to `"user_request"` (default) for automatic
-  replies.
-- `No delivery result` on message-tool sends was the missing outbound
-  `messageId` identity; fixed in **v2.18.0**.
+- Every room message is dispatched through OpenClaw's channel inbound runner
+  (v2.18.0), and the **agent decides** whether to answer (v2.18.4). `No delivery
+  result` on message-tool sends was the missing outbound `messageId` identity;
+  fixed in **v2.18.0**.
 - The plugin's local message log lives in the account **`dataDir`**
   (`channels.xmpp.accounts.<id>.dataDir`) under `messages/{direct,group}/`.
   Installs/updates never delete it (the updater's snapshot/tarball exclude
   `data`). If the directory looks empty, check the configured `dataDir` — docs
   like TOOLS.md may point at a stale path.
+
+### Bots reply to every room message (and loop)
+OpenClaw requires an explicit silent-reply opt-in for group/channel requests:
+without `surfaces.xmpp.silentReply.group="allow"`, every accepted room message
+**requires** a reply, so the agent answers everything — including the other
+bot's messages — and two bots loop. Fixed in **v2.18.4** (set on setup,
+`doctor --fix`, installers, and a config migration). To fix an existing install:
+
+```bash
+openclaw config set surfaces.xmpp.silentReply.group allow
+openclaw config set surfaces.xmpp.silentReply.internal allow
+openclaw gateway restart
+```
+
+Mentions and authorized commands still require a response; only unaddressed
+requests may finish silently.
 
 ### Windows: `failed to write C:\Windows\System32\message-queue.json: EPERM`
 Fixed in **v2.18.1**. The queue used to fall back to `process.cwd()`, which for

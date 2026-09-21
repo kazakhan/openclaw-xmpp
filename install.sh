@@ -71,6 +71,13 @@ openclaw config set messages.groupChat.visibleReplies automatic || true
 echo "Enabling conversation hooks..."
 openclaw config set plugins.entries.xmpp.hooks.allowConversationAccess true || true
 
+# SECURITY (2.18.4): group replies must be OPTIONAL (the agent decides).
+# Without this OpenClaw requires a reply to every room message, so bots answer
+# everything (and loop).
+echo "Making group replies optional..."
+openclaw config set surfaces.xmpp.silentReply.group allow || true
+openclaw config set surfaces.xmpp.silentReply.internal allow || true
+
 # SECURITY (2.18.0): no mention-only toggles.  The plugin dispatches every room
 # message through OpenClaw's channel inbound runner; the agent decides whether
 # to reply.

@@ -1126,6 +1126,8 @@ Note: Commands run through the running gateway's XMPP connection.`);
         writeOpenclawConfig,
         resolveConfigPath,
         isConversationAccessEnabled,
+        isGroupSilentRepliesEnabled,
+        enableGroupSilentReplies,
       } = await import('./onboarding.js');
       const { inspectSaslScram, REQUIRED_SASL_SCRAM_VERSION } = await import('./lib/sasl-dep.js');
       const report = diagnosePluginState(undefined, options?.config);
@@ -1137,6 +1139,7 @@ Note: Commands run through the running gateway's XMPP connection.`);
       console.log(`  entry OpenClaw uses: ${report.entryKind === "dist" ? "dist/index.js (compiled JS)" : "index.ts (needs tsx)"}`);
       console.log(`  stale in-tree backups: ${report.staleBackupDirs.length > 0 ? report.staleBackupDirs.join(", ") : "none"}`);
       console.log(`  conversation hooks: ${report.conversationAccessAllowed ? "allowed" : "BLOCKED (allowConversationAccess not set)"}`);
+      console.log(`  group replies: ${report.groupSilentRepliesAllowed ? "optional (silentReply.group=allow)" : "REQUIRED (silentReply.group not set — bots loop)"}`);
       console.log(`  sasl-scram-sha-1:  ${sasl.installed ? (sasl.version || "unknown") : "NOT INSTALLED"}${sasl.compatible ? "" : "  <-- INCOMPATIBLE (SCRAM auth will fail)"}`);
       for (const p of report.problems) console.log(`  - ${p}`);
       for (const f of report.fixes) console.log(`      ${f}`);
@@ -1157,13 +1160,22 @@ Note: Commands run through the running gateway's XMPP connection.`);
         try {
           const cfgPath = resolveConfigPath(options?.config);
           const cfg = await readOpenclawConfig(cfgPath);
-          if (!isConversationAccessEnabled(cfg)) {
-            enableConversationAccess(cfg);
+          const needHooks = !isConversationAccessEnabled(cfg);
+          const needSilentReplies = !isGroupSilentRepliesEnabled(cfg);
+          if (needHooks) enableConversationAccess(cfg);
+          // SECURITY (2.18.4): make group replies optional (the agent decides).
+          if (needSilentReplies) enableGroupSilentReplies(cfg);
+          if (needHooks || needSilentReplies) {
             await writeOpenclawConfig(cfgPath, cfg);
-            console.log("\nEnabled plugins.entries.xmpp.hooks.allowConversationAccess=true.");
+            if (needHooks) {
+              console.log("\nEnabled plugins.entries.xmpp.hooks.allowConversationAccess=true.");
+            }
+            if (needSilentReplies) {
+              console.log("Enabled surfaces.xmpp.silentReply.group=allow (group replies are optional).");
+            }
           }
         } catch (err: any) {
-          console.error('  Failed to update config for conversation hooks:', err?.message || String(err));
+          console.error('  Failed to update config:', err?.message || String(err));
         }
         if (!report.distExists) {
           console.log("\nRunning: npx tsc ...");

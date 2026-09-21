@@ -5,6 +5,7 @@ import {
 import { registerXmppCliMetadata } from "./src/cli-metadata.js";
 import { registerPresenceHooks } from "./src/presence-hooks.js";
 import { registerAskUserHooks } from "./src/lib/ask-user-hooks.js";
+import { isGroupSilentRepliesEnabled, enableGroupSilentReplies } from "./src/lib/plugin-paths.js";
 
 import { Type } from "typebox";
 import {
@@ -53,6 +54,23 @@ export function registerXmppGatewayMethods(api: OpenClawPluginApi): void {
   // SECURITY (2.16.1): raise the ask_user timeout floor so an XMPP round-trip
   // has time to render the prompt and receive the answer.
   registerAskUserHooks(api);
+
+  // SECURITY (2.18.4): make group replies OPTIONAL for the xmpp surface so the
+  // agent decides whether to answer.  Without `surfaces.xmpp.silentReply.group
+  // = "allow"` OpenClaw requires a reply to every accepted room message, so the
+  // agent answers everything (including the other bot's messages) and rooms
+  // loop.  Mentions and authorized commands still require a response.  Applied
+  // by `openclaw doctor --fix` / `openclaw xmpp setup` config migrations.
+  try {
+    api.registerConfigMigration?.((config: any) => {
+      if (!config || typeof config !== "object") return undefined;
+      if (isGroupSilentRepliesEnabled(config)) return undefined;
+      enableGroupSilentReplies(config);
+      return { config, changes: ['surfaces.xmpp.silentReply.group="allow"'] };
+    });
+  } catch {
+    /* older host without config migrations */
+  }
 
   api.registerGatewayMethod("xmpp.joinRoom", async ({ params, respond }) => {
     const { room, nick } = params || {};
