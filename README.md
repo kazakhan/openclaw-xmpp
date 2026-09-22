@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.4)
+## Status: ✅ WORKING (v2.18.5)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -94,6 +94,11 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   and a config migration), so the agent decides whether to answer room messages
   instead of being required to reply to every one. This stops bots answering
   each other in a loop.
+- **v2.18.5** — **bundled `dist`**: the build runs `tsc` then bundles each entry
+  with esbuild (inlining `typebox`/`@xmpp/client`, keeping `openclaw`/`ssh2`
+  external) so OpenClaw 2026.9.5+'s plugin source-capture stays small. Without
+  it the gateway spent ~90 s per load parsing the dependency graph and never
+  finished starting.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -149,13 +154,16 @@ rm -rf ~/.openclaw/extensions/xmpp/dist
 ```
 The `dist/` directory contains compiled JavaScript that can shadow edited `.ts` source files. Always delete it after pulling updates.
 
-#### Step 4: Compile TypeScript
+#### Step 4: Build
 OpenClaw 2026.5.4+ requires compiled JS for plugin installation:
 ```bash
 cd ~/.openclaw/extensions/xmpp
-npx tsc
+npm install          # installs esbuild (devDependency)
+node scripts/build.mjs
 ```
-Type errors in the codebase are pre-existing and non-blocking; the compiler will still emit the required JS files.
+`build.mjs` runs `tsc` (which still emits on type-only errors) and then bundles
+each entry with esbuild so OpenClaw 2026.9.5+'s plugin source-capture stays
+small. If esbuild is unavailable it keeps the plain `tsc` output.
 
 #### Step 5: Register the plugin
 ```bash
@@ -642,9 +650,9 @@ restart` on Windows instead of `systemctl`.
 
 ### "Cannot find package 'tsx'"
 OpenClaw only needs `tsx` when it runs the plugin from the TypeScript source
-(`index.ts`). The supported path is compiled `dist/`: run `npx tsc` in the
-plugin directory, then restart. (Or `openclaw xmpp doctor --fix` to rebuild a
-missing `dist/`.)
+(`index.ts`). The supported path is compiled `dist/`: run `node scripts/build.mjs`
+in the plugin directory, then restart. (Or `openclaw xmpp doctor --fix` to
+rebuild a missing `dist/`.)
 
 ### `npx tsc` can't find `openclaw/plugin-sdk/*` (TS2307)
 The plugin resolves those subpaths through the package `exports` map, which needs
@@ -659,10 +667,19 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.4) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.5) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
-Run `npx tsc` in the plugin directory to compile TypeScript, then re-install. Delete `dist/` first if updating from a previous version.
+Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then
+re-install. Delete `dist/` first if updating from a previous version.
+
+### Gateway very slow to start / startup times out (OpenClaw 2026.9.5+)
+OpenClaw 2026.9.5 added a plugin **source-capture** step that parses the plugin's
+whole module graph on load. An unbundled `dist` drags `typebox`/`@xmpp` through
+it (~90 s per load, twice per startup), which exceeds the 120 s model-runtime
+build timeout. Fixed in **v2.18.5** (bundled `dist`). Build it with
+`node scripts/build.mjs`; the bundled `dist/index.js` imports only `openclaw/*`
+and `ssh2`.
 
 ### No groupchat replies (agent responds in webchat but not in room)
 ```bash
@@ -831,6 +848,7 @@ xmpp/
 ├── install.sh                  # Linux install script
 ├── install.ps1                 # Windows install script
 ├── scripts/
+│   ├── build.mjs               # tsc + esbuild bundle (small plugin source-capture graph)
 │   ├── purge-in-tree-backups.mjs # postinstall: remove in-tree backups (pre-load repair)
 │   └── link-openclaw-sdk.mjs   # postinstall: link the global OpenClaw SDK for tsc
 ├── src/

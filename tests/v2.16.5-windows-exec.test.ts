@@ -56,15 +56,17 @@ describe('2.16.5: Windows-safe exec', () => {
   });
 });
 
-describe('2.16.5: tsc non-zero is tolerated when dist is emitted', () => {
-  it('updater tolerates tsc failure with dist/index.js', async () => {
+describe('2.16.5/2.18.5: build non-zero is tolerated when dist is emitted', () => {
+  it('updater tolerates build failure with dist/index.js', async () => {
     const src = await readSource('src/updater.ts');
-    assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(dir,\s*"dist",\s*"index\.js"\)\)\)\s*throw tscErr/);
+    assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(dir,\s*"dist",\s*"index\.js"\)\)\)\s*throw buildErr/);
+    assert.match(src, /scripts",\s*"build\.mjs"/);
   });
 
-  it('onboarding tolerates tsc failure with dist/index.js', async () => {
+  it('onboarding tolerates build failure with dist/index.js', async () => {
     const src = await readSource('src/onboarding.ts');
-    assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(pluginDir,\s*"dist",\s*"index\.js"\)\)\)\s*throw tscErr/);
+    assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(pluginDir,\s*"dist",\s*"index\.js"\)\)\)\s*throw buildErr/);
+    assert.match(src, /scripts",\s*"build\.mjs"/);
   });
 
   it('updater validates the tag before use', async () => {

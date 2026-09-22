@@ -5,6 +5,46 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.5] - 2026-09-23
+
+**Fix: bundle `dist` so OpenClaw's plugin source-capture stays small. OpenClaw
+2026.9.5 added a plugin source-capture step that Babel-parses the plugin's whole
+transitive module graph on load; the unbundled ESM dragged `typebox` (~1,400
+files) and `@xmpp/*` (~180 files) through it, taking ~90 s per load (twice per
+startup) and exceeding OpenClaw's hard-coded 120 s model-runtime build timeout,
+so the gateway never finished starting on 2026.9.5 hosts.**
+
+### Why
+
+`plugin-generation-artifact-*.mjs` (new in 2026.9.5) captures a standalone
+source plugin by walking its module graph and parsing every JS file.  An
+unbundled `dist/index.js` therefore pulls the entire dependency graph.  Hosts on
+2026.9.4 or earlier (most machines) have no capture, which is why only the
+2026.9.5 host was affected.  Nothing in the plugin's own code is slow
+(direct import ≈ 0.6 s).
+
+### Changed
+
+- **`scripts/build.mjs`** (new) — runs `tsc` (typecheck + emit, also the fallback
+  if bundling fails) and then bundles each entry (`index`, `setup-entry`,
+  `channel-plugin-api`, `secret-contract-api`, `runtime-setter-api`,
+  `setup-plugin-api`) with **esbuild**, inlining pure-JS deps (`typebox`,
+  `@xmpp/client`) and keeping `openclaw`, `@openclaw/*`, `ssh2`, `cpu-features`
+  external.  The capture graph drops from thousands of files to a handful.
+- **`package.json`** — `"build": "node scripts/build.mjs"`; `esbuild` added as a
+  devDependency.
+- **`src/updater.ts`**, **`src/onboarding.ts`**, **`install.sh`**,
+  **`install.ps1`** — build via `scripts/build.mjs` instead of bare `npx tsc`.
+- **`tests/v2.18.5-bundle.test.ts`** (new); updated the 2.16.5 build-tolerance
+  assertions.
+- **`README.md` / `AGENTS.md`** — build instructions and a troubleshooting note.
+
+### Upgrade note
+
+Bundling is best-effort: if `esbuild` is unavailable, the build keeps the
+`tsc`-emitted output (no regression).  Run `npm install` then `npm run build`
+(or `openclaw xmpp doctor --fix`) to produce the bundle.
+
 ## [2.18.4] - 2026-09-21
 
 **Fix: groupchat replies are optional again. OpenClaw requires an explicit

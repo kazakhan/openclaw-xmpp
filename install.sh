@@ -47,12 +47,10 @@ fi
 echo "Removing old compiled JS..."
 rm -rf dist/
 
-echo "Compiling TypeScript..."
-TSC_LOG="$PLUGIN_DIR/.tsc.log"
-if ! npx tsc 2> "$TSC_LOG"; then
-    echo "  tsc emitted errors. See $TSC_LOG"
+echo "Building (tsc + esbuild bundle)..."
+if ! node scripts/build.mjs; then
+    echo "  Build reported errors. See output above."
 else
-    rm -f "$TSC_LOG"
     echo "  Build complete"
 fi
 

@@ -72,13 +72,12 @@ if (Test-Path $distPath) {
     Remove-Item -Recurse -Force $distPath
 }
 
-Write-Host "Compiling TypeScript..."
-npx tsc 2>&1 | Tee-Object -FilePath "$PluginDir\.tsc.log" | Out-Null
+Write-Host "Building (tsc + esbuild bundle)..."
+& node scripts\build.mjs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  tsc emitted errors. See .tsc.log" -ForegroundColor Yellow
+    Write-Host "  Build reported errors. See output above." -ForegroundColor Yellow
 } else {
     Write-Host "  Build complete"
-    Remove-Item -LiteralPath "$PluginDir\.tsc.log" -ErrorAction SilentlyContinue
 }
 
 Write-Host "Registering plugin with OpenClaw..."

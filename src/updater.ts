@@ -414,14 +414,17 @@ export async function performUpdate(
     ensureSdkLink(dir);
     fs.rmSync(path.join(dir, "dist"), { recursive: true, force: true });
     try {
-      run(exe("npx"), ["tsc"], dir, "tsc build");
-    } catch (tscErr) {
-      // SECURITY (2.16.5): tsconfig has `noEmitOnError: false`, so tsc exits
-      // non-zero on type-only errors WHILE still emitting a usable dist/.
-      // Treat that as a warning; only fail when no build output was produced.
-      if (!fs.existsSync(path.join(dir, "dist", "index.js"))) throw tscErr;
+      // SECURITY (2.18.5): `scripts/build.mjs` runs `tsc` then bundles each
+      // entry with esbuild so OpenClaw 2026.9.5+'s plugin source-capture only
+      // sees a handful of files (not typebox/@xmpp's thousands).
+      run(process.execPath, ["scripts", "build.mjs"], dir, "build");
+    } catch (buildErr) {
+      // `noEmitOnError:false` means tsc still emits a usable dist/ on type-only
+      // errors, and bundling is best-effort; treat that as a warning and only
+      // fail when no build output was produced.
+      if (!fs.existsSync(path.join(dir, "dist", "index.js"))) throw buildErr;
       console.warn(
-        `[updater] tsc reported type errors but emitted dist/; continuing. ${tscErr instanceof Error ? tscErr.message : String(tscErr)}`,
+        `[updater] build reported errors but emitted dist/; continuing. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`,
       );
     }
   } catch (err) {

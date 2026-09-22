@@ -313,7 +313,9 @@ export async function ensurePluginInstalled(
 
   // 4. build dist if missing
   if (!fs.existsSync(path.join(dir, "dist"))) {
-    run("npx", ["tsc"], dir, "tsc build");
+    // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild so
+    // OpenClaw's plugin source-capture stays small.
+    run(process.execPath, ["scripts", "build.mjs"], dir, "build");
     steps.push("build");
   }
 
@@ -432,14 +434,14 @@ export function diagnosePluginState(
     );
     if (tsxAvailable) {
       fixes.push(
-        "Rebuild the compiled output by running:  npx tsc   (recommended).",
+        "Rebuild the compiled output by running:  node scripts/build.mjs   (recommended).",
       );
       fixes.push(
         "Or install tsx to run directly from source:  npm install tsx@4.23.12",
       );
     } else {
       fixes.push(
-        "Rebuild the compiled output by running:  npx tsc   (recommended, does not require tsx).",
+        "Rebuild the compiled output by running:  node scripts/build.mjs   (recommended, does not require tsx).",
       );
     }
     fixes.push("You can also run:  openclaw xmpp setup   (it rebuilds dist/ automatically).");
@@ -474,13 +476,14 @@ export async function ensureDistBuilt(pluginDir: string = resolvePluginDir()): P
     return { built: false };
   }
   try {
-    run("npx", ["tsc"], pluginDir, "tsc build");
-  } catch (tscErr) {
-    // SECURITY (2.16.5): tsc exits non-zero on type-only errors but still emits
-    // (noEmitOnError:false).  Only fail when no build output was produced.
-    if (!fs.existsSync(path.join(pluginDir, "dist", "index.js"))) throw tscErr;
+    // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild.
+    run(process.execPath, ["scripts", "build.mjs"], pluginDir, "build");
+  } catch (buildErr) {
+    // tsc exits non-zero on type-only errors but still emits (noEmitOnError:false),
+    // and bundling is best-effort.  Only fail when no build output was produced.
+    if (!fs.existsSync(path.join(pluginDir, "dist", "index.js"))) throw buildErr;
     console.warn(
-      `[onboarding] tsc reported type errors but emitted dist/; continuing. ${tscErr instanceof Error ? tscErr.message : String(tscErr)}`,
+      `[onboarding] build reported errors but emitted dist/; continuing. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`,
     );
   }
   return { built: true };

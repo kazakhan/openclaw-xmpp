@@ -11,17 +11,21 @@ OpenClaw XMPP channel plugin. Source in `src/` and `index.ts`; compiled output i
 ## Build & test
 
 ```bash
-npx tsc                        # compile to dist/ (clean; 0 errors)
+npm install                    # installs esbuild (devDependency)
+node scripts/build.mjs         # tsc + esbuild bundle -> dist/
 node --test tests/*.test.ts    # test suite
 npm run typecheck              # tsc --noEmit
 ```
 
-- **Build:** `npx tsc`. TypeScript must resolve `openclaw/plugin-sdk/*`, which
-  needs `moduleResolution: "bundler"` (set in `tsconfig.json`) **and** the
-  `node_modules/openclaw` symlink to the global OpenClaw install. The
-  `postinstall` script (`scripts/link-openclaw-sdk.mjs`) creates it best-effort;
-  the updater/onboarding also call `ensureSdkLink()`. Without the symlink the SDK
-  types can't be found (TS2307). `noEmitOnError: false` still lets it emit.
+- **Build:** `node scripts/build.mjs` (or `npm run build`). It runs `tsc` (which
+  must resolve `openclaw/plugin-sdk/*`, needing `moduleResolution: "bundler"`
+  and the `node_modules/openclaw` symlink from `scripts/link-openclaw-sdk.mjs` /
+  `ensureSdkLink()`), then bundles each entry with esbuild. **Keep the bundle:**
+  OpenClaw 2026.9.5+ captures plugin source by parsing the whole module graph, so
+  an unbundled `dist` drags `typebox`/`@xmpp` through it and the gateway startup
+  times out. Externals: `openclaw`, `openclaw/*`, `@openclaw/*`, `ssh2`,
+  `cpu-features`. Bundling is best-effort (falls back to plain `tsc` output).
+  `noEmitOnError: false` still lets `tsc` emit on type-only errors.
 - **Test:** `node --test tests/*.test.ts` (Node's built-in runner, TS type-stripping).
 - **Known pre-existing failures** (do NOT "fix" unless asked): the whole-file
   import suites `tests/encryption.test.ts`, `rate-limit.test.ts`,
@@ -64,7 +68,8 @@ npm run typecheck              # tsc --noEmit
    command lists (CLI + slash), config examples, and File Layout must match the
    code. `tests/readme.test.ts` enforces this and will fail if stale.
 4. **Verify `XMPPAUDIT.md`** if XEP support changed.
-5. `npx tsc` (expect a clean build, 0 errors).
+5. `node scripts/build.mjs` (expect a clean build; verify `dist/index.js` only
+   imports `openclaw/*` and `ssh2`).
 6. `node --test tests/*.test.ts` (expect only the pre-existing failures above).
 7. Commit with a `type(version): summary` message (see `git log`).
 8. Push and create a GitHub release using the token in `~/.bashrc`:
