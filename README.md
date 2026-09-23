@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.7)
+## Status: ✅ WORKING (v2.18.8)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -113,6 +113,13 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   space and failed with `'C:\Program' is not recognized`, rolling back every
   update. Real executables are now spawned directly; only bare/`.cmd` shims go
   through cmd (arg-quoted). The updater also builds via `npm run build`.
+- **v2.18.8** — **shared-state fix (agents replying again)**: bundling each
+  entry separately (2.18.5+) gave each bundle its own copy of `src/state.ts`, so
+  the runtime OpenClaw injected via `runtime-setter-api.js` never reached the
+  gateway and inbound dispatch was skipped (`runtime.channel not available,
+  cannot dispatch`). The state (`pluginRuntime`, `xmppClients`, `contactsStore`)
+  and the queue registry now live on a `globalThis` singleton shared by all
+  bundles.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -686,7 +693,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.7) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.8) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then
@@ -705,6 +712,16 @@ npm install
 npm run build
 npm prune --omit=dev
 openclaw gateway restart
+```
+
+### Agents stop replying: `runtime.channel not available, cannot dispatch`
+2.18.5–2.18.7 bundled each entry separately, so the plugin's shared state
+(`src/state.ts`) was duplicated per bundle and the runtime OpenClaw injected via
+`runtime-setter-api.js` never reached the gateway, so every inbound turn was
+skipped. Fixed in **v2.18.8** (the state and queue registry live on a
+`globalThis` singleton shared by all bundles). Update and restart:
+```bash
+openclaw xmpp update && openclaw gateway restart
 ```
 
 ### Plugin fails to load: `Dynamic require of "events" is not supported`

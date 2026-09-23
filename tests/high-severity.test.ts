@@ -128,7 +128,9 @@ describe('Fix H4: getQueue singleton → per-dataDir map', () => {
 
   it('uses a Map keyed by dataDir', async () => {
     const src = await readSource('src/queue-bridge.ts');
-    assert.match(src, /queueByDir\s*=\s*new Map/);
+    // SECURITY (2.18.8): the map is shared across bundled entries via globalThis.
+    assert.match(src, /Symbol\.for\("openclaw\.xmpp\.queues"\)/);
+    assert.match(src, /new Map/);
     assert.match(src, /queueByDir\.get\(dir\)/);
     assert.match(src, /queueByDir\.set\(dir, q\)/);
   });

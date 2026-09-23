@@ -7,7 +7,18 @@ import { PersistentQueue, type QueuedMessage } from "./lib/persistent-queue.js";
 // deployment the second account's messages would have been written
 // to the first account's message-queue.json.  This is now a
 // per-dataDir map so each account gets its own queue.
-const queueByDir = new Map<string, PersistentQueue>();
+//
+// SECURITY (2.18.8): esbuild bundles each plugin entry independently, so a
+// plain `new Map()` here would be a SEPARATE copy in `index.js` (CLI) and
+// `channel-plugin-api.js` (gateway) — the CLI and gateway would use different
+// queues.  Store the map on `globalThis` under a `Symbol.for` key so every
+// bundle copy shares one queue registry.
+const QUEUE_KEY = Symbol.for("openclaw.xmpp.queues");
+const root = globalThis as unknown as Record<symbol, Map<string, PersistentQueue> | undefined>;
+const queueByDir: Map<string, PersistentQueue> = (root[QUEUE_KEY] ??= new Map<
+  string,
+  PersistentQueue
+>());
 
 // SECURITY (2.18.1): never fall back to `process.cwd()`.  The Windows
 // gateway runs as a scheduled task whose cwd is `C:\Windows\System32`, so the

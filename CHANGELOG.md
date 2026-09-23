@@ -5,6 +5,56 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.8] - 2026-09-23
+
+**Fix: agents stopped replying because the bundle duplicated the plugin's shared
+state. 2.18.5's esbuild bundling gave each entry its own copy of
+`src/state.ts`, so the runtime OpenClaw injected via `runtime-setter-api.js`
+never reached the gateway, and inbound dispatch was skipped with
+`runtime.channel not available, cannot dispatch`.**
+
+### Why
+
+`defineBundledChannelEntry` declares a runtime setter:
+```ts
+runtime: { specifier: "./runtime-setter-api.js", exportName: "setXmppRuntime" }
+```
+OpenClaw loads that entry and calls `setXmppRuntime(api.runtime)`.  But esbuild
+bundles **each entry independently**, so `src/state.ts` (`pluginRuntime`,
+`xmppClients`, `contactsStore`, `pluginRegistered`) existed as **separate copies**
+in `dist/index.js`, `dist/channel-plugin-api.js`, and
+`dist/runtime-setter-api.js`.  The setter wrote one copy; the gateway
+(`channel-plugin.ts` passes its own `getPluginRuntime` into `GatewayLifecycle`)
+read another -> `getPluginRuntime()` returned `null` -> `runtime.channel` was
+unavailable -> every inbound turn was skipped:
+
+```
+[WARN] runtime.channel not available, cannot dispatch { error: 'Unknown error' }
+```
+
+So agents stopped responding.  `src/queue-bridge.ts`'s `queueByDir` was
+duplicated the same way, splitting the CLI's and gateway's queues.  Unbundled
+2.18.4 shared the single `dist/src/state.js`, which is why it worked.
+
+### Changed
+
+- **`src/state.ts`** — backs its state with a process-wide singleton on
+  `globalThis` under `Symbol.for("openclaw.xmpp.state")`, so every bundle copy
+  shares the runtime, `xmppClients`, `contactsStore`, and registration flag
+  (same pattern as the existing `(global as any).whiteboardSessionManager`).
+  Export API unchanged.
+- **`src/queue-bridge.ts`** — the per-`dataDir` queue map is now a `globalThis`
+  singleton (`Symbol.for("openclaw.xmpp.queues")`), so the CLI and gateway share
+  one queue registry.
+- **`tests/v2.18.8-shared-state.test.ts`** (new) — source assertions plus a
+  runtime check that `setXmppRuntime` via `dist/runtime-setter-api.js` is visible
+  to another bundled copy of `state`.
+
+### Note
+
+This is a code fix only; the bundling (needed to inline `@xmpp/client` +
+`typebox` after the prune) is unchanged.
+
 ## [2.18.7] - 2026-09-23
 
 **Fix: Windows auto-update failed with `'C:\Program' is not recognized`. 2.18.5

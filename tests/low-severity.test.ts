@@ -249,18 +249,15 @@ describe('Fix L10: gateway log.warn when recordInboundSession is missing', () =>
 describe('Fix L11: state.ts uses Map<string, XmppClient> and Map<string, Contacts>', () => {
   it('xmppClients is Map<string, XmppClient>', async () => {
     const src = await readSource('src/state.ts');
-    assert.match(
-      src,
-      /xmppClients\s*=\s*new\s+Map<string,\s*XmppClient>\(/,
-    );
+    assert.match(src, /new\s+Map<string,\s*XmppClient>\(/);
+    // SECURITY (2.18.8): exposed from the globalThis-backed shared state.
+    assert.match(src, /export const xmppClients = state\.clients/);
   });
 
   it('contactsStore is Map<string, Contacts>', async () => {
     const src = await readSource('src/state.ts');
-    assert.match(
-      src,
-      /contactsStore\s*=\s*new\s+Map<string,\s*Contacts>\(/,
-    );
+    assert.match(src, /new\s+Map<string,\s*Contacts>\(/);
+    assert.match(src, /export const contactsStore = state\.contacts/);
   });
 
   it('XmppClient and Contacts are imported as types', async () => {

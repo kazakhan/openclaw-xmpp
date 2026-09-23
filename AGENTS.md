@@ -96,6 +96,15 @@ npm run typecheck              # tsc --noEmit
 
 ## Notes
 
+- **Bundled entries do not share module state.** esbuild bundles each entry
+  (`index.js`, `channel-plugin-api.js`, `runtime-setter-api.js`, …) separately,
+  so any process-wide singleton MUST live on `globalThis` under a `Symbol.for`
+  key (see `src/state.ts`, `src/queue-bridge.ts`, and the existing
+  `(global as any).whiteboardSessionManager`). A plain module-level `let` /
+  `new Map()` becomes one copy per bundle — that broke inbound dispatch in
+  2.18.5–2.18.7 (`setXmppRuntime` reached a different copy than the gateway's
+  `getPluginRuntime`, so `runtime.channel` was null and the agent stopped
+  replying). When adding shared runtime state, put it in `src/state.ts`.
 - **Windows spawns:** use `buildSpawnPlan()` (`src/lib/win-args.ts`, mirrored by
   `scripts/win-args.mjs`). Never route an absolute executable (`process.execPath`
   = `C:\Program Files\nodejs\node.exe`) through `cmd /d /s /c` — `/s` strips the
