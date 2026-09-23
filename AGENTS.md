@@ -26,6 +26,20 @@ npm run typecheck              # tsc --noEmit
   times out. Externals: `openclaw`, `openclaw/*`, `@openclaw/*`, `ssh2`,
   `cpu-features`. Bundling is best-effort (falls back to plain `tsc` output).
   `noEmitOnError: false` still lets `tsc` emit on type-only errors.
+  - **2.18.6:** the bundle **must** carry the esbuild `createRequire` banner, or
+    the ESM output throws `Dynamic require of "events" is not supported` (2.18.5
+    shipped exactly that and failed to load everywhere). The build now verifies
+    every bundle has the banner and only then swaps it in (two-phase, because
+    `src/outbound.ts` imports `../index.js`; swapping as you go duplicates the
+    banner). A bundle that fails verification is discarded.
+  - **2.18.6:** `@xmpp/client` + `typebox` are **devDependencies** (inlined, not
+    captured); `ssh2` stays the only runtime dependency. The installers/updater
+    run `npm prune --omit=dev` after building (or pass `OPENCLAW_XMPP_PRUNE=1` to
+    `scripts/build.mjs`), and the build clears stale `openclaw-plugin-build-*`
+    temp dirs (`scripts/clean-plugin-build-temp.mjs`). Env overrides:
+    `OPENCLAW_XMPP_PRUNE=1`, `OPENCLAW_XMPP_SKIP_TEMP_CLEAN=1`,
+    `OPENCLAW_XMPP_TEMP_GRACE_MS`. Bundling alone did not shrink the capture —
+    the prune is what drops it from ~12k files/40 MB to ~482 files/7.9 MB.
 - **Test:** `node --test tests/*.test.ts` (Node's built-in runner, TS type-stripping).
 - **Known pre-existing failures** (do NOT "fix" unless asked): the whole-file
   import suites `tests/encryption.test.ts`, `rate-limit.test.ts`,

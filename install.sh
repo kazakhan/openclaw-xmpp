@@ -54,6 +54,15 @@ else
     echo "  Build complete"
 fi
 
+# SECURITY (2.18.6): build.mjs already prunes devDeps and cleans stale temp
+# dirs; repeat the cleanup explicitly so a failed/partial build still clears the
+# `openclaw-plugin-build-*` scratch dirs OpenClaw 2026.9.5+ leaves behind.
+echo "Pruning dev dependencies..."
+npm prune --omit=dev --no-audit --no-fund || true
+
+echo "Cleaning stale OpenClaw plugin-build temp dirs..."
+node scripts/clean-plugin-build-temp.mjs || true
+
 echo "Registering plugin with OpenClaw..."
 #openclaw plugins install --link --force "$PLUGIN_DIR"
 openclaw plugins install --link "$PLUGIN_DIR"

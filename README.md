@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.5)
+## Status: ✅ WORKING (v2.18.6)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -99,6 +99,15 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   external) so OpenClaw 2026.9.5+'s plugin source-capture stays small. Without
   it the gateway spent ~90 s per load parsing the dependency graph and never
   finished starting.
+- **v2.18.6** — **loadable bundle + actually-small capture**: 2.18.5's ESM bundle
+  threw `Dynamic require of "events" is not supported` (esbuild's `__require`
+  shim with no real `require`). The build now adds a `createRequire` banner and
+  verifies every bundle before swapping it in. It also moves the inlined
+  `@xmpp/client`/`typebox` to devDependencies and the install/update flow runs
+  `npm prune --omit=dev` (or `OPENCLAW_XMPP_PRUNE=1 node scripts/build.mjs`), so
+  OpenClaw 2026.9.5's capture drops from ~12,096 files/40 MB to
+  ~482 files/7.9 MB (~3 s/load), and clears stale `openclaw-plugin-build-*`
+  temp dirs.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -162,8 +171,13 @@ npm install          # installs esbuild (devDependency)
 node scripts/build.mjs
 ```
 `build.mjs` runs `tsc` (which still emits on type-only errors) and then bundles
-each entry with esbuild so OpenClaw 2026.9.5+'s plugin source-capture stays
-small. If esbuild is unavailable it keeps the plain `tsc` output.
+each entry with esbuild, adding a `createRequire` banner so the ESM bundle can
+load (`require()` in bundled CJS deps). It verifies every bundle before swapping
+it in, moves the inlined `typebox`/`@xmpp/client` to devDependencies, and clears
+stale `openclaw-plugin-build-*` temp dirs. The installers and `openclaw xmpp
+update` then run `npm prune --omit=dev` (or pass `OPENCLAW_XMPP_PRUNE=1` to the
+build) so OpenClaw 2026.9.5+'s plugin source-capture stays small. If esbuild is
+unavailable it keeps the plain `tsc` output.
 
 #### Step 5: Register the plugin
 ```bash
@@ -667,19 +681,32 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.5) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.6) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then
 re-install. Delete `dist/` first if updating from a previous version.
 
+### Plugin fails to load: `Dynamic require of "events" is not supported`
+The bundled `dist` was built without a real `require` (esbuild's ESM `__require`
+shim). Fixed in **v2.18.6** by a `createRequire` banner. Rebuild:
+```bash
+rm -rf dist/
+npm install
+node scripts/build.mjs
+```
+The build now verifies every bundle has the banner and discards a bad bundle
+(keeping the unbundled `tsc` output) instead of shipping it. Then restart.
+
 ### Gateway very slow to start / startup times out (OpenClaw 2026.9.5+)
 OpenClaw 2026.9.5 added a plugin **source-capture** step that parses the plugin's
-whole module graph on load. An unbundled `dist` drags `typebox`/`@xmpp` through
-it (~90 s per load, twice per startup), which exceeds the 120 s model-runtime
-build timeout. Fixed in **v2.18.5** (bundled `dist`). Build it with
-`node scripts/build.mjs`; the bundled `dist/index.js` imports only `openclaw/*`
-and `ssh2`.
+whole module graph on load. Bundling alone does not shrink it — the capture walks
+the declared dependency tree, so `@xmpp/client`/`typebox` must be devDependencies
+and `node_modules` pruned. Fixed in **v2.18.6**: the captured graph drops to
+~482 files / 7.9 MB (~3 s per load). Build with `node scripts/build.mjs` and
+prune with `npm prune --omit=dev` (the installers/`openclaw xmpp update` do this
+automatically); the build also clears stale `openclaw-plugin-build-*` temp dirs,
+and the bundled `dist/index.js` imports only `openclaw/*` and `ssh2`.
 
 ### No groupchat replies (agent responds in webchat but not in room)
 ```bash
@@ -842,13 +869,14 @@ openclaw config set plugins.entries.xmpp.hooks.allowConversationAccess true
 xmpp/
 ├── index.ts                    # Plugin entry point (register function)
 ├── setup-entry.ts              # Setup entry (re-exports from index.ts)
-├── package.json                # Dependencies (@xmpp/client)
+├── package.json                # Dependencies (ssh2; @xmpp/client/typebox are devDeps, bundled)
 ├── openclaw.plugin.json        # Plugin manifest (channel registration)
 ├── tsconfig.json               # TypeScript compiler configuration
 ├── install.sh                  # Linux install script
 ├── install.ps1                 # Windows install script
 ├── scripts/
 │   ├── build.mjs               # tsc + esbuild bundle (small plugin source-capture graph)
+│   ├── clean-plugin-build-temp.mjs # remove stale openclaw-plugin-build-* temp dirs
 │   ├── purge-in-tree-backups.mjs # postinstall: remove in-tree backups (pre-load repair)
 │   └── link-openclaw-sdk.mjs   # postinstall: link the global OpenClaw SDK for tsc
 ├── src/

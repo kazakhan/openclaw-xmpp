@@ -315,8 +315,22 @@ export async function ensurePluginInstalled(
   if (!fs.existsSync(path.join(dir, "dist"))) {
     // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild so
     // OpenClaw's plugin source-capture stays small.
-    run(process.execPath, ["scripts", "build.mjs"], dir, "build");
+    run(process.execPath, [path.join("scripts", "build.mjs")], dir, "build");
     steps.push("build");
+
+    // SECURITY (2.18.6): prune devDependencies so the capture only copies
+    // runtime deps, and clear stale plugin-build temp dirs (both best-effort).
+    try {
+      run("npm", ["prune", "--omit=dev", "--no-audit", "--no-fund"], dir, "npm prune");
+      steps.push("prune");
+    } catch {
+      /* prune is best-effort */
+    }
+    try {
+      run(process.execPath, [path.join("scripts", "clean-plugin-build-temp.mjs")], dir, "temp cleanup");
+    } catch {
+      /* temp cleanup is best-effort */
+    }
   }
 
   return steps;
@@ -477,7 +491,7 @@ export async function ensureDistBuilt(pluginDir: string = resolvePluginDir()): P
   }
   try {
     // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild.
-    run(process.execPath, ["scripts", "build.mjs"], pluginDir, "build");
+    run(process.execPath, [path.join("scripts", "build.mjs")], pluginDir, "build");
   } catch (buildErr) {
     // tsc exits non-zero on type-only errors but still emits (noEmitOnError:false),
     // and bundling is best-effort.  Only fail when no build output was produced.
@@ -485,6 +499,18 @@ export async function ensureDistBuilt(pluginDir: string = resolvePluginDir()): P
     console.warn(
       `[onboarding] build reported errors but emitted dist/; continuing. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`,
     );
+  }
+  // SECURITY (2.18.6): prune devDependencies + clear stale plugin-build temp
+  // dirs so OpenClaw 2026.9.5+'s source-capture stays small (both best-effort).
+  try {
+    run("npm", ["prune", "--omit=dev", "--no-audit", "--no-fund"], pluginDir, "npm prune");
+  } catch {
+    /* prune is best-effort */
+  }
+  try {
+    run(process.execPath, [path.join("scripts", "clean-plugin-build-temp.mjs")], pluginDir, "temp cleanup");
+  } catch {
+    /* temp cleanup is best-effort */
   }
   return { built: true };
 }

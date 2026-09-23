@@ -26,7 +26,10 @@ describe('2.15.5: sasl-scram-sha-1 pin', () => {
   it('package.json overrides pin sasl-scram-sha-1 to 1.3.0', async () => {
     const pkg = JSON.parse(await read('package.json'));
     assert.equal(pkg.overrides?.['sasl-scram-sha-1'], '1.3.0');
-    assert.equal(pkg.dependencies?.['@xmpp/client'], '0.13.6');
+    // SECURITY (2.18.6): @xmpp/client is inlined into the bundle, so it is a
+    // devDependency now (bundling alone did not shrink OpenClaw's capture).
+    assert.equal(pkg.devDependencies?.['@xmpp/client'], '0.13.6');
+    assert.equal(pkg.dependencies?.['@xmpp/client'], undefined);
   });
 
   it('package-lock.json resolves sasl-scram-sha-1 to 1.3.0', async () => {

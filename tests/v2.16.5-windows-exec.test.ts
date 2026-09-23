@@ -56,7 +56,7 @@ describe('2.16.5: Windows-safe exec', () => {
   });
 });
 
-describe('2.16.5/2.18.5: build non-zero is tolerated when dist is emitted', () => {
+describe('2.16.5/2.18.6: build non-zero is tolerated when dist is emitted', () => {
   it('updater tolerates build failure with dist/index.js', async () => {
     const src = await readSource('src/updater.ts');
     assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(dir,\s*"dist",\s*"index\.js"\)\)\)\s*throw buildErr/);

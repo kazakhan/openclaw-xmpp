@@ -80,6 +80,21 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  Build complete"
 }
 
+# SECURITY (2.18.6): build.mjs already prunes devDeps and cleans stale temp
+# dirs; repeat the cleanup explicitly so a failed/partial build still clears the
+# `openclaw-plugin-build-*` scratch dirs OpenClaw 2026.9.5+ leaves behind.
+Write-Host "Pruning dev dependencies..."
+& npm prune --omit=dev --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: npm prune failed (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
+Write-Host "Cleaning stale OpenClaw plugin-build temp dirs..."
+& node scripts\clean-plugin-build-temp.mjs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  WARNING: temp cleanup failed (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
 Write-Host "Registering plugin with OpenClaw..."
 & openclaw plugins install --link --force $PluginDir
 if ($LASTEXITCODE -ne 0) {

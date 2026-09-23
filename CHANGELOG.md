@@ -5,6 +5,68 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.6] - 2026-09-23
+
+**Fix: 2.18.5's bundle could not load, and bundling alone did not shrink
+OpenClaw's plugin source-capture. 2.18.6 ships a loadable bundle and actually
+reduces the captured graph, so the plugin loads on both OpenClaw 2026.9.4
+(archbox) and 2026.9.5 (Windows).**
+
+### Why
+
+2.18.5 made the plugin unusable on every host:
+
+1. **The bundle could not load.** `dist/*.js` contained esbuild's ESM
+   `__require` shim, which throws
+   `Dynamic require of "events" is not supported` because no real `require`
+   exists in an ESM module. OpenClaw logged
+   `[plugins] xmpp failed to load ... Error: Dynamic require of "events" is not supported`
+   and the channel never started.
+2. **Bundling did not reduce the slow part.** OpenClaw 2026.9.5+'s plugin
+   source-capture walks the plugin's *declared* dependency tree, so inlining
+   code did not stop `@xmpp/client` + `typebox` (and stale dev tooling still
+   present in `node_modules`) from being copied. The capture stayed at
+   ~12,096 files / 40 MB per load, ~90 s each, twice per startup — over
+   OpenClaw's hard-coded 120 s model-runtime build timeout.
+
+### Changed
+
+- **`scripts/build.mjs`** — added an esbuild `banner`
+  (`createRequire(import.meta.url)`) so the ESM bundle has a real `require`, and
+  switched to a **two-phase** build (build *all* entries, verify each carries
+  the banner, then swap them in) so an already-bundled entry is never inlined
+  into another (`src/outbound.ts` imports `../index.js`). A bundle that fails
+  verification is discarded and the unbundled `tsc` output is kept, so a
+  `Dynamic require` bundle can never be shipped again. The script now also
+  ensures the build toolchain (re-`npm install` after a prune), optionally prunes
+  devDeps (`OPENCLAW_XMPP_PRUNE=1`), and clears stale temp dirs.
+- **`scripts/clean-plugin-build-temp.mjs`** (new) — removes stale
+  `openclaw-plugin-build-*` scratch dirs from the OS temp dir (OpenClaw
+  never cleans them; observed 324 dirs / 26.7 GB on one host). Conservative:
+  only direct children with a known prefix older than a grace period (default
+  1 h, `OPENCLAW_XMPP_TEMP_GRACE_MS`).
+- **`package.json`** — moved `@xmpp/client` + `typebox` from `dependencies` to
+  `devDependencies` (they are inlined into the bundle); `ssh2` stays the only
+  runtime dependency (it is `external` and has a native optional dep). Added a
+  `clean-temp` script.
+- **`install.sh` / `install.ps1` / `src/updater.ts` / `src/onboarding.ts`** —
+  after building, run `npm prune --omit=dev` and the temp-dir cleanup so hosts
+  on 2026.9.5 never capture the dev toolchain.
+
+### Result
+
+- The bundle imports without `Dynamic require` on 2026.9.4 and 2026.9.5.
+- On 2026.9.5 the captured graph drops to ~482 files / 7.9 MB (~3 s per load),
+  so the gateway starts well under the timeout.
+
+### Upgrade note
+
+Update to v2.18.6 (`openclaw xmpp update`, or `git pull` + `npm install` +
+`node scripts/build.mjs`), then restart the gateway. If a host previously ran
+2.18.5, delete `dist/` before rebuilding; the build will refuse to keep a broken
+bundle. Env overrides: `OPENCLAW_XMPP_PRUNE=1`,
+`OPENCLAW_XMPP_SKIP_TEMP_CLEAN=1`.
+
 ## [2.18.5] - 2026-09-23
 
 **Fix: bundle `dist` so OpenClaw's plugin source-capture stays small. OpenClaw

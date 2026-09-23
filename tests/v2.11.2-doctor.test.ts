@@ -35,7 +35,7 @@ describe('Fix 2.11.2: runtime-readiness guard (src/onboarding.ts)', () => {
 
   it('reports the clear fix to rebuild dist/ (build script)', async () => {
     const src = await readSource('src/onboarding.ts');
-    assert.match(src, /run\(process\.execPath, \["scripts", "build\.mjs"\]/);
+    assert.match(src, /run\(process\.execPath, \[path\.join\("scripts", "build\.mjs"\)\]/);
     assert.match(src, /Rebuild the compiled output by running:\s+node scripts\/build\.mjs/);
   });
 
@@ -44,7 +44,7 @@ describe('Fix 2.11.2: runtime-readiness guard (src/onboarding.ts)', () => {
     const body = src.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.match(
       body,
-      /ensureDistBuilt[\s\S]*?run\(\s*process\.execPath\s*,\s*\["scripts",\s*"build\.mjs"\]\s*,\s*pluginDir\s*,\s*["']build["']\s*\)/,
+      /ensureDistBuilt[\s\S]*?run\(\s*process\.execPath\s*,\s*\[path\.join\("scripts",\s*"build\.mjs"\)\]\s*,\s*pluginDir\s*,\s*["']build["']\s*\)/,
       'ensureDistBuilt must run scripts/build.mjs in the plugin directory.',
     );
   });
@@ -81,7 +81,7 @@ describe('Fix 2.11.2: installers auto-rebuild dist/', () => {
     const src = await readSource('src/onboarding.ts');
     assert.match(
       src,
-      /if\s*\(\s*!fs\.existsSync\(\s*path\.join\(\s*dir\s*,\s*["']dist["'][\s\S]*?run\(process\.execPath, \["scripts", "build\.mjs"\]/,
+      /if\s*\(\s*!fs\.existsSync\(\s*path\.join\(\s*dir\s*,\s*["']dist["'][\s\S]*?run\(process\.execPath, \[path\.join\("scripts", "build\.mjs"\)\]/,
       'ensurePluginInstalled must build dist when it is missing.',
     );
   });

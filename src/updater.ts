@@ -417,7 +417,7 @@ export async function performUpdate(
       // SECURITY (2.18.5): `scripts/build.mjs` runs `tsc` then bundles each
       // entry with esbuild so OpenClaw 2026.9.5+'s plugin source-capture only
       // sees a handful of files (not typebox/@xmpp's thousands).
-      run(process.execPath, ["scripts", "build.mjs"], dir, "build");
+      run(process.execPath, [path.join("scripts", "build.mjs")], dir, "build");
     } catch (buildErr) {
       // `noEmitOnError:false` means tsc still emits a usable dist/ on type-only
       // errors, and bundling is best-effort; treat that as a warning and only
@@ -426,6 +426,20 @@ export async function performUpdate(
       console.warn(
         `[updater] build reported errors but emitted dist/; continuing. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`,
       );
+    }
+
+    // SECURITY (2.18.6): prune devDependencies so OpenClaw 2026.9.5+'s plugin
+    // source-capture only copies the runtime deps (@openclaw/xmpp + ssh2), and
+    // clear stale plugin-build temp dirs.  Both are best-effort.
+    try {
+      run(exe("npm"), ["prune", "--omit=dev", "--no-audit", "--no-fund"], dir, "npm prune");
+    } catch {
+      /* prune is best-effort */
+    }
+    try {
+      run(process.execPath, [path.join("scripts", "clean-plugin-build-temp.mjs")], dir, "temp cleanup");
+    } catch {
+      /* temp cleanup is best-effort */
     }
   } catch (err) {
     await restoreSnapshot(dir, snapDest).catch(() => {});
