@@ -2,6 +2,8 @@
 //
 // 1. `.cmd`/`.bat` shims (npm.cmd/npx.cmd/openclaw.cmd) can't be spawned without
 //    a shell (CVE-2024-27980) → EINVAL.  Use `cmd.exe /d /s /c`.
+//    SECURITY (2.18.7): real executables (process.execPath) are spawned
+//    directly — see `src/lib/win-args.ts`.
 // 2. tsc exits non-zero on type-only errors but still emits (noEmitOnError:false)
 //    → treat as non-fatal when dist/index.js exists.
 // 3. The release tag goes into a shell command line → validate it.
@@ -36,11 +38,11 @@ describe('2.16.5: release tag validation', () => {
 });
 
 describe('2.16.5: Windows-safe exec', () => {
-  it('updater.run uses cmd.exe /d /s /c on win32', async () => {
+  it('updater.run plans a Windows-safe spawn (cmd only for shims)', async () => {
     const src = await readSource('src/updater.ts');
     assert.match(src, /process\.platform === "win32"/);
-    assert.match(src, /ComSpec \|\| "cmd\.exe"/);
-    assert.match(src, /\["\/d",\s*"\/s",\s*"\/c",\s*cmd,\s*\.\.\.args\]/);
+    assert.match(src, /buildSpawnPlan/);
+    assert.match(src, /windowsVerbatimArguments/);
   });
 
   it('updater.restartGateway uses cmd.exe on win32 (no bare .cmd spawn)', async () => {
@@ -49,10 +51,11 @@ describe('2.16.5: Windows-safe exec', () => {
     assert.match(src, /spawn\(comspec,\s*\["\/d",\s*"\/s",\s*"\/c",\s*"openclaw",\s*"gateway",\s*"restart"\]/);
   });
 
-  it('onboarding.run uses cmd.exe /d /s /c on win32', async () => {
+  it('onboarding.run plans a Windows-safe spawn (cmd only for shims)', async () => {
     const src = await readSource('src/onboarding.ts');
-    assert.match(src, /ComSpec \|\| "cmd\.exe"/);
-    assert.match(src, /\["\/d",\s*"\/s",\s*"\/c",\s*cmd,\s*\.\.\.args\]/);
+    assert.match(src, /process\.platform === "win32"/);
+    assert.match(src, /buildSpawnPlan/);
+    assert.match(src, /windowsVerbatimArguments/);
   });
 });
 
@@ -60,13 +63,13 @@ describe('2.16.5/2.18.6: build non-zero is tolerated when dist is emitted', () =
   it('updater tolerates build failure with dist/index.js', async () => {
     const src = await readSource('src/updater.ts');
     assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(dir,\s*"dist",\s*"index\.js"\)\)\)\s*throw buildErr/);
-    assert.match(src, /scripts",\s*"build\.mjs"/);
+    assert.match(src, /\["run",\s*"build"\]/);
   });
 
   it('onboarding tolerates build failure with dist/index.js', async () => {
     const src = await readSource('src/onboarding.ts');
     assert.match(src, /if\s*\(!fs\.existsSync\(path\.join\(pluginDir,\s*"dist",\s*"index\.js"\)\)\)\s*throw buildErr/);
-    assert.match(src, /scripts",\s*"build\.mjs"/);
+    assert.match(src, /\["run",\s*"build"\]/);
   });
 
   it('updater validates the tag before use', async () => {

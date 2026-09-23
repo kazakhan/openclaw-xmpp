@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.6)
+## Status: ✅ WORKING (v2.18.7)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -108,6 +108,11 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   OpenClaw 2026.9.5's capture drops from ~12,096 files/40 MB to
   ~482 files/7.9 MB (~3 s/load), and clears stale `openclaw-plugin-build-*`
   temp dirs.
+- **v2.18.7** — **Windows auto-update fix**: 2.18.5 spawned `process.execPath`
+  (`C:\Program Files\nodejs\node.exe`) through `cmd /s /c`, which splits at the
+  space and failed with `'C:\Program' is not recognized`, rolling back every
+  update. Real executables are now spawned directly; only bare/`.cmd` shims go
+  through cmd (arg-quoted). The updater also builds via `npm run build`.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -681,11 +686,26 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.6) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.7) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then
 re-install. Delete `dist/` first if updating from a previous version.
+
+### Windows update fails: `'C:\Program' is not recognized`
+2.18.5/2.18.6 spawned `process.execPath` (`C:\Program Files\nodejs\node.exe`)
+through `cmd /s /c`, which splits at the space and rolls the update back. Fixed
+in **v2.18.7** (real executables are spawned directly). Because the *running*
+updater is the broken one, update a 2.18.5/2.18.6 host once manually:
+```powershell
+cd $env:USERPROFILE\.openclaw\extensions\xmpp
+git fetch --tags origin
+git checkout -B main origin/main
+npm install
+npm run build
+npm prune --omit=dev
+openclaw gateway restart
+```
 
 ### Plugin fails to load: `Dynamic require of "events" is not supported`
 The bundled `dist` was built without a real `require` (esbuild's ESM `__require`
@@ -877,6 +897,7 @@ xmpp/
 ├── scripts/
 │   ├── build.mjs               # tsc + esbuild bundle (small plugin source-capture graph)
 │   ├── clean-plugin-build-temp.mjs # remove stale openclaw-plugin-build-* temp dirs
+│   ├── win-args.mjs            # Windows spawn planning (cmd quoting / direct exe)
 │   ├── purge-in-tree-backups.mjs # postinstall: remove in-tree backups (pre-load repair)
 │   └── link-openclaw-sdk.mjs   # postinstall: link the global OpenClaw SDK for tsc
 ├── src/

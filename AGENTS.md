@@ -96,6 +96,14 @@ npm run typecheck              # tsc --noEmit
 
 ## Notes
 
+- **Windows spawns:** use `buildSpawnPlan()` (`src/lib/win-args.ts`, mirrored by
+  `scripts/win-args.mjs`). Never route an absolute executable (`process.execPath`
+  = `C:\Program Files\nodejs\node.exe`) through `cmd /d /s /c` — `/s` strips the
+  outer quotes and splits at the space, so it runs `C:\Program` and every
+  Windows update fails (`'C:\Program' is not recognized`, 2.18.5/2.18.6). Spawn
+  real exes directly; only bare/`.cmd`/`.bat` shims need cmd, with the line
+  pre-quoted and `windowsVerbatimArguments: true`. Prefer `npm run build` over
+  `node scripts/build.mjs` when launching the build from the updater.
 - The gateway runs from `dist/`. On Linux restart with
   `systemctl --user restart openclaw-gateway`; on Windows the gateway is a
   Scheduled Task (use `openclaw gateway restart`, elevated).

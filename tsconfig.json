@@ -12,7 +12,9 @@
     "resolveJsonModule": true,
     "declaration": false,
     "sourceMap": false,
-    "noEmitOnError": false
+    "noEmitOnError": false,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
   "include": [
     "index.ts",

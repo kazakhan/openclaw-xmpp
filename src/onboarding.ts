@@ -13,6 +13,7 @@ import {
   isGroupSilentRepliesEnabled,
   enableGroupSilentReplies,
 } from "./lib/plugin-paths.js";
+import { buildSpawnPlan } from "./lib/win-args.ts";
 
 export {
   IN_TREE_BACKUP_DIRS,
@@ -250,18 +251,25 @@ function promptChoice(
 // SECURITY (2.16.5): Node >=18.20.2 (CVE-2024-27980) refuses to spawn
 // `.cmd`/`.bat` shims without a shell, so `npm`/`npx` fail on Windows.  Wrap
 // with `cmd.exe /d /s /c` explicitly (avoids the `shell: true` DEP0190 warning).
+// SECURITY (2.18.7): real executables (process.execPath) are spawned directly —
+// routing an absolute path with spaces through `cmd /s /c` broke Windows
+// ("'C:\Program' is not recognized").  See `./lib/win-args.js`.
 function run(cmd: string, args: string[], cwd: string, label: string): string | null {
+  const opts = {
+    cwd,
+    stdio: "pipe" as const,
+    encoding: "utf8" as const,
+    windowsHide: true,
+  };
   try {
     if (process.platform === "win32") {
-      const comspec = process.env.ComSpec || "cmd.exe";
-      return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
-        cwd,
-        stdio: "pipe",
-        encoding: "utf8",
-        windowsHide: true,
-      });
+      const plan = buildSpawnPlan(cmd, args);
+      // `windowsVerbatimArguments` is a spawn option that `execFileSync`'s type
+      // does not list; assign to a variable to avoid the excess-property check.
+      const execOpts = { ...opts, windowsVerbatimArguments: plan.windowsVerbatimArguments };
+      return execFileSync(plan.file, plan.args, execOpts);
     }
-    return execFileSync(cmd, args, { cwd, stdio: "pipe", encoding: "utf8", windowsHide: true });
+    return execFileSync(cmd, args, opts);
   } catch (err: any) {
     const msg = err?.stderr || err?.stdout || err?.message || String(err);
     throw new Error(`${label} failed: ${String(msg).trim()}`);
@@ -315,7 +323,9 @@ export async function ensurePluginInstalled(
   if (!fs.existsSync(path.join(dir, "dist"))) {
     // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild so
     // OpenClaw's plugin source-capture stays small.
-    run(process.execPath, [path.join("scripts", "build.mjs")], dir, "build");
+    // SECURITY (2.18.7): go through `npm run build` (bare npm shim) instead of
+    // spawning `process.execPath`, which `cmd /c` mangles on spaced paths.
+    run("npm", ["run", "build"], dir, "build");
     steps.push("build");
 
     // SECURITY (2.18.6): prune devDependencies so the capture only copies
@@ -490,8 +500,9 @@ export async function ensureDistBuilt(pluginDir: string = resolvePluginDir()): P
     return { built: false };
   }
   try {
-    // SECURITY (2.18.5): build.mjs runs tsc then bundles with esbuild.
-    run(process.execPath, [path.join("scripts", "build.mjs")], pluginDir, "build");
+    // SECURITY (2.18.5/2.18.7): `npm run build` runs scripts/build.mjs (tsc
+    // then esbuild bundle); npm's shim avoids the Windows spaced-path bug.
+    run("npm", ["run", "build"], pluginDir, "build");
   } catch (buildErr) {
     // tsc exits non-zero on type-only errors but still emits (noEmitOnError:false),
     // and bundling is best-effort.  Only fail when no build output was produced.

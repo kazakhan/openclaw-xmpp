@@ -3,6 +3,8 @@ import path from "path";
 import os from "os";
 import { execFileSync, spawn } from "child_process";
 
+import { buildSpawnPlan } from "./lib/win-args.ts";
+
 const REPO = "kazakhan/openclaw-xmpp";
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const ARCHIVE = (tag: string) => `https://github.com/${REPO}/archive/refs/tags/${tag}.tar.gz`;
@@ -175,34 +177,36 @@ function exe(name: string): string {
 // spawn `.cmd`/`.bat` shims without a shell, so `execFileSync("npm.cmd", …)`
 // throws EINVAL on Windows.  Wrap with `cmd.exe /d /s /c` explicitly (rather
 // than `shell: true`, which emits Node's DEP0190 deprecation warning).
+// SECURITY (2.18.7): real executables (process.execPath) are spawned directly —
+// routing an absolute path with spaces through `cmd /s /c` broke every Windows
+// update ("'C:\Program' is not recognized").  See `./lib/win-args.js`.
 function run(cmd: string, args: string[], cwd: string, label: string): string {
+  const opts = {
+    cwd,
+    stdio: "pipe" as const,
+    encoding: "utf8" as const,
+    windowsHide: true,
+  };
   try {
     if (process.platform === "win32") {
-      const comspec = process.env.ComSpec || "cmd.exe";
+      const plan = buildSpawnPlan(cmd, args);
+      // `windowsVerbatimArguments` is a spawn option that `execFileSync`'s type
+      // does not list; assign to a variable so TS's excess-property check
+      // (literals only) does not reject it.
+      const execOpts = { ...opts, windowsVerbatimArguments: plan.windowsVerbatimArguments };
       try {
-        return execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
-          cwd,
-          stdio: "pipe",
-          encoding: "utf8",
-          windowsHide: true,
-        });
+        return execFileSync(plan.file, plan.args, execOpts);
       } catch (spawnErr: any) {
         // SECURITY (2.18.1): some locked-down Windows environments reject the
         // cmd.exe wrapper.  EINVAL/ENOENT here means the process never started,
         // so retrying through the shell is safe (no double execution).
         if (spawnErr?.code === "EINVAL" || spawnErr?.code === "ENOENT") {
-          return execFileSync(cmd, args, {
-            cwd,
-            stdio: "pipe",
-            encoding: "utf8",
-            windowsHide: true,
-            shell: true,
-          });
+          return execFileSync(cmd, args, { ...opts, shell: true });
         }
         throw spawnErr;
       }
     }
-    return execFileSync(cmd, args, { cwd, stdio: "pipe", encoding: "utf8", windowsHide: true });
+    return execFileSync(cmd, args, opts);
   } catch (err: any) {
     const msg = err?.stderr || err?.stdout || err?.message || String(err);
     throw new Error(`${label} failed: ${String(msg).trim()}`);
@@ -414,10 +418,12 @@ export async function performUpdate(
     ensureSdkLink(dir);
     fs.rmSync(path.join(dir, "dist"), { recursive: true, force: true });
     try {
-      // SECURITY (2.18.5): `scripts/build.mjs` runs `tsc` then bundles each
-      // entry with esbuild so OpenClaw 2026.9.5+'s plugin source-capture only
-      // sees a handful of files (not typebox/@xmpp's thousands).
-      run(process.execPath, [path.join("scripts", "build.mjs")], dir, "build");
+      // SECURITY (2.18.5/2.18.7): `npm run build` runs `scripts/build.mjs` (tsc
+      // then esbuild bundle) so OpenClaw 2026.9.5+'s plugin source-capture only
+      // sees a handful of files (not typebox/@xmpp's thousands).  Launching npm
+      // (a bare `.cmd` shim) also avoids the Windows `cmd /c` quoting bug that
+      // broke spawning `process.execPath` (a path containing spaces).
+      run(exe("npm"), ["run", "build"], dir, "build");
     } catch (buildErr) {
       // `noEmitOnError:false` means tsc still emits a usable dist/ on type-only
       // errors, and bundling is best-effort; treat that as a warning and only

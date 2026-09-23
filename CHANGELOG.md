@@ -5,6 +5,60 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.7] - 2026-09-23
+
+**Fix: Windows auto-update failed with `'C:\Program' is not recognized`. 2.18.5
+started spawning `process.execPath` (`C:\Program Files\nodejs\node.exe`) through
+`cmd.exe /d /s /c`; `/s` strips the outer quotes and splits at the first space,
+so cmd tried to run `C:\Program` and every update rolled back.**
+
+### Why
+
+`src/updater.ts` built update commands with:
+```ts
+execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], …)
+```
+2.18.4 used `npx tsc` (a bare name) which was fine. 2.18.5 changed the build step
+to `run(process.execPath, ["scripts", "build.mjs"], …)`. `process.execPath` on
+Windows contains a space, and `cmd /s /c` mangles a quoted absolute path, so:
+```
+build failed: 'C:\Program' is not recognized as an internal or external command
+```
+The updater restored its snapshot, leaving the host stuck on the old version.
+The same pattern was in `src/onboarding.ts` and `scripts/build.mjs`.
+
+### Changed
+
+- **`src/lib/win-args.ts`** (new) — `buildSpawnPlan(cmd, args)`: spawns an
+  absolute real executable (e.g. `node.exe`) **directly** (Node quotes the path
+  correctly), and only routes bare names / `.cmd` / `.bat` shims through
+  `cmd.exe /d /s /c` with a pre-quoted line and `windowsVerbatimArguments`, so
+  spaces in *arguments* also survive. `quoteWinArg` implements the
+  CommandLineToArgvW quoting rules.
+- **`src/updater.ts` / `src/onboarding.ts`** — `run()` uses `buildSpawnPlan`;
+  the build step now runs **`npm run build`** (a bare `npm.cmd` shim → no spaced
+  path) instead of spawning `process.execPath` directly.
+- **`scripts/build.mjs`** — `run()` uses the shared `scripts/win-args.mjs`
+  mirror (fixes the `link-openclaw-sdk` / temp-cleanup calls on Windows too).
+- **Tests** — `tests/v2.18.7-windows-spaces.test.ts` (new) unit-tests the spawn
+  plan with `C:\Program Files\…` and `npm.cmd`; `tests/v2.16.5-windows-exec.test.ts`
+  updated.
+
+### Upgrade note
+
+Hosts whose running updater is 2.18.5/2.18.6 cannot self-update (their own
+broken `run()` executes the build). Update them once manually:
+```powershell
+cd $env:USERPROFILE\.openclaw\extensions\xmpp
+git fetch --tags origin
+git checkout -B main origin/main
+npm install
+npm run build
+npm prune --omit=dev
+openclaw gateway restart
+```
+Hosts on 2.18.4 (or older) update normally via `openclaw xmpp update`.
+
 ## [2.18.6] - 2026-09-23
 
 **Fix: 2.18.5's bundle could not load, and bundling alone did not shrink

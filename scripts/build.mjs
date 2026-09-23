@@ -37,6 +37,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { buildSpawnPlan } from "./win-args.mjs";
+
 const pluginDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // Entry points that OpenClaw loads (main entry + the bundled sub-entries
@@ -66,18 +68,19 @@ function envFlag(name) {
   return v === "1" || v === "true";
 }
 
+// SECURITY (2.16.5): `.cmd`/`.bat` shims (npm/npx) need a shell on Windows
+// (CVE-2024-27980).  SECURITY (2.18.7): real executables (process.execPath) are
+// spawned directly — routing a spaced absolute path through `cmd /s /c` broke
+// Windows ("'C:\Program' is not recognized").  See `win-args.mjs`.
 function run(cmd, args, label) {
   try {
-    if (process.platform === "win32") {
-      const comspec = process.env.ComSpec || "cmd.exe";
-      execFileSync(comspec, ["/d", "/s", "/c", cmd, ...args], {
-        cwd: pluginDir,
-        stdio: "inherit",
-        windowsHide: true,
-      });
-    } else {
-      execFileSync(cmd, args, { cwd: pluginDir, stdio: "inherit" });
-    }
+    const plan = buildSpawnPlan(cmd, args);
+    execFileSync(plan.file, plan.args, {
+      cwd: pluginDir,
+      stdio: "inherit",
+      windowsHide: true,
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
+    });
   } catch (err) {
     throw new Error(`${label} failed: ${err?.message || String(err)}`);
   }
