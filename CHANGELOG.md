@@ -5,6 +5,34 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.11] - 2026-11-11
+
+**Fix: `xmpp.on is not a function` when sending a voice note. The voice-note
+path received the plugin wrapper (no `.on`/`.off`; `send(to, body)`) instead of
+the raw `@xmpp/client`, so XEP-0363 discovery crashed and the voice note was
+never sent.**
+
+### Why
+
+`xmppClients` stores the plugin wrapper (`src/startXMPP.ts`), which exposes the
+raw client as `get xmpp()` but has no `.on`/`.off`, and whose `send` takes
+`(to, body)`. 2.18.10’s `sendVoiceNote` passed that wrapper to
+`requestUploadSlot()` → `discoItems()` → `xmpp.on('stanza', …)` →
+`TypeError: xmpp.on is not a function`. It also called `xmpp.send(message)` on
+the wrapper (wrong signature).
+
+### Changed
+
+- **`src/lib/voice-note.ts`** — normalize to the raw client:
+  `const raw = xmpp && typeof xmpp.on === "function" ? xmpp : xmpp?.xmpp`, use
+  `raw` for `requestUploadSlot()`, and send the SIMS element with
+  `safeSend(raw, message)`.
+- **`src/lib/upload-protocol.ts`** — `rawClient(xmpp)` unwraps the wrapper
+  (`xmpp.xmpp`) and is applied in `discoItems`, `discoInfoHasUpload`,
+  `requestUploadSlot`, and `sendFileWithHTTPUpload`, so any caller may pass
+  either shape.
+- **Tests** — `tests/v2.18.11-raw-client.test.ts`.
+
 ## [2.18.10] - 2026-11-11
 
 **Fix: TTS voice notes fell back to a WAV file transfer (Psi+ showed a

@@ -119,7 +119,10 @@ npm run typecheck              # tsc --noEmit
   `urn:xmpp:http:upload:0`, else falls back to `upload.<domain>` /
   `httpupload.<domain>`. **Never silently fall back from a voice note to a
   SI/IBB file transfer** (Psi+ shows a download prompt, not an inline player) —
-  surface the error instead (2.18.10).
+  surface the error instead (2.18.10). The value in `xmppClients` is the plugin
+  **wrapper**: normalize to the raw client (`rawClient()` / `xmpp.xmpp`) before
+  `.on`/`.off`/element sends — the wrapper has no `.on` and its `send(to, body)`
+  takes two args (2.18.11).
 - **Windows spawns:** use `buildSpawnPlan()` (`src/lib/win-args.ts`, mirrored by
   `scripts/win-args.mjs`). Never route an absolute executable (`process.execPath`
   = `C:\Program Files\nodejs\node.exe`) through `cmd /d /s /c` — `/s` strips the

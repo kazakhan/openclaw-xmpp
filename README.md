@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.10)
+## Status: ✅ WORKING (v2.18.11)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -763,7 +763,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.10) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.11) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then

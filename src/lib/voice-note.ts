@@ -11,6 +11,7 @@ import crypto from "crypto";
 import { spawn } from "child_process";
 import { log } from "./logger.js";
 import { requestUploadSlot, uploadFileViaHTTP } from "./upload-protocol.js";
+import { safeSend } from "./xmpp-utils.js";
 import {
   buildSimsVoiceMessage,
   mimeForAudioExt,
@@ -89,6 +90,13 @@ export async function sendVoiceNote(params: {
 }): Promise<{ url: string }> {
   const { xmpp, to, filePath, caption, isGroupChat } = params;
 
+  // SECURITY (2.18.11): `outbound` passes the plugin wrapper (which exposes the
+  // real @xmpp client as `get xmpp()` but has no `.on`/`.off`, and whose
+  // `send(to, body)` takes two args).  Normalize to the raw client so XEP-0363
+  // discovery (`xmpp.on('stanza')`) and Element sends work.
+  const raw = xmpp && typeof xmpp.on === "function" ? xmpp : xmpp?.xmpp;
+  if (!raw) throw new Error("XMPP client not available");
+
   // Prefer mp3 for inline playback (Psi+ plays mp3; Ollama emits wav/pcm).
   let uploadPath = filePath;
   let tempMp3: string | null = null;
@@ -109,7 +117,7 @@ export async function sendVoiceNote(params: {
     const domain = String(to).replace(/^xmpp:/, "").split("@")[1]?.split("/")[0] || "";
 
     const slot = await requestUploadSlot(
-      xmpp,
+      raw,
       domain,
       filename,
       stats.size,
@@ -137,7 +145,7 @@ export async function sendVoiceNote(params: {
       mediaType,
     });
 
-    await xmpp.send(message);
+    await safeSend(raw, message);
     log.info("voice note sent", { to: target, mediaType, bytes: stats.size });
     return { url };
   } finally {

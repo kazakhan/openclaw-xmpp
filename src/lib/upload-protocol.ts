@@ -16,7 +16,19 @@ export interface UploadContext {
   dataDir?: string;
 }
 
+/**
+ * Accept either the raw @xmpp client or the plugin wrapper.  The wrapper
+ * exposes the real client as `get xmpp()` but has no `.on`/`.off`, and its
+ * `send(to, body)` takes two args — so discovery/slot/send must use the raw one.
+ */
+function rawClient(xmpp: any): any {
+  if (xmpp && typeof xmpp.on === "function") return xmpp;
+  if (xmpp && xmpp.xmpp && typeof xmpp.xmpp.on === "function") return xmpp.xmpp;
+  return xmpp;
+}
+
 function discoItems(xmpp: XmppClient, jid: string, timeoutMs = 10000): Promise<string[] | null> {
+  xmpp = rawClient(xmpp);
   const id = `disco-items-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return new Promise((resolve) => {
     let done = false;
@@ -49,6 +61,7 @@ function discoItems(xmpp: XmppClient, jid: string, timeoutMs = 10000): Promise<s
 }
 
 async function discoInfoHasUpload(xmpp: XmppClient, jid: string, timeoutMs = 6000): Promise<boolean> {
+  xmpp = rawClient(xmpp);
   const id = `disco-info-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return new Promise((resolve) => {
     let done = false;
@@ -135,6 +148,7 @@ export async function requestUploadSlot(
   cachedServiceJid?: string | null
 ): Promise<UploadSlot> {
   log.debug("upload slot requested", { filename, size });
+  xmpp = rawClient(xmpp);
 
   const targetJid = await resolveUploadService(xmpp, domain, cachedServiceJid ?? null);
   if (!targetJid) {
@@ -310,6 +324,7 @@ export async function sendFileWithHTTPUpload(
   dataDir?: string,
   cachedServiceJid?: string | null
 ): Promise<void> {
+  xmpp = rawClient(xmpp);
   try {
     const stats = await fs.promises.stat(filePath);
     const filename = path.basename(filePath);
