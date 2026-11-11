@@ -68,6 +68,12 @@
                     "hostKeyFingerprint": { "type": "string" }
                   }
                 },
+                "httpUpload": {
+                  "type": "object",
+                  "properties": {
+                    "service": { "type": "string" }
+                  }
+                },
                 "vcard4": {
                   "type": "object",
                   "properties": {

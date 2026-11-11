@@ -85,6 +85,16 @@ export const xmppChannelPlugin = {
           hostKeyFingerprint: { type: "string" },
         },
       },
+      // SECURITY (2.18.10): optional explicit XEP-0363 component JID.  When
+      // set, uploads skip disco discovery (some servers hide components from
+      // disco#items); when unset the plugin discovers or falls back to
+      // upload.<domain>/httpupload.<domain>.
+      httpUpload: {
+        type: "object",
+        properties: {
+          service: { type: "string" },
+        },
+      },
       vcard4: {
         type: "object",
         properties: {

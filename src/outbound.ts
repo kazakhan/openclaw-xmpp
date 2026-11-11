@@ -217,8 +217,23 @@ export async function sendMedia(params: Record<string, unknown>): Promise<{ ok: 
             isGroupChat: isFileGroupChat,
           });
           return buildDeliveryResult();
-        } catch (voiceErr) {
-          log.error("voice note send failed; falling back to file transfer", voiceErr);
+        } catch (voiceErr: any) {
+          const reason = voiceErr?.message ? String(voiceErr.message) : String(voiceErr);
+          // SECURITY (2.18.10): do NOT silently fall back to a SI/IBB file
+          // transfer for a voice note — Psi+ then shows a "download" prompt
+          // instead of an inline player.  Surface the real reason.
+          log.error(`voice note send failed (not falling back to file transfer): ${reason}`);
+          try {
+            const notice = `⚠️ Voice note could not be sent as an inline message: ${reason}`;
+            if (isFileGroupChat) {
+              await xmpp.sendGroupchat(String(to).replace(/^xmpp:/, '').split('/')[0], notice);
+            } else {
+              await xmpp.send(String(to).replace(/^xmpp:/, ''), notice);
+            }
+          } catch {
+            /* best-effort */
+          }
+          return { ok: false, error: reason };
         }
       }
 

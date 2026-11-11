@@ -5,6 +5,57 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.10] - 2026-11-11
+
+**Fix: TTS voice notes fell back to a WAV file transfer (Psi+ showed a
+download prompt) because the XEP-0363 upload step failed silently. The upload
+component is now configurable/robust, and voice-note failures are surfaced
+instead of silently downgraded.**
+
+### Why
+
+`sendVoiceNote()` uploads the audio (XEP-0363) then sends the inline XEP-0385
+SIMS message. The upload threw, but `outbound.sendMedia` caught it and
+**silently fell back to `sendFile` (SI/IBB)**, which Psi+ renders as a file
+transfer: “asked me to download a wav file”, nothing inline. The error was also
+logged as `{}` (an `Error` isn’t JSON-serialized), so the real cause was hidden.
+
+The server’s upload component exists (`https://upload.kazakhan.com/` → 200), but
+the plugin relied solely on `disco#items` and only accepted JIDs containing
+`upload`/`httpfile`, with no config override and no verification that the
+component advertises `urn:xmpp:http:upload:0`.
+
+### Changed
+
+- **`src/lib/upload-protocol.ts`** — `resolveUploadService()`:
+  1. an explicit `httpUpload.service` config wins;
+  2. otherwise `disco#items` candidates are verified via `disco#info` for
+     `urn:xmpp:http:upload:0` (not just by name);
+  3. otherwise fall back to `upload.<domain>` / `httpupload.<domain>`
+     (feature-verified).
+  `requestUploadSlot()` uses it and logs the resolved JID, the slot, and the PUT
+  result/status. `uploadFileViaHTTP` logs the PUT response and includes the
+  response body in errors.
+- **`src/startXMPP.ts`** — reads `cfg.httpUpload.service` (also accepts
+  `uploadService`/`httpUploadService`).
+- **`src/outbound.ts`** — for a voice note, a failure is now logged with the
+  real message and the chat gets
+  `⚠️ Voice note could not be sent as an inline message: <reason>`; it **no
+  longer falls back** to a SI/IBB file transfer (which caused the download
+  prompt). Non-audio media still uses the file path.
+- **Config schema** (`src/channel-plugin.ts`, `openclaw.plugin.json`) —
+  `channels.xmpp.accounts.<acct>.httpUpload.service`.
+- **Tests** — `tests/v2.18.10-upload.test.ts` (service resolution, feature
+  check, logging, no silent voice fallback).
+
+### Host config
+
+```jsonc
+"channels": { "xmpp": { "accounts": { "default": {
+  "httpUpload": { "service": "upload.kazakhan.com" }
+} } } }
+```
+
 ## [2.18.9] - 2026-11-11
 
 **Feature: inline voice notes (TTS) + fixes for Windows auto-restart, oversized

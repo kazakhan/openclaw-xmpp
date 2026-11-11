@@ -114,6 +114,12 @@ npm run typecheck              # tsc --noEmit
   format. Inbound SIMS/SFS/url-data/OOB media is downloaded for STT (`extractSharedMediaUrls`). Never inline base64 audio in a
   stanza — upload it (the outbound stanza-size guard rejects oversized stanzas,
   which would otherwise trip the server's `XML stanza is too long` and loop).
+  Upload service: `resolveUploadService()` uses `httpUpload.service` if set,
+  else verifies a `disco#items` component via `disco#info` for
+  `urn:xmpp:http:upload:0`, else falls back to `upload.<domain>` /
+  `httpupload.<domain>`. **Never silently fall back from a voice note to a
+  SI/IBB file transfer** (Psi+ shows a download prompt, not an inline player) —
+  surface the error instead (2.18.10).
 - **Windows spawns:** use `buildSpawnPlan()` (`src/lib/win-args.ts`, mirrored by
   `scripts/win-args.mjs`). Never route an absolute executable (`process.execPath`
   = `C:\Program Files\nodejs\node.exe`) through `cmd /d /s /c` — `/s` strips the

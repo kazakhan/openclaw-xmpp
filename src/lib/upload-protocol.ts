@@ -16,77 +16,114 @@ export interface UploadContext {
   dataDir?: string;
 }
 
-export async function discoverUploadService(xmpp: XmppClient, domain: string): Promise<string | null> {
-  const iqId = `disco-${Date.now()}`;
-
+function discoItems(xmpp: XmppClient, jid: string, timeoutMs = 10000): Promise<string[] | null> {
+  const id = `disco-items-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return new Promise((resolve) => {
-    let resolved = false;
-    // SECURITY (2.0.17, M5): the 10-second timeout used to be left
-    // unhandled — if the disco resolved early the timer kept the
-    // event loop alive and fired 10s later to call xmpp.off() /
-    // resolve(null) on an already-settled promise.  We now store the
-    // handle and clearTimeout() on every path that resolves the
-    // promise.
+    let done = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const cleanup = () => {
-      if (timer !== null) { clearTimeout(timer); timer = null; }
+    const finish = (value: string[] | null) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      xmpp.off('stanza', handler);
+      resolve(value);
     };
-
     const handler = (stanza: StanzaElement) => {
-      if (stanza.attrs.id === iqId && stanza.attrs.type === 'result') {
-        resolved = true;
-        xmpp.off('stanza', handler);
-        cleanup();
-
+      if (stanza.attrs.id !== id) return;
+      if (stanza.attrs.type === 'result') {
         const query = stanza.getChild('query', 'http://jabber.org/protocol/disco#items');
-        if (query) {
-          const items = query.getChildren('item');
-          for (const item of items) {
-            const jid = item.attrs.jid;
-            if (jid.includes('upload') || jid.includes('httpfile')) {
-              resolve(jid);
-              return;
-            }
-          }
-        }
-        resolve(null);
-      } else if (stanza.attrs.id === iqId && stanza.attrs.type === 'error') {
-        resolved = true;
-        xmpp.off('stanza', handler);
-        cleanup();
-        // SECURITY (2.0.17, M6): explicit return so the
-        // success-path's `jid.includes('upload')` loop above is
-        // clearly unreachable from here.  Was previously missing,
-        // which made the function harder to reason about.
-        resolve(null);
-        return;
+        const items = query?.getChildren('item') ?? [];
+        finish(items.map((i: any) => i.attrs?.jid).filter(Boolean));
+      } else {
+        finish(null);
       }
     };
-
     xmpp.on('stanza', handler);
-
-    const discoStanza = xml("iq", { type: "get", to: domain, id: iqId },
-      xml("query", { xmlns: "http://jabber.org/protocol/disco#items" })
-    );
-
-    xmpp.send(discoStanza).catch(() => {
-      if (!resolved) {
-        resolved = true;
-        xmpp.off('stanza', handler);
-        cleanup();
-        resolve(null);
-      }
-    });
-
-    timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        xmpp.off('stanza', handler);
-        resolve(null);
-      }
-    }, 10000);
+    xmpp.send(
+      xml('iq', { type: 'get', to: jid, id },
+        xml('query', { xmlns: 'http://jabber.org/protocol/disco#items' }),
+      ),
+    ).catch(() => finish(null));
+    timer = setTimeout(() => finish(null), timeoutMs);
   });
+}
+
+async function discoInfoHasUpload(xmpp: XmppClient, jid: string, timeoutMs = 6000): Promise<boolean> {
+  const id = `disco-info-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (value: boolean) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      xmpp.off('stanza', handler);
+      resolve(value);
+    };
+    const handler = (stanza: StanzaElement) => {
+      if (stanza.attrs.id !== id) return;
+      if (stanza.attrs.type === 'result') {
+        const query = stanza.getChild('query', 'http://jabber.org/protocol/disco#info');
+        const features = query?.getChildren('feature') ?? [];
+        finish(features.some((f: any) => f.attrs?.var === 'urn:xmpp:http:upload:0'));
+      } else {
+        finish(false);
+      }
+    };
+    xmpp.on('stanza', handler);
+    xmpp.send(
+      xml('iq', { type: 'get', to: jid, id },
+        xml('query', { xmlns: 'http://jabber.org/protocol/disco#info' }),
+      ),
+    ).catch(() => finish(false));
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+export async function discoverUploadService(xmpp: XmppClient, domain: string): Promise<string | null> {
+  const items = await discoItems(xmpp, domain);
+  if (!items || items.length === 0) return null;
+
+  // Prefer a component that actually advertises XEP-0363 (not just one whose
+  // JID happens to contain "upload").
+  const named = items.filter((jid) => /upload|httpfile/i.test(jid));
+  for (const jid of [...named, ...items]) {
+    if (await discoInfoHasUpload(xmpp, jid)) {
+      log.info(`upload: discovered service ${jid} (feature)`);
+      return jid;
+    }
+  }
+  if (named.length > 0) {
+    log.info(`upload: discovered service ${named[0]} (name)`);
+    return named[0];
+  }
+  return null;
+}
+
+/**
+ * Resolve the HTTP Upload component: explicit config wins, then disco#items,
+ * then the conventional `upload.<domain>` / `httpupload.<domain>` candidates.
+ */
+export async function resolveUploadService(
+  xmpp: XmppClient,
+  domain: string,
+  configuredJid?: string | null,
+): Promise<string | null> {
+  const configured = configuredJid?.trim();
+  if (configured) {
+    log.info(`upload: using configured service ${configured}`);
+    return configured;
+  }
+  const discovered = await discoverUploadService(xmpp, domain);
+  if (discovered) return discovered;
+  for (const candidate of [`upload.${domain}`, `httpupload.${domain}`]) {
+    if (await discoInfoHasUpload(xmpp, candidate)) {
+      log.info(`upload: using fallback service ${candidate}`);
+      return candidate;
+    }
+  }
+  log.warn(`upload: no HTTP Upload service found for ${domain}`);
+  return null;
 }
 
 export async function requestUploadSlot(
@@ -99,13 +136,11 @@ export async function requestUploadSlot(
 ): Promise<UploadSlot> {
   log.debug("upload slot requested", { filename, size });
 
-  let targetJid = cachedServiceJid;
+  const targetJid = await resolveUploadService(xmpp, domain, cachedServiceJid ?? null);
   if (!targetJid) {
-    targetJid = await discoverUploadService(xmpp, domain);
-    if (!targetJid) {
-      throw new Error("No HTTP Upload service available");
-    }
+    throw new Error(`No HTTP Upload service available for domain ${domain || "(unknown)"}`);
   }
+  log.info(`upload: requesting slot from ${targetJid} for ${filename} (${size} bytes)`);
 
   const finalTarget = targetJid;
 
@@ -161,7 +196,7 @@ export async function requestUploadSlot(
             }
           }
 
-          log.debug("upload slot obtained");
+          log.info(`upload: slot obtained (put=${putUrl})`);
           resolve({ putUrl, getUrl, headers: Object.keys(putHeaders).length > 0 ? putHeaders : undefined });
         } catch (err) {
           reject(err);
@@ -177,6 +212,7 @@ export async function requestUploadSlot(
           const errorCondition = errorEl.children.find((c: any) => c.name && c.name !== 'text')?.name;
           errorDetails = errorText || errorCondition || `Error type: ${errorEl.attrs.type}`;
         }
+        log.warn(`upload: slot request failed: ${errorDetails}`);
         reject(new Error(`Upload slot request failed: ${errorDetails}`));
       }
     };
@@ -250,10 +286,13 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP upload failed: ${response.status} ${response.statusText}`);
+      const bodyText = await response.text().catch(() => "");
+      throw new Error(
+        `HTTP upload failed: ${response.status} ${response.statusText}${bodyText ? ` — ${bodyText.slice(0, 300)}` : ""}`,
+      );
     }
 
-    log.debug("file uploaded successfully");
+    log.info(`upload: PUT ok (${response.status})`);
   } catch (err: any) {
     const details = { message: err?.message, code: err?.code, cause: err?.cause };
     log.error("File upload failed: " + JSON.stringify(details));

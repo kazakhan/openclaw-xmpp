@@ -223,17 +223,14 @@ describe('Fix M4: jsonStore.ts per-instance write-chain serialises set/update/cl
 });
 
 describe('Fix M5: upload-protocol.ts setTimeout cleared on early resolve', () => {
-  it('discoverUploadService stores the timer handle and clearTimeout()s it', async () => {
+  it('upload discovery helpers store the timer handle and clearTimeout()s it', async () => {
     const src = await readSource('src/lib/upload-protocol.ts');
-    const fnMatch = src.match(/export\s+async\s+function\s+discoverUploadService[\s\S]*?\n\}\s*\n/);
-    if (fnMatch) {
-      const body = fnMatch[0];
+    for (const marker of ['function discoItems', 'async function discoInfoHasUpload']) {
+      const idx = src.indexOf(marker);
+      assert.ok(idx >= 0, `${marker} not found`);
+      const body = src.slice(idx, idx + 2600);
       assert.match(body, /let\s+timer\s*:\s*ReturnType<typeof\s+setTimeout>\s*\|\s*null/);
-      assert.match(body, /const\s+cleanup\s*=/);
-      assert.match(body, /cleanup\(\)/);
       assert.match(body, /clearTimeout\(timer\)/);
-    } else {
-      assert.fail('discoverUploadService not found');
     }
   });
 
@@ -252,18 +249,17 @@ describe('Fix M5: upload-protocol.ts setTimeout cleared on early resolve', () =>
 });
 
 describe('Fix M6: upload-protocol.ts error branch has explicit return', () => {
-  it('discoverUploadService error branch has resolve(null); return;', async () => {
+  it('upload discovery helpers resolve on the error branch', async () => {
     const src = await readSource('src/lib/upload-protocol.ts');
-    const errMatch = src.match(/stanza\.attrs\.id\s*===\s*iqId\s*&&\s*stanza\.attrs\.type\s*===\s*['"]error['"][\s\S]*?\}\s*\n\s{4}\}/);
-    if (errMatch) {
-      assert.match(
-        errMatch[0],
-        /resolve\(null\);\s*\n\s*return;/,
-        'error branch must end with resolve(null); return;',
-      );
-    } else {
-      assert.fail('error branch not found');
-    }
+    const itemsIdx = src.indexOf('function discoItems');
+    assert.ok(itemsIdx >= 0, 'discoItems not found');
+    const itemsBody = src.slice(itemsIdx, itemsIdx + 2600);
+    assert.match(itemsBody, /else\s*\{\s*\n\s*finish\(null\);/);
+
+    const infoIdx = src.indexOf('async function discoInfoHasUpload');
+    assert.ok(infoIdx >= 0, 'discoInfoHasUpload not found');
+    const infoBody = src.slice(infoIdx, infoIdx + 2600);
+    assert.match(infoBody, /else\s*\{\s*\n\s*finish\(false\);/);
   });
 });
 

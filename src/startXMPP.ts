@@ -220,7 +220,8 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     const vcardServer = createVCardServer({ xmpp, bareJid: cfg.jid.split('/')[0] });
 
     // HTTP File Upload delegates (used by slash commands)
-    let uploadServiceJid: string | null = null;
+    let uploadServiceJid: string | null =
+      cfg?.httpUpload?.service || cfg?.uploadService || cfg?.httpUploadService || null;
     const requestUploadSlot = async (filename: string, size: number, contentType?: string): Promise<{putUrl: string, getUrl: string, headers?: Record<string, string>}> => {
       return requestUploadSlotShared(xmpp, cfg.domain, filename, size, contentType, uploadServiceJid);
     };
