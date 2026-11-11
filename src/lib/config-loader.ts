@@ -2,6 +2,30 @@ import fs from "fs";
 import path from "path";
 import { decryptPasswordFromConfig } from "../security/encryption.js";
 
+export function openclawConfigPath(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  return path.join(home, ".openclaw", "openclaw.json");
+}
+
+/** Read the raw OpenClaw config (tts / media / models etc.). */
+export function loadOpenclawConfigRaw(): any {
+  const configPath = openclawConfigPath();
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Persist the raw OpenClaw config (pretty JSON, atomic-ish write). */
+export function saveOpenclawConfigRaw(config: any): void {
+  const configPath = openclawConfigPath();
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const tmp = `${configPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  fs.renameSync(tmp, configPath);
+}
+
 export interface LoadedXmppConfig {
   service: string;
   domain: string;

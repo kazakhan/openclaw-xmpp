@@ -493,32 +493,95 @@ export function formatAskMessage(info: UpdateInfo): string {
 }
 
 /**
- * Restart the managed OpenClaw gateway (detached, best-effort).  Used after a
- * successful auto-update so the new build is loaded without manual steps.
- * The child is detached and unref'd so it survives this process exiting.
+ * Resolve the OpenClaw CLI entry (`openclaw.mjs`) so a restart can be launched
+ * with `process.execPath` directly (no `cmd`/PATH quoting problems).
  */
-export function restartGateway(): void {
+function findOpenclawEntry(): string | null {
+  const candidates: string[] = [];
+  const argv1 = process.argv[1];
+  if (argv1) {
+    let dir = path.dirname(argv1);
+    for (let i = 0; i < 5; i++) {
+      candidates.push(path.join(dir, "openclaw.mjs"));
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
   try {
-    if (process.platform === "win32") {
-      // SECURITY (2.16.5): spawning `openclaw.cmd` without a shell throws
-      // EINVAL on Node >=18.20.2 (CVE-2024-27980); go through cmd.exe.
+    const isWin = process.platform === "win32";
+    const npm = isWin ? process.env.ComSpec || "cmd.exe" : "npm";
+    const npmArgs = isWin ? ["/d", "/s", "/c", "npm", "root", "-g"] : ["root", "-g"];
+    const root = execFileSync(npm, npmArgs, { encoding: "utf8", windowsHide: true }).trim();
+    candidates.push(path.join(root, "openclaw", "openclaw.mjs"));
+    candidates.push(path.join(root, "openclaw", "dist", "index.js"));
+  } catch {
+    /* npm not available */
+  }
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null;
+}
+
+export interface RestartResult {
+  ok: boolean;
+  detail?: string;
+}
+
+/**
+ * Restart the managed OpenClaw gateway (detached).  Used after a successful
+ * auto-update so the new build is loaded without manual steps.
+ *
+ * SECURITY (2.18.9): resolve the OpenClaw entry and spawn it with
+ * `process.execPath` instead of the ambiguous bare `openclaw` shim (which is
+ * not always on the scheduled-task PATH).  The outcome is logged and returned
+ * so callers can notify the admin instead of silently pretending it worked.
+ */
+export function restartGateway(): RestartResult {
+  try {
+    const entry = findOpenclawEntry();
+    let child;
+    if (entry) {
+      child = spawn(process.execPath, [entry, "gateway", "restart"], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: process.env,
+      });
+    } else if (process.platform === "win32") {
+      // SECURITY (2.16.5): `openclaw` resolves to a `.cmd` shim; spawning it
+      // without a shell throws EINVAL on Node >=18.20.2 (CVE-2024-27980).
       const comspec = process.env.ComSpec || "cmd.exe";
-      const child = spawn(comspec, ["/d", "/s", "/c", "openclaw", "gateway", "restart"], {
+      child = spawn(comspec, ["/d", "/s", "/c", "openclaw", "gateway", "restart"], {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
       });
-      child.unref();
-      return;
+    } else {
+      child = spawn("openclaw", ["gateway", "restart"], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
     }
-    const child = spawn("openclaw", ["gateway", "restart"], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
+    child.on("error", (err: any) => {
+      console.error("[updater] gateway restart spawn error:", err?.message || String(err));
     });
     child.unref();
-  } catch {
-    // best-effort; operator can restart manually
+    const detail = entry
+      ? `spawned node ${entry} gateway restart (pid ${child.pid ?? "?"})`
+      : "spawned openclaw gateway restart";
+    console.log(`[updater] ${detail}`);
+    return { ok: true, detail };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("[updater] gateway restart failed:", detail);
+    return { ok: false, detail };
   }
 }
 

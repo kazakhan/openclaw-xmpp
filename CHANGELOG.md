@@ -5,6 +5,72 @@ All notable changes to the OpenClaw XMPP plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.9] - 2026-11-11
+
+**Feature: inline voice notes (TTS) + fixes for Windows auto-restart, oversized
+stanzas, lost avatars, and Psi+ voice-message (SIMS) ingestion.**
+
+### Voice (TTS/STT)
+
+- **Channel advertises native voice-note TTS** (`src/channel-plugin.ts`):
+  `tts.voice = { synthesisTarget: "voice-note", captionedFinalText: true,
+  transcodesAudio: true, audioFileFormats: ["mp3"] }`. OpenClaw now applies
+  `maybeApplyTtsToPayload` to XMPP replies (`tts.auto="inbound"` → only when the
+  user sent voice), producing text **and** audio.
+- **Outbound voice notes** (`src/outbound.ts`, `src/lib/voice-note*.ts`): TTS
+  audio (`voice.<ext>`, `audioAsVoice`) is uploaded via XEP-0363 and sent as a
+  single **XEP-0385 SIMS** message (`urn:xmpp:reference:0` →
+  `urn:xmpp:sims:1` → `<file>` + `<sources>`) with `<fallback>` ranges and an
+  OOB copy, URL marked `?mode=stream` so Psi+ plays it inline. Non-audio files
+  keep the SI/IBB path. Ollama's `/v1/audio/speech` only emits WAV/PCM, so the
+  plugin **transcodes WAV→MP3 with system ffmpeg** before upload (mp3 is what
+  Psi+ plays inline); if ffmpeg is missing it falls back to the original format.
+- **Inbound SIMS/SFS** (`src/startXMPP.ts`): the previously-declared-but-unused
+  `sfsElement`/`simsElement` are now parsed — the HTTP(S) source from
+  `urn:xmpp:sims:1`/`urn:xmpp:sfs:0`/`url-data`/OOB is downloaded via
+  `processInboundFiles()` and passed as `MediaPaths`, so OpenClaw's STT
+  transcribes Psi+ mic recordings (and the history keeps the file).
+- **`/tts` and `/stt` commands**: show/set the model, voice, provider and base
+  URL; admin-only writes. `/tts voice female-american-english` seeds the local
+  Ollama defaults (`http://localhost:11434/v1`, `lfm3-audio-tts`, mp3,
+  `auto=inbound`). `/stt model lfm3-audio` seeds the Ollama STT entry.
+- Suggested config (local Ollama; `lfm3-audio` does STT and TTS):
+  ```jsonc
+  "tts": { "auto": "inbound", "mode": "final", "provider": "openai",
+           "providers": { "openai": { "baseUrl": "http://localhost:11434/v1",
+             "apiKey": "ollama", "model": "lfm3-audio-tts",
+             "voice": "female-american-english", "responseFormat": "wav" } } },
+  "tools": { "media": { "audio": { "enabled": true, "echoTranscript": true },
+             "models": [{ "provider": "openai", "model": "lfm3-audio",
+                          "capabilities": ["audio"],
+                          "baseUrl": "http://localhost:11434/v1" }] } },
+  "models": { "providers": { "openai": { "apiKey": "ollama" } } }
+  ```
+
+### Fixes
+
+- **Oversized outbound stanzas** (`src/startXMPP.ts`): the `xmpp.send` wrapper
+  rejects a serialized stanza over `maxStanzaSize` (default 250 KB) with a clear
+  error **instead of** letting the server kill the stream with
+  `XML stanza is too long` (which caused a reconnect/resend loop).
+- **Honest gateway restart** (`src/updater.ts`): resolve `openclaw.mjs` and spawn
+  `process.execPath <entry> gateway restart` (no PATH/cmd ambiguity), log the
+  outcome, return `{ ok, detail }`, and notify admins with the manual command
+  when it fails instead of silently claiming success.
+- **Avatar republish** (`src/vcard-server.ts`, `src/startXMPP.ts`): on every
+  (re)connect, republish the XEP-0084 avatar from its public URL when the local
+  vCard has one. Heals "all avatars disappeared" after a server PEP purge;
+  vCard-temp still carries `PHOTO`.
+- **`config-loader`**: `loadOpenclawConfigRaw()` / `saveOpenclawConfigRaw()`
+  helpers for the `/tts`/`/stt` commands.
+
+### Tests
+
+- `tests/v2.18.9-voice-sims.test.ts` (new): SIMS message structure (audio/mpeg,
+  sha-256, `?mode=stream`, fallbacks, OOB), inbound SIMS/SFS/OOB extraction,
+  voice detection, and source wiring for the stanza guard, avatar republish,
+  restart, and `/tts`/`/stt`.
+
 ## [2.18.8] - 2026-09-23
 
 **Fix: agents stopped replying because the bundle duplicated the plugin's shared

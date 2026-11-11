@@ -30,6 +30,18 @@ export const xmppChannelPlugin = {
     threads: false,
     media: true,
     nativeCommands: true,
+    // SECURITY (2.18.9): advertise native voice-note TTS so OpenClaw applies
+    // `maybeApplyTtsToPayload` to XMPP replies (text + inline audio). mp3 is
+    // what Psi+ plays inline; `transcodesAudio` keeps it eligible even though
+    // mp3 is not the canonical voice format.
+    tts: {
+      voice: {
+        synthesisTarget: "voice-note",
+        captionedFinalText: true,
+        transcodesAudio: true,
+        audioFileFormats: ["mp3"],
+      },
+    },
   },
   messaging: {
     targetResolver: {

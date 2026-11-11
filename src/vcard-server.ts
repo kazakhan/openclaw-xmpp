@@ -131,20 +131,13 @@ export function createVCardServer(deps: VCardServerDeps) {
     }
   };
 
-  const publishAvatar = async (filePath: string, imageUrl: string): Promise<boolean> => {
+  const publishAvatarBuffer = async (fileBuffer: Buffer, mimeType: string): Promise<boolean> => {
     try {
-      const fileBuffer = await fs.readFile(filePath);
       const hash = crypto.createHash('sha1').update(fileBuffer).digest('hex');
       const size = fileBuffer.length;
-      
-      const ext = path.extname(filePath).toLowerCase();
-      let mimeType = 'image/jpeg';
-      if (ext === '.png') mimeType = 'image/png';
-      else if (ext === '.gif') mimeType = 'image/gif';
-      else if (ext === '.webp') mimeType = 'image/webp';
-       
-       xmppLog.debug("avatar", { action: "publishing", size, type: mimeType });
-      
+
+      xmppLog.debug("avatar", { action: "publishing", size, type: mimeType });
+
       const retractId = `avatar-retract-${Date.now()}`;
       const retractStanza = xml("iq", { type: "set", to: bareJid, id: retractId },
         xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
@@ -153,16 +146,16 @@ export function createVCardServer(deps: VCardServerDeps) {
           )
         )
       );
-      
+
       const metadataId = `avatar-meta-${Date.now()}`;
       const metadataStanza = xml("iq", { type: "set", to: bareJid, id: metadataId },
         xml("pubsub", { xmlns: "http://jabber.org/protocol/pubsub" },
           xml("publish", { node: "urn:xmpp:avatar:metadata" },
             xml("item", { id: hash },
               xml("metadata", { xmlns: "urn:xmpp:avatar:metadata" },
-                xml("info", { 
-                  bytes: size.toString(), 
-                  id: hash, 
+                xml("info", {
+                  bytes: size.toString(),
+                  id: hash,
                   type: mimeType
                 })
               )
@@ -170,9 +163,9 @@ export function createVCardServer(deps: VCardServerDeps) {
           )
         )
       );
-      
+
       await safeSend(xmpp, metadataStanza);
-       
+
       const dataId = `avatar-data-${Date.now()}`;
       const base64Data = fileBuffer.toString('base64');
       const dataStanza = xml("iq", { type: "set", to: bareJid, id: dataId },
@@ -184,12 +177,43 @@ export function createVCardServer(deps: VCardServerDeps) {
           )
         )
       );
-      
+
       await safeSend(xmpp, dataStanza);
-       
-       return true;
+      return true;
     } catch (err) {
       xmppLog.error("PEP avatar publish failed", err);
+      return false;
+    }
+  };
+
+  const publishAvatar = async (filePath: string, _imageUrl: string): Promise<boolean> => {
+    try {
+      const fileBuffer = await fs.readFile(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      let mimeType = 'image/jpeg';
+      if (ext === '.png') mimeType = 'image/png';
+      else if (ext === '.gif') mimeType = 'image/gif';
+      else if (ext === '.webp') mimeType = 'image/webp';
+      return await publishAvatarBuffer(fileBuffer, mimeType);
+    } catch (err) {
+      xmppLog.error("PEP avatar publish failed", err);
+      return false;
+    }
+  };
+
+  // SECURITY (2.18.9): re-publish the avatar from its public URL on (re)connect.
+  // The XEP-0084 PEP nodes can be lost (server restart/upgrade) while the
+  // vCard-temp PHOTO survives; without a republish every client loses the
+  // avatar.  This heals that silently.
+  const publishAvatarFromUrl = async (imageUrl: string): Promise<boolean> => {
+    try {
+      const res = await fetch(imageUrl);
+      if (!res.ok) throw new Error(`avatar fetch failed: ${res.status} ${res.statusText}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const mimeType = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+      return await publishAvatarBuffer(buf, mimeType);
+    } catch (err) {
+      xmppLog.error("avatar republish from URL failed", err);
       return false;
     }
   };
@@ -255,5 +279,5 @@ export function createVCardServer(deps: VCardServerDeps) {
     return vcardEl ? parseVCard4(vcardEl) : null;
   };
 
-  return { queryVCardFromServer, updateVCardOnServer, publishAvatar, publishVCard4, queryVCard4 };
+  return { queryVCardFromServer, updateVCardOnServer, publishAvatar, publishAvatarFromUrl, publishVCard4, queryVCard4 };
 }

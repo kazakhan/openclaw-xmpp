@@ -16,6 +16,7 @@ import { child } from "./lib/logger.js";
 import { parseVCard, buildVCardStanza } from "./lib/vcard-protocol.js";
 import { requestUploadSlot as requestUploadSlotShared, uploadFileViaHTTP, sendFileWithHTTPUpload, discoverUploadService } from "./lib/upload-protocol.js";
 import { safeSend, findUnderlyingSocket } from "./lib/xmpp-utils.js";
+import { extractSharedMediaUrls } from "./lib/voice-note.js";
 import { buildMentionTokens, wasBotMentioned } from "./mention.js";
 import { createVCardServer } from "./vcard-server.js";
 import { handleSlashCommand } from "./slash-commands.js";
@@ -152,6 +153,26 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
     {
       const origSend = xmpp.send.bind(xmpp);
       xmpp.send = async (element: any, ...rest: any[]) => {
+        // SECURITY (2.18.9): never hand the server a stanza larger than its
+        // `max_stanza_size` — Prosody closes the stream with
+        // "XML stanza is too long", which caused a reconnect/resend loop.
+        // Reject locally instead of killing the connection.
+        try {
+          if (element && typeof element === "object" && typeof element.toString === "function") {
+            const serialized = element.toString();
+            if (serialized.startsWith("<")) {
+              const bytes = Buffer.byteLength(serialized, "utf8");
+              const limit = Number(cfg?.maxStanzaSize) > 0 ? Number(cfg.maxStanzaSize) : 250000;
+              if (bytes > limit) {
+                xmppLog.error(`outbound stanza too large (${bytes} bytes > ${limit}); not sent`);
+                throw new Error(`outbound stanza too large (${bytes} bytes > ${limit}): stanza not sent`);
+              }
+            }
+          }
+        } catch (sizeErr: any) {
+          if (String(sizeErr?.message || "").includes("outbound stanza too large")) throw sizeErr;
+          /* ignore measurement errors */
+        }
         const result = await origSend(element, ...rest);
         reportTransportActivity();
         return result;
@@ -507,6 +528,21 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
         }
       }
 
+      // SECURITY (2.18.9): re-publish the XEP-0084 avatar from its public URL
+      // on every (re)connect.  The PEP avatar nodes can be lost (server
+      // restart/upgrade) while vCard-temp survives; republishing heals the
+      // "avatars disappeared in the client list" symptom.  Best-effort.
+      try {
+        const avatar = await vcard.getAvatarUrl();
+        const avatarUrl = avatar || cfg?.vcard?.avatarUrl;
+        if (avatarUrl && /^https?:\/\//i.test(avatarUrl)) {
+          const ok = await vcardServer.publishAvatarFromUrl(avatarUrl);
+          log.info(`avatar (XEP-0084) republish: ${ok ? "ok" : "failed"}`);
+        }
+      } catch (err) {
+        xmppLog.error("avatar republish threw", err);
+      }
+
       // SECURITY (2.11.0): re-arm keepalive on every (re)connect.
       // `online` can fire repeatedly (via @xmpp/reconnect), so we
       // clear the previous whitespace timer to avoid leaking duplicate
@@ -612,7 +648,12 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   xmppLog.info(`auto-update: install result: ${result.message}`);
                   for (const jid of admins) { await sendChatNotice(jid, `[XMPP Update] ${result.message}`); }
                   if (result.ok && result.toVersion && autoUpdate.autoRestart !== false) {
-                    restartGateway();
+                    const rr = restartGateway();
+                    if (rr && rr.ok === false) {
+                      for (const jid of admins) {
+                        await sendChatNotice(jid, `[XMPP Update] Could not restart the gateway automatically (${rr.detail || "unknown error"}). Run: openclaw gateway restart`);
+                      }
+                    }
                   }
                   return;
                 }
@@ -1317,13 +1358,26 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
          }
        }
        
-       // Check for other common file sharing namespaces
-       const sfsElement = stanza.getChild('file-sharing', 'urn:xmpp:sfs:0');
-       const simsElement = stanza.getChild('media-sharing', 'urn:xmpp:sims:1');
-       const jingleFile = stanza.getChild('file', 'http://jabber.org/protocol/si/profile/file-transfer');
-       const bobElement = stanza.getChild('data', 'urn:xmpp:bob');
-         
-         // Extract body and subject from message
+        // Check for other common file sharing namespaces.
+        // SECURITY (2.18.9): Psi/Psi+ voice notes arrive as XEP-0385 SIMS
+        // (`urn:xmpp:reference:0` -> `urn:xmpp:sims:1` -> `<sources>`), XEP-0447
+        // SFS (`urn:xmpp:sfs:0`), or `url-data`.  Extract and download those
+        // sources so OpenClaw's STT can transcribe the audio (and the message
+        // history keeps the file).  OOB is handled above.
+        {
+          const sharedUrls = extractSharedMediaUrls(stanza).filter((u) => !mediaUrls.includes(u));
+          if (sharedUrls.length > 0) {
+            mediaUrls.push(...sharedUrls);
+            try {
+              const localPaths = await processInboundFiles(sharedUrls, cfg.dataDir);
+              mediaPaths.push(...localPaths);
+            } catch (err) {
+              xmppLog.error("shared media download failed", err);
+            }
+          }
+        }
+          
+          // Extract body and subject from message
           const body = stanza.getChildText("body");
           const subject = stanza.getChildText("subject");
 
@@ -1780,7 +1834,16 @@ export async function startXmpp(cfg: any, contacts: any, log: any, onMessage: (f
                   await sendChatNotice(from, `[XMPP Update] ${result.message}`);
                   if (result.ok && result.toVersion && cfg?.autoUpdate?.autoRestart !== false) {
                     await sendChatNotice(from, "[XMPP Update] Restarting the gateway to apply the update...");
-                    setTimeout(() => { try { restartGateway(); } catch { /* ignore */ } }, 3000);
+                    setTimeout(() => {
+                      try {
+                        const rr = restartGateway();
+                        if (rr && rr.ok === false) {
+                          void sendChatNotice(from, `[XMPP Update] Could not restart automatically (${rr.detail || "unknown error"}). Run: openclaw gateway restart`);
+                        }
+                      } catch {
+                        /* ignore */
+                      }
+                    }, 3000);
                   }
                   return;
                 }

@@ -6,6 +6,7 @@ import { xmppClients } from "../index.js";
 import { log } from "./lib/logger.js";
 import { parseSvgPathCommands, buildSxeXml, buildSxePathEdits, sxeEditsToXml, getAvailableRidPrefix } from "./whiteboard.js";
 import { safeSend } from "./lib/xmpp-utils.js";
+import { sendVoiceNote, isVoiceMediaPath } from "./lib/voice-note.js";
 
 const MAX_CONCURRENT_TRANSFERS = 10;
 const activeDownloads = new Map<string, { size: number; startTime: number }>();
@@ -200,10 +201,29 @@ export async function sendMedia(params: Record<string, unknown>): Promise<{ ok: 
       if (localFilePath.startsWith('~/')) {
         localFilePath = path.join(process.env.HOME || process.env.USERPROFILE || '', localFilePath.substring(2));
       }
-      
+
       const isFileGroupChat = isGroupChat && !isGroupchatPrivateMessage;
+
+      // SECURITY (2.18.9): TTS audio (OpenClaw names it `voice.<ext>` and marks
+      // `audioAsVoice`) is sent as an inline XEP-0385 voice note (HTTP Upload +
+      // SIMS) so Psi+ plays it in chat, instead of a SI/IBB file transfer.
+      if (params.audioAsVoice === true || isVoiceMediaPath(localFilePath)) {
+        try {
+          await sendVoiceNote({
+            xmpp,
+            to,
+            filePath: localFilePath,
+            caption: text,
+            isGroupChat: isFileGroupChat,
+          });
+          return buildDeliveryResult();
+        } catch (voiceErr) {
+          log.error("voice note send failed; falling back to file transfer", voiceErr);
+        }
+      }
+
       await (xmpp as any).sendFile(to, localFilePath, text, isFileGroupChat);
-      
+
       return buildDeliveryResult();
     } else {
       const message = text ? `${text}\n${mediaUrl}` : (mediaUrl || '');

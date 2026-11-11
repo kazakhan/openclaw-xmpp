@@ -4,6 +4,7 @@ import path from "path";
 import { validators } from "./security/validation.js";
 import { checkRateLimit, MAX_FILE_SIZE, debugLog } from "./shared/index.js";
 import { normalizeShow } from "./presence.js";
+import { loadOpenclawConfigRaw, saveOpenclawConfigRaw } from "./lib/config-loader.js";
 
 export interface SlashCommandCtx {
   xmpp: any;
@@ -91,7 +92,7 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
   }
   
   // Define plugin-specific commands
-  const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'vcard', 'presence', 'status', 'help', 'test']);
+  const pluginCommands = new Set(['list', 'add', 'remove', 'admins', 'whoami', 'join', 'rooms', 'leave', 'invite', 'vcard', 'presence', 'status', 'tts', 'stt', 'help', 'test']);
   const isPluginCommand = pluginCommands.has(command);
   
   debugLog(`[SLASH] type=${messageType}, cmd=/${command}, isPlugin=${isPluginCommand}`);
@@ -146,6 +147,8 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
   /presence <online|chat|away|xa|busy> [status] - Set/show status
   /presence clear - Clear the manual status
   /status <text> - Set a custom status (alias)
+  /tts [model|voice|provider|on|off] - Show/set TTS (voice replies)
+  /stt [model|provider|baseurl] - Show/set STT (voice transcription)
   /help - Show this help`);
         
         if (messageType === "chat" && await contacts.exists(fromBareJid)) {
@@ -153,6 +156,80 @@ export async function handleSlashCommand(ctx: SlashCommandCtx, args: SlashComman
           onMessage(fromBareJid, body, { type: "chat", mediaUrls, mediaPaths });
         }
         return;
+
+      case 'tts': {
+        const config = loadOpenclawConfigRaw();
+        const tts: any = config.tts || {};
+        const provider = String(tts.provider || 'openai');
+        tts.providers = tts.providers || {};
+        const p: any = tts.providers[provider] || {};
+        const sub = (cmdArgs[0] || '').toLowerCase();
+        if (!sub) {
+          await sendReply(
+            `TTS: auto=${tts.auto ?? '(default)'} mode=${tts.mode ?? 'final'} provider=${provider}\n` +
+            `  baseUrl=${p.baseUrl ?? '(default)'} model=${p.model ?? '(default)'} voice=${p.voice ?? '(default)'} format=${p.responseFormat ?? '(default)'}\n` +
+            `Use: /tts model <id> | /tts voice <name> | /tts provider <id> | /tts on | /tts off`,
+          );
+          return;
+        }
+        if (!(await checkAdminAccess())) { await sendReply('Admin only.'); return; }
+        if (sub === 'on') tts.auto = 'inbound';
+        else if (sub === 'off') tts.auto = 'off';
+        else if (sub === 'provider' && cmdArgs[1]) tts.provider = cmdArgs[1];
+        else if (sub === 'model' && cmdArgs[1]) tts.providers[provider] = { ...(tts.providers[provider] || {}), model: cmdArgs.slice(1).join(' ') };
+        else if (sub === 'voice' && cmdArgs[1]) tts.providers[provider] = { ...(tts.providers[provider] || {}), voice: cmdArgs.slice(1).join(' ') };
+        else { await sendReply('Usage: /tts model <id> | /tts voice <name> | /tts provider <id> | /tts on | /tts off'); return; }
+        // SECURITY (2.18.9): seed local-Ollama defaults the first time so
+        // `/tts voice female-american-english` is enough to configure voice.
+        tts.auto = tts.auto ?? 'inbound';
+        tts.mode = tts.mode ?? 'final';
+        tts.provider = tts.provider ?? provider;
+        {
+          const cur = tts.providers[tts.provider] || {};
+          cur.baseUrl = cur.baseUrl ?? 'http://localhost:11434/v1';
+          cur.apiKey = cur.apiKey ?? 'ollama';
+          cur.model = cur.model ?? 'lfm3-audio-tts';
+          cur.responseFormat = cur.responseFormat ?? 'wav';
+          tts.providers[tts.provider] = cur;
+        }
+        config.tts = tts;
+        saveOpenclawConfigRaw(config);
+        const np = (tts.providers[tts.provider || provider] || {});
+        await sendReply(`TTS updated: auto=${tts.auto ?? '(default)'} provider=${tts.provider || provider} model=${np.model ?? '(default)'} voice=${np.voice ?? '(default)'}`);
+        return;
+      }
+
+      case 'stt': {
+        const config = loadOpenclawConfigRaw();
+        config.tools = config.tools || {};
+        const media: any = config.tools.media || {};
+        media.models = Array.isArray(media.models) ? media.models : [];
+        let entry: any =
+          media.models.find((m: any) => Array.isArray(m?.capabilities) && m.capabilities.includes('audio')) || null;
+        const sub = (cmdArgs[0] || '').toLowerCase();
+        if (!sub) {
+          const model = entry ? `${entry.provider || 'openai'}/${entry.model || '(default)'}` : '(not configured)';
+          await sendReply(
+            `STT: ${model}${entry?.baseUrl ? ` baseUrl=${entry.baseUrl}` : ''}\n` +
+            `Use: /stt model <id> | /stt provider <id> | /stt baseurl <url>`,
+          );
+          return;
+        }
+        if (!(await checkAdminAccess())) { await sendReply('Admin only.'); return; }
+        if (!entry) {
+          entry = { provider: 'openai', model: 'lfm3-audio', capabilities: ['audio'], baseUrl: 'http://localhost:11434/v1' };
+          media.models.push(entry);
+        }
+        if (sub === 'model' && cmdArgs[1]) entry.model = cmdArgs.slice(1).join(' ');
+        else if (sub === 'provider' && cmdArgs[1]) entry.provider = cmdArgs[1];
+        else if ((sub === 'baseurl' || sub === 'base-url') && cmdArgs[1]) entry.baseUrl = cmdArgs[1];
+        else { await sendReply('Usage: /stt model <id> | /stt provider <id> | /stt baseurl <url>'); return; }
+        entry.capabilities = Array.isArray(entry.capabilities) && entry.capabilities.length ? entry.capabilities : ['audio'];
+        config.tools.media = media;
+        saveOpenclawConfigRaw(config);
+        await sendReply(`STT updated: ${entry.provider}/${entry.model}${entry.baseUrl ? ` baseUrl=${entry.baseUrl}` : ''}`);
+        return;
+      }
 
       case 'presence':
       case 'status': {

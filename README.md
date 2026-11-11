@@ -3,7 +3,7 @@
 A full-featured XMPP channel plugin for OpenClaw with support for 1:1 chat, multi-user chat (MUC), CLI management, file transfers, presence/status, and comprehensive security features including password encryption at rest and secure file transfer validation.
 Need an XMPP server? Check out [Prosody](https://prosody.im/).
 
-## Status: ✅ WORKING (v2.18.8)
+## Status: ✅ WORKING (v2.18.9)
 
 Fully functional with shared sessions, memory continuity, file transfers via SI/SOCKS5/IBB (XEP-0096/XEP-0065/XEP-0047) and HTTP Upload (XEP-0363), vCard + vCard4 profiles, presence/status, SFTP transfers, auto-update, password encryption at rest, and enhanced file transfer security.
 
@@ -120,6 +120,14 @@ Fully functional with shared sessions, memory continuity, file transfers via SI/
   cannot dispatch`). The state (`pluginRuntime`, `xmppClients`, `contactsStore`)
   and the queue registry now live on a `globalThis` singleton shared by all
   bundles.
+- **v2.18.9** — **inline voice notes + STT/TTS + fixes**: the channel advertises
+  native voice-note TTS, so an XMPP reply to a voice message is sent as **text +
+  an inline player** (XEP-0385 SIMS over XEP-0363 upload, `audio/mpeg`, URL
+  `?mode=stream`), which Psi+ plays in chat. Inbound SIMS/SFS voice recordings
+  are downloaded for STT. `/tts` and `/stt` show/set the local Ollama model
+  (`lfm3-audio`), voice and base URL. Also: outbound stanza-size guard (stops
+  the `XML stanza is too long` reconnect loop), honest/logged gateway restart,
+  and avatar republish on connect.
 
 `openclaw.plugin.json` declares `contracts.tools` (`xmpp_setPresence`,
 `xmpp_sftp`) to satisfy the OpenClaw 2026.8.x plugin contract check.
@@ -350,6 +358,52 @@ openclaw xmpp encrypt-password
 ```
 Encrypts the `password` field in config using AES-256-GCM with PBKDF2-SHA512.
 
+## Voice notes (TTS + STT)
+
+The XMPP channel advertises native voice-note TTS. When a user sends a voice
+message (e.g. the Psi+ mic button), OpenClaw transcribes it (STT), and the reply
+is sent as **text plus an inline voice note** (mp3, XEP-0385 SIMS over XEP-0363
+HTTP Upload) that Psi+ plays in chat. Replies to text messages stay text-only
+(`tts.auto = "inbound"`).
+
+A local Ollama model (`lfm3-audio`) serves **both** STT and TTS via its
+OpenAI-compatible `/v1/audio/transcriptions` and `/v1/audio/speech` routes:
+
+```bash
+# from an admin chat (writes the OpenClaw config)
+/tts voice female-american-english     # seeds Ollama TTS defaults
+/tts on                                # auto=inbound
+/stt model lfm3-audio                  # seeds Ollama STT defaults
+```
+
+Equivalent `openclaw.json` excerpt:
+
+```jsonc
+"tts": {
+  "auto": "inbound", "mode": "final", "provider": "openai",
+  "providers": { "openai": {
+    "baseUrl": "http://localhost:11434/v1", "apiKey": "ollama",
+    "model": "lfm3-audio-tts", "voice": "female-american-english",
+    "responseFormat": "wav"
+  } }
+},
+"tools": {
+  "media": {
+    "audio": { "enabled": true, "echoTranscript": true },
+    "models": [{ "provider": "openai", "model": "lfm3-audio",
+                 "capabilities": ["audio"], "baseUrl": "http://localhost:11434/v1" }]
+  }
+},
+"models": { "providers": { "openai": { "apiKey": "ollama" } } }
+```
+
+Requirements: an **XEP-0363 HTTP Upload** component (used for the inline URL), an
+XMPP server whose `max_stanza_size` fits normal traffic (the plugin now refuses
+oversized outbound stanzas instead of being disconnected), and **ffmpeg** on the
+gateway host. Ollama's `/v1/audio/speech` only emits WAV/PCM and Psi+ needs mp3
+for inline playback, so the plugin transcodes WAV→MP3 with system ffmpeg before
+uploading. Voice notes are uploaded, never sent as base64 in a stanza.
+
 ## Security
 
 ### Password Encryption at Rest
@@ -524,6 +578,8 @@ Use these commands directly in XMPP chat (direct message or groupchat) to contro
 /vcard email add|remove ...      # Manage emails
 /vcard address add|remove ...    # Manage addresses
 /vcard org <orgname> [orgunit...] # Set organization
+/tts [model|voice|provider|on|off] # Show/set TTS (voice replies; seeds Ollama)
+/stt [model|provider|baseurl]     # Show/set STT (voice transcription; seeds Ollama)
 ```
 
 ### Notes
@@ -693,7 +749,7 @@ ln -s "$(npm root -g)/openclaw" node_modules/openclaw   # Linux/macOS
 
 ### "plugin must declare contracts.tools before registering agent tools"
 The plugin manifest declares `contracts.tools` (`openclaw.plugin.json`). Update
-to v2.11.3 or newer (current: v2.18.8) to clear this OpenClaw 2026.8.x warning.
+to v2.11.3 or newer (current: v2.18.9) to clear this OpenClaw 2026.8.x warning.
 
 ### "requires compiled runtime output for TypeScript entry"
 Run `node scripts/build.mjs` in the plugin directory to build `dist/`, then
@@ -925,7 +981,9 @@ xmpp/
 │   ├── slash-commands.ts     # In-chat slash command dispatcher (/help, /vcard, /presence, …)
 │   ├── vcard-server.ts       # vCard/vCard4 query/update/avatar + PEP publish
 │   ├── vcard.ts              # Local vCard storage
-│   ├── outbound.ts           # Outbound message sending
+│   ├── outbound.ts           # Outbound message/file/voice-note sending
+│   ├── lib/voice-note.ts     # TTS voice notes: XEP-0363 upload + XEP-0385 SIMS
+│   ├── lib/voice-note-protocol.ts # SIMS builder + inbound SIMS/SFS/OOB URL extraction
 │   ├── commands.ts           # CLI commands registration (vcard, vcard4, presence, sftp, …)
 │   ├── contacts.ts           # Contact management
 │   ├── roster-store.ts       # Roster storage

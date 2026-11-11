@@ -105,6 +105,15 @@ npm run typecheck              # tsc --noEmit
   2.18.5–2.18.7 (`setXmppRuntime` reached a different copy than the gateway's
   `getPluginRuntime`, so `runtime.channel` was null and the agent stopped
   replying). When adding shared runtime state, put it in `src/state.ts`.
+- **Voice notes / TTS:** the channel advertises `tts.voice` (`synthesisTarget:
+  "voice-note"`, mp3). Outbound TTS audio is uploaded via XEP-0363 and sent as a
+  single **XEP-0385 SIMS** message (`src/lib/voice-note-protocol.ts` builds it;
+  `src/lib/voice-note.ts` uploads/sends). Ollama's `/v1/audio/speech` only
+  emits WAV/PCM, so WAV→MP3 is transcoded with **system ffmpeg** before upload
+  (Psi+ plays mp3 inline); if ffmpeg is missing it falls back to the original
+  format. Inbound SIMS/SFS/url-data/OOB media is downloaded for STT (`extractSharedMediaUrls`). Never inline base64 audio in a
+  stanza — upload it (the outbound stanza-size guard rejects oversized stanzas,
+  which would otherwise trip the server's `XML stanza is too long` and loop).
 - **Windows spawns:** use `buildSpawnPlan()` (`src/lib/win-args.ts`, mirrored by
   `scripts/win-args.mjs`). Never route an absolute executable (`process.execPath`
   = `C:\Program Files\nodejs\node.exe`) through `cmd /d /s /c` — `/s` strips the

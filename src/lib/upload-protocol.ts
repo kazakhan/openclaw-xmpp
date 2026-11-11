@@ -220,6 +220,15 @@ export async function uploadFileViaHTTP(filePath: string, putUrl: string, header
     else if (ext === '.gif') contentType = 'image/gif';
     else if (ext === '.webp') contentType = 'image/webp';
     else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+    // SECURITY (2.18.9): audio voice notes must advertise their real type so
+    // Psi+ renders an inline player (mp3 is what the operator confirmed works).
+    else if (ext === '.mp3' || ext === '.mpeg') contentType = 'audio/mpeg';
+    else if (ext === '.ogg' || ext === '.oga' || ext === '.opus') contentType = 'audio/ogg';
+    else if (ext === '.m4a' || ext === '.mp4') contentType = 'audio/mp4';
+    else if (ext === '.wav') contentType = 'audio/wav';
+    else if (ext === '.webm') contentType = 'audio/webm';
+    else if (ext === '.aac') contentType = 'audio/aac';
+    else if (ext === '.flac') contentType = 'audio/flac';
 
     const fetchHeaders: Record<string, string> = {
       'Content-Type': contentType,
